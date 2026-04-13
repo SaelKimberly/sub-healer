@@ -1,0 +1,13 @@
+[workspace]
+members = ["crates/*"]
+resolver = "3"
+
+[workspace.lints]
+cargo = { pedantic = "warn", nursery = "warn" }
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.94.1"
+
+[workspace.dependencies]

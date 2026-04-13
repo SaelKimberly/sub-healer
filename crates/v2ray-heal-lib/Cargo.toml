@@ -1,0 +1,10 @@
+[package]
+name = "v2ray-heal-lib"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+
+
+[lints]
+workspace = true
