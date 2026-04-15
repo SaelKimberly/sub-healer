@@ -1,14 +1,8 @@
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
-}
+#![allow(dead_code)]
+mod utils;
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+pub type Span<'a> = winnow::LocatingSlice<&'a [u8]>;
 
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
-    }
-}
+pub type CutResult<'a, T> = core::result::Result<T, winnow::error::InputError<Span<'a>>>;
+
+pub use winnow::{Result, error::InputError};

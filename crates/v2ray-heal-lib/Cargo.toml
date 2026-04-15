@@ -4,7 +4,18 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+winnow = { version = "*", features = ["simd"] }
 
+serde = { version = "*" }
+serde_json = { version = "*" }
+
+bstr = { version = "*" }
+
+chardetng = { version = "*", features = ["multithreading"] }
+percent-encoding = { version = "*" }
+encoding_rs = { version = "*" }
+unescaper = { version = "*" }
+escape8259 = { version = "^0.5" }
 
 [lints]
 workspace = true
