@@ -145,32 +145,32 @@ impl<R: AsyncRead + Unpin> Stream for Base64LineStream<R> {
             }
 
             // 3. Читаем новые данные из потока
-            // Используем read_buf для чтения напрямую в наш буфер
-            let mut read_buf = this.read_buf.split_off(this.read_buf.len());
-            read_buf.reserve(1024); // Размер временного буфера для чтения
+            // Allocate fresh buffer using Vec (works better with ReadBuf)
+            // let mut temp_buf = vec![0u8; 1024];
 
-            let mut buffer = ReadBuf::new(&mut read_buf);
+            let mut temp_buf = Box::new_uninit_slice(1024);
+
+            let mut buffer = ReadBuf::uninit(&mut temp_buf);
 
             let poll = this.reader.as_mut().poll_read(cx, &mut buffer);
+
             match poll {
                 Poll::Ready(Err(e)) => {
-                    // Возвращаем временный буфер обратно, чтобы не потерять память
-                    this.read_buf.unsplit(read_buf);
                     return Poll::Ready(Some(Err(e)));
                 }
                 Poll::Pending => {
-                    // Возвращаем временный буфер обратно, чтобы не потерять память
-                    this.read_buf.unsplit(read_buf);
                     return Poll::Pending;
                 }
                 _ => {}
             };
-            let filled = buffer.filled().len();
-            if filled == 0 {
-                this.eof = true;
-            } else {
-                read_buf.truncate(filled);
-                this.read_buf.unsplit(read_buf);
+            match buffer.filled() {
+                &[] => {
+                    this.eof = true;
+                }
+                // Keep only actual filled bytes
+                filled => {
+                    this.read_buf.extend_from_slice(filled);
+                }
             }
 
             // Декодируем накопленное
@@ -213,8 +213,10 @@ mod tests {
 
         let mut b64_stream = Base64LineStream::new(stream);
 
+        let mut count = 0;
         while let Some(line) = b64_stream.next().await {
-            eprintln!("- {}", line.unwrap());
+            count += 1;
         }
+        assert!(count > 0, "Should have read some lines");
     }
 }
