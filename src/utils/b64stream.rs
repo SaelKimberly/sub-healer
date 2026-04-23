@@ -107,87 +107,82 @@ impl<R: AsyncRead + Unpin> Stream for Base64LineStream<R> {
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.get_mut();
 
-        // 1. Пытаемся извлечь строку из уже декодированного буфера
-        if let Some(newline_pos) = memchr(b'\n', &this.decoded_buf) {
-            // Извлекаем байты до \n
-            let line_bytes = this.decoded_buf.split_to(newline_pos + 1);
-            // Удаляем сам символ \n
-            let mut line_bytes = line_bytes.freeze();
-            line_bytes.truncate(line_bytes.len() - 1);
-
-            // Обработка \r\n (удаляем \r в конце, если есть)
-            if line_bytes.last() == Some(&b'\r') {
+        loop {
+            // 1. Пытаемся извлечь строку из уже декодированного буфера
+            if let Some(newline_pos) = memchr(b'\n', &this.decoded_buf) {
+                // Извлекаем байты до \n
+                let line_bytes = this.decoded_buf.split_to(newline_pos + 1);
+                // Удаляем сам символ \n
+                let mut line_bytes = line_bytes.freeze();
                 line_bytes.truncate(line_bytes.len() - 1);
-            }
 
-            // Конвертируем в String
-            return Poll::Ready(Some(
-                str::from_utf8(&line_bytes)
-                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
-                    .map(ToOwned::to_owned),
-            ));
-        } else {
-            println!("No newline found")
-        }
+                // Обработка \r\n (удаляем \r в конце, если есть)
+                if line_bytes.last() == Some(&b'\r') {
+                    line_bytes.truncate(line_bytes.len() - 1);
+                }
 
-        // 2. Если строк не найдено, проверяем, не достигнут ли конец потока и пусты ли буферы
-        if this.eof {
-            if this.decoded_buf.is_empty() {
-                return Poll::Ready(None);
-            } else {
-                // Возвращаем остаток буфера как последнюю строку
-                let remainder = this.decoded_buf.split();
+                // Конвертируем в String
                 return Poll::Ready(Some(
-                    str::from_utf8(&remainder)
+                    str::from_utf8(&line_bytes)
                         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
                         .map(ToOwned::to_owned),
                 ));
             }
-        } else {
-            println!("Not EOF")
-        }
 
-        // 3. Читаем новые данные из потока
-        // Используем read_buf для чтения напрямую в наш буфер
-        let mut read_buf = this.read_buf.split_off(this.read_buf.len());
-        read_buf.reserve(1024); // Размер временного буфера для чтения
-
-        let mut buffer = ReadBuf::new(&mut read_buf);
-
-        let poll = this.reader.as_mut().poll_read(cx, &mut buffer);
-        match poll {
-            Poll::Ready(Err(e)) => {
-                // Возвращаем временный буфер обратно, чтобы не потерять память
-                this.read_buf.unsplit(read_buf);
-                return Poll::Ready(Some(Err(e)));
+            // 2. Если строк не найдено, проверяем, не достигнут ли конец потока и пусты ли буферы
+            if this.eof {
+                if this.decoded_buf.is_empty() {
+                    return Poll::Ready(None);
+                } else {
+                    // Возвращаем остаток буфера как последнюю строку
+                    let remainder = this.decoded_buf.split();
+                    return Poll::Ready(Some(
+                        str::from_utf8(&remainder)
+                            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+                            .map(ToOwned::to_owned),
+                    ));
+                }
             }
-            Poll::Pending => {
-                // Возвращаем временный буфер обратно, чтобы не потерять память
+
+            // 3. Читаем новые данные из потока
+            // Используем read_buf для чтения напрямую в наш буфер
+            let mut read_buf = this.read_buf.split_off(this.read_buf.len());
+            read_buf.reserve(1024); // Размер временного буфера для чтения
+
+            let mut buffer = ReadBuf::new(&mut read_buf);
+
+            let poll = this.reader.as_mut().poll_read(cx, &mut buffer);
+            match poll {
+                Poll::Ready(Err(e)) => {
+                    // Возвращаем временный буфер обратно, чтобы не потерять память
+                    this.read_buf.unsplit(read_buf);
+                    return Poll::Ready(Some(Err(e)));
+                }
+                Poll::Pending => {
+                    // Возвращаем временный буфер обратно, чтобы не потерять память
+                    this.read_buf.unsplit(read_buf);
+                    return Poll::Pending;
+                }
+                _ => {}
+            };
+            let filled = buffer.filled().len();
+            if filled == 0 {
+                this.eof = true;
+            } else {
+                read_buf.truncate(filled);
                 this.read_buf.unsplit(read_buf);
-                return Poll::Pending;
             }
-            _ => {}
-        };
-        let filled = buffer.filled().len();
-        if filled == 0 {
-            this.eof = true;
-        } else {
-            read_buf.truncate(filled);
-            this.read_buf.unsplit(read_buf);
+
+            // Декодируем накопленное
+            if let Err(e) = this.process_decode() {
+                return Poll::Ready(Some(Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    e,
+                ))));
+            }
+
+            // Loop back to check decoded_buf for lines after new data decoded
         }
-
-        println!("Read {} bytes", filled);
-
-        // Декодируем накопленное
-        if let Err(e) = this.process_decode() {
-            return Poll::Ready(Some(Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                e,
-            ))));
-        }
-
-        // Пытаемся вернуть строку снова
-        Poll::Pending
     }
 }
 
@@ -200,9 +195,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_b64_stream() {
-        let client = reqwest::Client::new();
+        let client = reqwest::Client::builder()
+            .user_agent("Xray-Rs/0.1.0")
+            .build()
+            .unwrap();
         let t = client.get(
             "https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/refs/heads/main/Base64/WHITE-SNI-RU-all-base64.txt"
+        ).bearer_auth(
+            std::env::var("GITHUB_TOKEN").unwrap()
         ).send().await.unwrap().error_for_status().unwrap();
 
         let stream = t
@@ -214,7 +214,7 @@ mod tests {
         let mut b64_stream = Base64LineStream::new(stream);
 
         while let Some(line) = b64_stream.next().await {
-            println!("- {}", line.unwrap());
+            eprintln!("- {}", line.unwrap());
         }
     }
 }
