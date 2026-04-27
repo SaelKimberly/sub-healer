@@ -1,4 +1,14 @@
-use crate::{CutResult, Span};
+#[derive(thiserror::Error, Debug)]
+pub enum UnescapeError {
+    #[error("Invalid UTF-8: {0}")]
+    InvalidUtf8(#[from] std::str::Utf8Error),
+    #[error("Encoding \"{0}\" was detected, but some characters were replaced")]
+    EncodingFlaw(&'static str),
+    #[error("Invalid JSON escape sequence: {0}")]
+    InvalidJsonEscape(#[from] escape8259::UnescapeError),
+    #[error("Invalid Unicode escape sequence: {0}")]
+    InvalidUnicodeEscape(#[from] unescaper::Error),
+}
 
 #[derive(Default)]
 pub struct Unescaper {
@@ -30,11 +40,11 @@ impl Unescaper {
         self
     }
 
-    pub fn do_unescape<'a>(self, span: Span<'a>) -> CutResult<'a, String> {
+    pub fn do_unescape<'a>(self, span: &'a [u8]) -> core::result::Result<String, UnescapeError> {
         let s: std::borrow::Cow<'a, [u8]> = if self.enc_pct {
-            percent_encoding::percent_decode(span.as_ref()).into()
+            percent_encoding::percent_decode(span).into()
         } else {
-            std::borrow::Cow::Borrowed(span.as_ref())
+            std::borrow::Cow::Borrowed(span)
         };
 
         let mut s: String = match self.chardet {
@@ -46,9 +56,9 @@ impl Unescaper {
                     enc.guess(None, chardetng::Utf8Detection::Allow)
                 };
 
-                let (s, _, replaced) = enc.decode(s.as_ref());
+                let (s, e, replaced) = enc.decode(s.as_ref());
                 if replaced && !bypass {
-                    return Err(crate::InputError::at(span));
+                    return Err(UnescapeError::EncodingFlaw(e.name()));
                 } else {
                     s.into_owned()
                 }
@@ -57,26 +67,34 @@ impl Unescaper {
                 if bypass {
                     String::from_utf8_lossy(s.as_ref()).into_owned()
                 } else {
-                    str::from_utf8(s.as_ref())
-                        .map_err(|_| crate::InputError::at(span))?
-                        .to_owned()
+                    str::from_utf8(s.as_ref())?.to_owned()
                 }
             }
         };
 
         if let Some(bypass) = self.enc8259 {
-            if let Ok(unescaped) = escape8259::unescape(s.as_str()) {
-                s = unescaped
-            } else if !bypass {
-                return Err(crate::InputError::at(span));
+            match escape8259::unescape(s.as_str()) {
+                Ok(unescaped) => {
+                    s = unescaped;
+                }
+                Err(e) => {
+                    if !bypass {
+                        return Err(UnescapeError::from(e));
+                    }
+                }
             }
         };
 
         if let Some(bypass) = self.enc_uni {
-            if let Ok(unescaped) = unescaper::unescape(s.as_str()) {
-                s = unescaped
-            } else if !bypass {
-                return Err(crate::InputError::at(span));
+            match unescaper::unescape(s.as_str()) {
+                Ok(unescaped) => {
+                    s = unescaped;
+                }
+                Err(e) => {
+                    if !bypass {
+                        return Err(UnescapeError::from(e));
+                    }
+                }
             }
         };
 
