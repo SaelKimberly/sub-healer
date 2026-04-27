@@ -106,6 +106,14 @@ pub struct UrlX {
 }
 
 impl UrlX {
+    pub fn host_str(&self) -> String {
+        self.host
+            .as_ref()
+            .map(ServerName::to_str)
+            .unwrap_or(Cow::Borrowed(""))
+            .into_owned()
+    }
+
     pub fn get_query_param<'a>(&'a self, key: &str) -> Option<&'a str> {
         self.query
             .iter()
