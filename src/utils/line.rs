@@ -1,9 +1,8 @@
-use std::{borrow::Cow, ops::Range, str::FromStr, sync::Arc};
+use std::{borrow::Cow, str::FromStr, sync::Arc};
 
 use base64::Engine;
-use bstr::ByteSlice;
 use rayon::iter::{IntoParallelIterator, ParallelBridge, ParallelIterator};
-use rustls::pki_types::{IpAddr, ServerName};
+use rustls::pki_types::ServerName;
 use serde_json::Value;
 
 use crate::{PortSpec, SchemeX, UrlX};
