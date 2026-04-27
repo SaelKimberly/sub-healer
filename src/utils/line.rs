@@ -218,31 +218,7 @@ impl<'a> Lines<'a> {
         let mut visited_lines: Vec<Line<'static>> = self
             .inner
             .into_par_iter()
-            .map(|l| {
-                let mut l = l.parse_raw();
-
-                if let Line {
-                    url:
-                        Data::Url(UrlX {
-                            schema: SchemeX::Vmess | SchemeX::SS | SchemeX::SSR,
-                            username,
-                            password: None,
-                            host: None,
-                            path,
-                            query,
-                            ..
-                        }),
-                    ..
-                } = &mut l
-                    && query.is_empty()
-                    && let Some(path) = path.take()
-                {
-                    username.push('/');
-                    username.push_str(path.as_str());
-                }
-
-                l
-            })
+            .map(Line::parse_raw)
             .flat_map(Self::_visit_line)
             .collect();
 
@@ -434,177 +410,13 @@ impl<'a> Lines<'a> {
             return None;
         };
 
-        if let UrlX {
-            schema: SchemeX::Unknown(s),
-            ..
-        } = &url
-        {
-            wrn.get_or_insert_default()
-                .push(format!("Unknown protocol schema: {s}").into());
-        }
-
-        if let UrlX {
-            schema: SchemeX::SS,
-            password: None,
-            host: Some(_),
-            port: Some(_),
-            username,
-            ..
-        } = &mut url
-        {
-            if let Ok(uuid) = uuid::Uuid::from_str(username.as_str()) {
-                let uuid = uuid.to_string();
-                username.clear();
-                username.push_str(uuid.as_str());
-                wrn.get_or_insert_default()
-                    .push("VLESS with trucated schema detected (UUID instead of base64)".into());
-                url.schema = SchemeX::Vless;
-            }
-
-            // ShadowSocks cannot have query parameter "security" with value "reality"
-            if let Some("reality") = url.get_query_param("security") {
-                wrn.get_or_insert_default()
-                    .push("VLESS with truncated schema detected (security=reality)".into());
-                url.schema = SchemeX::Vless;
-            }
-        }
-
-        if let Some(userinfo) = url.has_only_userinfo().map(str::trim_ascii_start) {
-            let area: Cow<'_, _> = percent_encoding::percent_decode_str(userinfo).into();
-            let area = area.trim_end_with(|c| c.is_whitespace() || c == '=');
-            let Ok(area) = base64::prelude::BASE64_STANDARD_NO_PAD
-                .decode(area)
-                .or_else(|_| base64::prelude::BASE64_URL_SAFE_NO_PAD.decode(area))
-            else {
-                let schema = url.schema.clone();
-                return Some(Line {
-                    row,
-                    url: Data::Url(url),
-                    wrn,
-                    err: Some(format!("Failed to decode {} URL body", schema).into()),
-                });
-            };
-
-            let (host, port) = if area.starts_with_str("{") {
-                match Self::_visit_vmess(&mut url, &mut wrn, area.as_slice()) {
-                    Ok((host, port)) => (host, port),
-                    Err(e) => {
-                        return Some(Line {
-                            row,
-                            url: Data::Url(url),
-                            wrn,
-                            err: Some(e),
-                        });
-                    }
-                }
-            } else {
-                match Self::_visit_ss(&mut url, &mut wrn, area.as_slice()) {
-                    Ok((host, port)) => (host, port),
-                    Err(e) => {
-                        return Some(Line {
-                            row,
-                            url: Data::Url(url),
-                            wrn,
-                            err: Some(e),
-                        });
-                    }
-                }
-            };
-
-            url.host.replace(host);
-            url.port.replace(port);
-        }
-
-        let (host, port) = if let Some(host) = url.host.as_ref()
-            && let Some(port) = url.port.as_ref()
-        {
-            (host, port)
-        } else {
-            let schema = url.schema.clone();
+        if let Err(e) = url.normalize(&mut wrn) {
             return Some(Line {
                 row,
                 url: Data::Url(url),
                 wrn,
-                err: Some(format!("Invalid {} URL (missing host or port)", schema).into()),
+                err: Some(e),
             });
-        };
-
-        // check IP address
-        if let ServerName::IpAddress(IpAddr::V4(ip)) = host {
-            let ip = std::net::Ipv4Addr::from_octets(*ip.as_ref());
-            'block: {
-                let err = if ip.is_broadcast() {
-                    "Broadcast IP address detected"
-                } else if ip.is_loopback() {
-                    "Loopback IP address detected"
-                } else if ip.is_private() {
-                    "Private IP address detected"
-                } else if ip.is_unspecified() {
-                    "Unspecified IP address detected"
-                } else {
-                    break 'block;
-                };
-
-                return Some(Line {
-                    row,
-                    url: Data::Url(url),
-                    wrn,
-                    err: Some(err.into()),
-                });
-            }
-        } else if let ServerName::IpAddress(IpAddr::V6(ip)) = host {
-            let ip = std::net::Ipv6Addr::from_octets(*ip.as_ref());
-            'block: {
-                let err = if ip.is_loopback() {
-                    "Loopback IP address detected"
-                } else if ip.is_unspecified() {
-                    "Unspecified IP address detected"
-                } else {
-                    break 'block;
-                };
-
-                return Some(Line {
-                    row,
-                    url: Data::Url(url),
-                    wrn,
-                    err: Some(err.into()),
-                });
-            }
-        }
-
-        if url.id == 0 {
-            let mut hasher =
-                rapidhash::v3::RapidStreamHasherV3::new(&rapidhash::v3::DEFAULT_RAPID_SECRETS);
-
-            if let Some(ref p) = url.password {
-                hasher.write(p.as_bytes());
-            }
-
-            hasher.write(host.to_str().as_bytes());
-            for (i, spec) in port.iter_raw().enumerate() {
-                if i > 0 {
-                    hasher.write(b",");
-                }
-                match spec {
-                    crate::PortDecl::Single(p) => {
-                        hasher.write(&p.to_le_bytes() as &[u8]);
-                    }
-                    crate::PortDecl::Range(Range { start, end }) => {
-                        hasher.write(&start.to_le_bytes() as &[u8]);
-                        hasher.write(&end.to_le_bytes() as &[u8]);
-                    }
-                }
-            }
-
-            if let Some(ref path) = url.path {
-                hasher.write(path.as_bytes());
-            }
-
-            if let Some(q) = url.query_string() {
-                hasher.write(q.as_bytes());
-            }
-
-            url.id = hasher.finish();
         }
 
         Some(Line {
