@@ -18,7 +18,21 @@ static BASE64_PROXY_RE: LazyLock<Regex> =
 pub fn extract_links(html: &str) -> (Vec<String>, Vec<String>) {
     let urls = URL_RE
         .find_iter(html)
-        .map(|m| unescape_html_entities(m.as_str()))
+        .filter_map(|m| {
+            let s = m.as_str();
+            if s.contains("vmess://")
+                || s.contains("vless://")
+                || s.contains("ss://")
+                || s.contains("ssr://")
+                || s.contains("trojan://")
+                || s.contains("hy2://")
+                || s.contains("hysteria2://")
+            {
+                None
+            } else {
+                Some(unescape_html_entities(s))
+            }
+        })
         .collect();
 
     let proxies = PROXY_RE
@@ -38,4 +52,8 @@ pub fn unescape_html_entities(s: &str) -> String {
         Cow::Owned(s) => s,
         Cow::Borrowed(_) => s.to_string(),
     }
+}
+
+pub fn extract_links_from_html(html: &str) -> (Vec<String>, Vec<String>) {
+    extract_links(html)
 }

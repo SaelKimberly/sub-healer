@@ -8,8 +8,11 @@ use std::collections::HashSet;
 use std::path::Path;
 
 use anyhow::Result;
+use rustc_hash::FxHashSet;
 use tokio::sync::Semaphore;
 use tracing::info;
+
+use telegram::TimestampedProxy;
 
 pub const PROXY_URL: &str = "http://127.0.0.1:20172";
 pub const SEMAPHORE_PERMITS: usize = 64;
@@ -39,7 +42,13 @@ pub async fn run() -> Result<()> {
         .timeout(std::time::Duration::from_secs(10))
         .build()?;
 
-    let (mut url_list, proxy_list) = telegram::fetch_all_channels(&client, &channels).await?;
+    let (timestamped_urls, timestamped_proxies) =
+        telegram::fetch_all_channels(&client, &channels).await?;
+
+    let mut url_list: Vec<String> = timestamped_urls
+        .iter()
+        .map(|t| t.url.clone())
+        .collect();
 
     url_list.retain(|url: &String| {
         allow_list.iter().any(|p| url.contains(p)) && deny_list.iter().all(|p| !url.contains(p))
@@ -82,7 +91,15 @@ pub async fn run() -> Result<()> {
         &final_v2_list,
     )?;
     output::write_url_txt(Path::new("url.txt"), &url_list)?;
-    output::write_v2ray_txt(Path::new("v2ray.txt"), &proxy_list)?;
+
+    let mut seen_ids: FxHashSet<u64> = FxHashSet::default();
+    let mut unique_proxies: Vec<String> = Vec::new();
+    for tp in &timestamped_proxies {
+        if seen_ids.insert(tp.urlx.id) {
+            unique_proxies.push(tp.urlx.to_string());
+        }
+    }
+    output::write_v2ray_txt(Path::new("v2ray.txt"), &unique_proxies)?;
 
     info!("Done");
     Ok(())
