@@ -184,7 +184,7 @@ impl Iterator for PortSpecIter<'_> {
             }
             PortDecl::Range(r) => {
                 let port = r.start + self.inner_idx;
-                if r.contains(&port) {
+                if r.start <= port && port <= r.end {
                     self.inner_idx += 1;
                     Some(port)
                 } else {
