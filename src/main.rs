@@ -1,19 +1,23 @@
 use std::path::PathBuf;
 
 use clap::Parser;
-use tokio::io::AsyncReadExt;
+use tracing_subscriber::{EnvFilter, fmt, prelude::*};
+use v2ray_heal::mining;
 
 #[derive(Debug, Default, clap::Subcommand)]
 enum Commands {
     #[default]
-    /// Read from stdin
     Stdin,
-    /// Read from multiple sources, based on config
-    Config { file: Option<PathBuf> },
-    /// Read from a remote url
-    Remote { url: Vec<url::Url> },
-    /// Read from a local file
-    Local { file: Vec<PathBuf> },
+    Config {
+        file: Option<PathBuf>,
+    },
+    Remote {
+        url: Vec<url::Url>,
+    },
+    Local {
+        file: Vec<PathBuf>,
+    },
+    Mine,
 }
 
 #[derive(Debug, Default, clap::Parser)]
@@ -24,25 +28,32 @@ struct Cli {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    tracing_subscriber::registry()
+        .with(fmt::layer())
+        .with(EnvFilter::from_default_env().add_directive(tracing::Level::INFO.into()))
+        .try_init()
+        .ok();
+
     let cli = Cli::parse();
+
+    if matches!(cli.command, Commands::Mine) {
+        mining::run().await?;
+        return Ok(());
+    }
 
     if let Commands::Stdin = cli.command {
         todo!()
     }
 
-    if let Commands::Config { file: Some(path) } = cli.command {
+    if let Commands::Config { .. } = cli.command {
         todo!()
     }
 
-    if let Commands::Config { file: None } = cli.command {
+    if let Commands::Remote { .. } = cli.command {
         todo!()
     }
 
-    if let Commands::Remote { url } = cli.command {
-        todo!()
-    }
-
-    if let Commands::Local { file } = cli.command {
+    if let Commands::Local { .. } = cli.command {
         todo!()
     }
 

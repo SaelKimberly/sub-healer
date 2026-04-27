@@ -1,21 +1,16 @@
 mod error;
+pub mod mining;
 mod utils;
 
-use std::{
-    borrow::Cow,
-    collections::HashSet,
-    io::{Read, Seek, SeekFrom},
-    path::Path,
-};
+use rustc_hash::FxHashSet;
+use std::borrow::Cow;
 
 use base64::Engine;
 use bstr::ByteSlice;
 // restrict to crate internal usage
 pub(crate) use error::{CutResult, NomError, RawResult, Span};
-use futures::TryStreamExt;
+
 use std::io::Write;
-use tokio::io::{AsyncWriteExt, BufWriter};
-use tokio_util::compat::FuturesAsyncReadCompatExt;
 pub(crate) use utils::{
     norm_extras::normalize_extras, permissive_json::permissive_json, unescaper::Unescaper,
 };
@@ -63,7 +58,7 @@ pub(crate) use macros::nom_bail;
 
 use crate::utils::line::Data;
 
-pub fn parse_sub(sub: &[u8]) -> Lines<'static> {
+pub fn parse_sub(url: &url::Url, sub: &[u8]) -> Lines<'static> {
     let sub = sub.trim_end_with(|c| c.is_whitespace() || c == '=');
     let sub = base64::prelude::BASE64_STANDARD_NO_PAD
         .decode(sub)
@@ -86,13 +81,13 @@ pub fn parse_sub(sub: &[u8]) -> Lines<'static> {
         tracing::info!("Some characters was replaced")
     }
 
-    Lines::new_raw(sub.as_ref()).parsed().visited()
+    Lines::new_raw(url, sub.as_ref()).processed()
 }
 
 pub async fn download_sub<W: Write>(
     url: url::Url,
     dest: &mut W,
-    unique: &mut Option<HashSet<u64>>,
+    unique: &mut Option<FxHashSet<u64>>,
 ) -> std::io::Result<()> {
     let client = reqwest::Client::builder()
         .user_agent("Xray-Rs/0.1.0")
@@ -122,7 +117,7 @@ pub async fn download_sub<W: Write>(
         .await
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::BrokenPipe, e))?;
 
-    let sub = parse_sub(&data);
+    let sub = parse_sub(&url, &data);
 
     let entries = unique.get_or_insert_default();
 
@@ -146,7 +141,14 @@ pub async fn download_sub<W: Write>(
             {
                 if entries.insert(url.id) {
                     for lint in lints.iter().flatten() {
-                        tracing::warn!("{}: {}", row, lint);
+                        let row_idx = *row;
+                        tracing::warn!(
+                            target: "sub::lint",
+                            source = %sub.source(),
+                            line = row_idx,
+                            preview = sub.preview_line(row_idx).unwrap_or_default(),
+                            "{}", lint
+                        );
                     }
                     writeln!(dest, "{url}").unwrap()
                 } else {
@@ -156,7 +158,13 @@ pub async fn download_sub<W: Write>(
             None
         }
     }) {
-        tracing::error!("{}: {}", row, err);
+        tracing::error!(
+            target: "sub::error",
+            source = %sub.source(),
+            line = row,
+            preview = sub.preview_line(row).unwrap_or_default(),
+            "{}", err
+        );
     }
 
     let after = entries.len();
@@ -167,19 +175,13 @@ pub async fn download_sub<W: Write>(
 
 #[cfg(test)]
 mod tests {
+    use rustc_hash::FxHashSet;
     use std::{
-        collections::HashSet,
         fs::OpenOptions,
         io::{BufWriter, Write},
-        path::Path,
     };
 
     use tracing::Level;
-
-    use crate::Line;
-
-    use super::parse_sub;
-
     #[tokio::test]
     async fn test_download_sub() {
         tracing_subscriber::fmt()
@@ -216,7 +218,7 @@ mod tests {
             // "https://raw.githubusercontent.com/v2clash/V2ray-Configs/refs/heads/main/All_Configs_Sub.txt",
             "https://raw.githubusercontent.com/Epodonios/v2ray-configs/refs/heads/main/All_Configs_Sub.txt",
             // "https://raw.githubusercontent.com/barry-far/V2ray-Configs/refs/heads/main/All_Configs_Sub.txt",
-            "https://raw.githubusercontent.com/miladtahanian/V2RayCFGDumper/main/config.txt",
+            // "https://raw.githubusercontent.com/miladtahanian/V2RayCFGDumper/main/config.txt",
             "https://raw.githubusercontent.com/nyeinkokoaung404/V2ray-Configs/refs/heads/main/All_Configs_Sub.txt",
             "https://raw.githubusercontent.com/mahdibland/V2RayAggregator/refs/heads/master/sub/sub_merge.txt",
             "https://raw.githubusercontent.com/ermaozi/get_subscribe/refs/heads/main/subscribe/v2ray.txt",
@@ -289,7 +291,7 @@ mod tests {
             "https://raw.githubusercontent.com/ByeWhiteLists/ByeWhiteLists2/refs/heads/main/ByeWhiteLists2.txt",
             // "https://wlrus.lol/confs/selected.txt",
         ];
-        let mut hashes = Some(HashSet::new());
+        let mut hashes = Some(FxHashSet::default());
 
         let mut dest = BufWriter::new(
             OpenOptions::new()

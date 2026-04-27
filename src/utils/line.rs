@@ -104,6 +104,7 @@ impl<'a> Line<'a> {
 
 #[derive(Clone)]
 pub struct Lines<'a> {
+    source: url::Url,
     basic: Arc<str>,
     inner: Vec<Line<'a>>,
 }
@@ -173,8 +174,24 @@ impl<'a> Lines<'a> {
         self.inner.iter()
     }
 
-    pub(crate) fn new_raw(content: &'a str) -> Self {
+    pub fn source(&self) -> &url::Url {
+        &self.source
+    }
+
+    pub fn preview_line(&self, row: usize) -> Option<&str> {
+        self.basic.lines().nth(row).map(|l| {
+            if l.len() > 200 {
+                let idx = l.ceil_char_boundary(200);
+                &l[..idx]
+            } else {
+                l
+            }
+        })
+    }
+
+    pub(crate) fn new_raw(url: &url::Url, content: &'a str) -> Self {
         let this = Self {
+            source: url.clone(),
             basic: Arc::from(content),
             inner: content
                 .lines()
@@ -197,8 +214,8 @@ impl<'a> Lines<'a> {
         this
     }
 
-    pub(crate) fn parsed(mut self) -> Self {
-        self.inner = self
+    pub(crate) fn processed(self) -> Lines<'static> {
+        let mut visited_lines: Vec<Line<'static>> = self
             .inner
             .into_par_iter()
             .map(|l| {
@@ -211,7 +228,6 @@ impl<'a> Lines<'a> {
                             username,
                             password: None,
                             host: None,
-                            port: None,
                             path,
                             query,
                             ..
@@ -227,9 +243,17 @@ impl<'a> Lines<'a> {
 
                 l
             })
+            .flat_map(Self::_visit_line)
             .collect();
-        tracing::info!("{} lines parsed", self.inner.len());
-        self
+
+        visited_lines.sort_by_key(|u| u.row);
+
+        tracing::info!("Processed {} lines", visited_lines.len());
+        Lines {
+            source: self.source,
+            basic: self.basic,
+            inner: visited_lines,
+        }
     }
 
     fn _visit_vmess(
@@ -589,21 +613,5 @@ impl<'a> Lines<'a> {
             wrn,
             err: None,
         })
-    }
-
-    pub(crate) fn visited(self) -> Lines<'static> {
-        let mut visited_lines: Vec<Line<'static>> = self
-            .inner
-            .into_par_iter()
-            .flat_map(|s| Self::_visit_line(s))
-            .collect();
-
-        visited_lines.sort_by_key(|u| u.row);
-
-        tracing::info!("Visited {} lines", visited_lines.len());
-        Lines {
-            basic: self.basic,
-            inner: visited_lines,
-        }
     }
 }
