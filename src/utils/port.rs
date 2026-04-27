@@ -161,6 +161,10 @@ impl PortSpec {
             inner_idx: 0,
         }
     }
+
+    pub fn iter_raw(&self) -> impl Iterator<Item = &PortDecl> {
+        self.ports.iter()
+    }
 }
 
 struct PortSpecIter<'a> {

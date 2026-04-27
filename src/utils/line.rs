@@ -1,8 +1,8 @@
-use std::{borrow::Cow, str::FromStr};
+use std::{borrow::Cow, ops::Range, str::FromStr, sync::Arc};
 
 use base64::Engine;
 use bstr::ByteSlice;
-use rayon::iter::{IntoParallelIterator, ParallelIterator};
+use rayon::iter::{IntoParallelIterator, ParallelBridge, ParallelIterator};
 use rustls::pki_types::{IpAddr, ServerName};
 use serde_json::Value;
 
@@ -104,8 +104,7 @@ impl<'a> Line<'a> {
 
 #[derive(Clone)]
 pub struct Lines<'a> {
-    basic: Cow<'a, str>,
-    // keep original line number for lints
+    basic: Arc<str>,
     inner: Vec<Line<'a>>,
 }
 
@@ -176,11 +175,12 @@ impl<'a> Lines<'a> {
 
     pub(crate) fn new_raw(content: &'a str) -> Self {
         let this = Self {
-            basic: content.into(),
+            basic: Arc::from(content),
             inner: content
                 .lines()
                 .enumerate()
-                .flat_map(|(idx, line)| line.split("<br/>").map(move |s| (idx, s)))
+                .par_bridge()
+                .flat_map(|(idx, line)| line.split("<br/>").map(move |s| (idx, s)).par_bridge())
                 .flat_map(|s| _split_at_scheme(s, KNOWN_SCHEMAS))
                 .map(|(i, s, sx)| Line {
                     row: i,
@@ -555,11 +555,22 @@ impl<'a> Lines<'a> {
             if let Some(ref p) = url.password {
                 hasher.write(p.as_bytes());
             }
-            match host.to_str() {
-                Cow::Borrowed(host) => hasher.write(host.as_bytes()),
-                Cow::Owned(host) => hasher.write(host.as_bytes()),
-            };
-            hasher.write(port.to_string().as_bytes());
+
+            hasher.write(host.to_str().as_bytes());
+            for (i, spec) in port.iter_raw().enumerate() {
+                if i > 0 {
+                    hasher.write(b",");
+                }
+                match spec {
+                    crate::PortDecl::Single(p) => {
+                        hasher.write(&p.to_le_bytes() as &[u8]);
+                    }
+                    crate::PortDecl::Range(Range { start, end }) => {
+                        hasher.write(&start.to_le_bytes() as &[u8]);
+                        hasher.write(&end.to_le_bytes() as &[u8]);
+                    }
+                }
+            }
 
             if let Some(ref path) = url.path {
                 hasher.write(path.as_bytes());
@@ -590,11 +601,8 @@ impl<'a> Lines<'a> {
         visited_lines.sort_by_key(|u| u.row);
 
         tracing::info!("Visited {} lines", visited_lines.len());
-        Lines::<'static> {
-            basic: match self.basic {
-                Cow::Owned(ref s) => Cow::Owned(s.to_owned()),
-                Cow::Borrowed(s) => Cow::Owned(s.to_owned()),
-            },
+        Lines {
+            basic: self.basic,
             inner: visited_lines,
         }
     }
