@@ -1,15 +1,245 @@
-use std::str::FromStr;
+#![allow(dead_code)]
 use std::sync::Arc;
+use std::time::Duration;
+use std::{str::FromStr, sync::LazyLock};
 
 use anyhow::Result;
-use futures::StreamExt;
+use bytes::Bytes;
+use chrono::{DateTime, Utc};
+use futures::{Stream, StreamExt};
 use scraper::{Html, Selector};
+use tokio::sync::mpsc::Receiver;
+use tokio::task::JoinSet;
 use tracing::{info, warn};
 
 use super::extractor::{extract_links_from_html, unescape_html_entities};
-use crate::UrlX;
+use crate::{UrlX, urlx::TinyText};
 
 const CONCURRENT_FETCH: usize = 32;
+
+#[derive(Debug, Clone)]
+pub struct TgWebMessage {
+    pub user: TinyText,
+    pub time: DateTime<Utc>,
+    pub msg_id: u32,
+    pub msg_text: TinyText,
+}
+
+enum TgEvent {
+    Message(TgWebMessage),
+    Timeout(TinyText),
+    Failure(TinyText, reqwest::Error),
+}
+
+struct TgWebMessageStream {
+    receiver: Receiver<TgEvent>,
+    join_set: JoinSet<()>,
+}
+
+impl Stream for TgWebMessageStream {
+    type Item = TgWebMessage;
+
+    fn poll_next(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        let this = self.get_mut();
+        loop {
+            match this.receiver.poll_recv(cx) {
+                std::task::Poll::Ready(Some(TgEvent::Message(msg))) => {
+                    return std::task::Poll::Ready(Some(msg));
+                }
+                std::task::Poll::Ready(Some(TgEvent::Timeout(t))) => {
+                    tracing::info!(target: "mining::tg_channel", id=t.as_str(), "Timeout");
+                    continue;
+                }
+                std::task::Poll::Ready(Some(TgEvent::Failure(t, e))) => {
+                    tracing::info!(target: "mining::tg_channel", id=t.as_str(), "Failure ({e})");
+                    continue;
+                }
+                std::task::Poll::Ready(None) => return std::task::Poll::Ready(None),
+                std::task::Poll::Pending => return std::task::Poll::Pending,
+            }
+        }
+    }
+}
+
+async fn fetch_tg_channel(
+    client: reqwest::Client,
+    channel: &str,
+    sender: tokio::sync::mpsc::Sender<TgEvent>,
+    limit: Arc<tokio::sync::Semaphore>,
+    timeout: Duration,
+) {
+    static TG_WEB_MESSAGE_SELECTOR: LazyLock<scraper::Selector> =
+        LazyLock::new(|| scraper::Selector::parse("div.tgme_widget_message").unwrap());
+    static TG_WEB_USER_SELECTOR: LazyLock<scraper::Selector> =
+        LazyLock::new(|| scraper::Selector::parse("div.tgme_widget_message_user > a").unwrap());
+    static TG_WEB_TIME_SELECTOR: LazyLock<scraper::Selector> = LazyLock::new(|| {
+        scraper::Selector::parse("a.tgme_widget_message_date > time.time").unwrap()
+    });
+    static TG_WEB_TEXT_SELECTOR: LazyLock<scraper::Selector> =
+        LazyLock::new(|| scraper::Selector::parse("div.tgme_widget_message_text").unwrap());
+
+    let channel_id = match channel.rsplit_once('/') {
+        Some(("https://t.me/s" | "https://t.me", channel_id)) => channel_id.to_owned(),
+        Some((_, _)) => {
+            tracing::warn!("Unexpected url: {channel} (should be https://t.me/s/[channel_id])");
+            return;
+        }
+        None => channel.trim_start_matches('@').to_owned(),
+    };
+    let url = format!("https://t.me/s/{channel_id}");
+
+    tracing::info!(target: "mining::tg_channel", id=channel_id, "Start downloading");
+    // tracing::info!(target: "mining::v2ray_subs", id=channel_id, "Start fetching channel");
+
+    let Ok(_permit) = limit.acquire().await else {
+        return;
+    };
+
+    let fetch_fn = async move || -> reqwest::Result<Bytes> {
+        let data = client
+            .get(url.as_str())
+            .send()
+            .await?
+            .error_for_status()?
+            .bytes()
+            .await?;
+        Ok(data)
+    };
+
+    let data = match tokio::time::timeout(timeout, fetch_fn()).await {
+        Ok(Err(e)) => {
+            _ = sender.send(TgEvent::Failure(channel_id.into(), e)).await;
+            return;
+        }
+        Err(_) => {
+            _ = sender.send(TgEvent::Timeout(channel_id.into())).await;
+            return;
+        }
+        Ok(Ok(resp)) => resp,
+    };
+    let text = String::from_utf8_lossy(&data).into_owned();
+
+    tracing::info!(target: "mining::tg_channel", id=channel_id, "Downloaded");
+    tracing::info!(target: "mining::tg_channel", id=channel_id, "Start parsing");
+
+    let Ok((channel_id, counter)) = tokio::task::spawn_blocking(move || {
+        let text = text;
+        let html = scraper::Html::parse_document(&text);
+
+        let mut counter = 0;
+
+        for msg in html.select(&TG_WEB_MESSAGE_SELECTOR) {
+            let msg =  if let Some(msg_text) = msg.select(&TG_WEB_TEXT_SELECTOR).next()
+                .and_then(|msg_text| {
+                    let mut areas: Vec<String> = Vec::new();
+                    for piece in msg_text.text() {
+                        if areas.is_empty() {
+                            areas.push(String::new());
+                            continue;
+                        }
+
+                        if let Some((possible_schema, _)) = piece.split_once("://")
+                        && let Some((split_pos, _)) = possible_schema.char_indices().rev().take_while(|c|c.1.is_ascii_alphanumeric()).last() {
+                            let (before_schema, after_schema) = piece.split_at(split_pos);
+                            areas.last_mut().expect("Should never fail, due to first insertion").push_str(before_schema);
+                            areas.push(after_schema.into());
+                        } else {
+                            areas.last_mut().expect("Should never fail, due to first insertion").push_str(piece);
+                        }
+                    }
+
+                    match areas.len() {
+                        0 => None,
+                        1 => areas.pop(),
+                        _ => Some(areas.join("\n")),
+                    }
+                })
+            // Extract user
+            && let Some((_, user)) = msg.select(&TG_WEB_USER_SELECTOR).next()
+                .and_then(|user| user.attr("href"))
+                .and_then(|user| user.rsplit_once('/'))
+            // Extract time
+            &&  let Some(time) = msg.select(&TG_WEB_TIME_SELECTOR).next()
+                .and_then(|time| time.attr("datetime"))
+                .and_then(|time| DateTime::parse_from_rfc3339(time).inspect_err(
+                    |e| tracing::warn!(target: "mining::tg_channel", id=channel_id, "Failed to parse time: {e}"),
+                ).map(|dt|dt.to_utc()).ok())
+            // Extract message id
+            && let Some(msg_id) = msg.attr("data-post")
+                .and_then(|msg_id| msg_id.rsplit_once('/'))
+                .and_then(|(_, msg_id)| u32::from_str(msg_id).inspect_err(
+                    |e| tracing::warn!(target: "mining::tg_channel", id=channel_id, "Failed to parse message id: {e}"),
+                ).ok()) {
+                TgWebMessage {
+                    user: user.into(),
+                    time,
+                    msg_id,
+                    msg_text: msg_text.into()
+                }
+            } else {
+                continue;
+            };
+
+            if sender.blocking_send(
+                TgEvent::Message(msg)
+            ).is_ok() {
+                counter += 1;
+            } else {
+                tracing::warn!(target: "mining::tg_channel", id=channel_id, "Failed to send message");
+                break;
+            }
+
+
+        }
+
+
+        (channel_id, counter)
+    }).await else {
+        return
+    };
+
+    if counter == 0 {
+        tracing::warn!(target: "mining::tg_channel", id=channel_id, "No messages found");
+    } else {
+        tracing::info!(target: "mining::tg_channel", id=channel_id, "Parsed {} messages", counter);
+    }
+}
+
+pub fn fetch_tg_channels<I, S>(
+    client: reqwest::Client,
+    parallel: usize,
+    channels: I,
+    timeout: Duration,
+) -> impl Stream<Item = TgWebMessage>
+where
+    S: AsRef<str> + Send + 'static,
+    I: Iterator<Item = S> + Send + 'static,
+{
+    let limit = Arc::new(tokio::sync::Semaphore::new(parallel));
+    let (tx, rx) = tokio::sync::mpsc::channel(1024);
+
+    let channels = channels.into_iter().map(|s| s.as_ref().to_owned());
+
+    let mut task_group = JoinSet::new();
+    for channel in channels {
+        let client = client.clone();
+        let tx = tx.clone();
+        let limit = limit.clone();
+
+        task_group.spawn(async move {
+            fetch_tg_channel(client, channel.as_ref(), tx, limit, timeout).await
+        });
+    }
+    drop(tx);
+
+    TgWebMessageStream {
+        receiver: rx,
+        join_set: task_group,
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct TimestampedUrl {
@@ -21,6 +251,7 @@ pub struct TimestampedUrl {
 pub struct TimestampedProxy {
     pub urlx: UrlX,
     pub timestamp: String,
+    pub source_url: String,
 }
 
 pub async fn fetch_all_channels(
@@ -156,6 +387,7 @@ async fn fetch_channel(
                         proxies.push(TimestampedProxy {
                             urlx,
                             timestamp: timestamp.clone(),
+                            source_url: channel_url.to_string(),
                         });
                     }
 
@@ -168,4 +400,86 @@ async fn fetch_channel(
     }
 
     Ok((urls, proxies))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn test_fetch_tg_channel() -> anyhow::Result<()> {
+        tracing_subscriber::fmt().compact().init();
+
+        let client = reqwest::Client::builder().user_agent(
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/237.84.2.178 Safari/537.36",
+        ).build()?;
+
+        let mut tg_messages = fetch_tg_channels(
+            client,
+            8,
+            [
+                "ARv2ray",
+                "Alfred_Config",
+                "Baraye_azadi_Info",
+                "BmFt1",
+                "Capital_NET",
+                "Capoit",
+                "CloudCityy",
+                "ConfigV2rayNG",
+                "Configforvpn01",
+                "ConfigsHUB2",
+                "v2ray_configs_pool",
+            ]
+            .into_iter(),
+            Duration::from_secs(10),
+        );
+
+        let mut per_channel = BTreeMap::<TinyText, Vec<(DateTime<Utc>, TinyText, TinyText)>>::new();
+
+        while let Some(msg) = tg_messages.next().await {
+            for line in msg.msg_text.lines() {
+                if let Some((
+                    schema @ ("vless" | "vmess" | "ss" | "ssr" | "trojan" | "hy2" | "hysteria2"
+                    | "hysteria" | "hy" | "warp" | "anytls" | "tuic"),
+                    _,
+                )) = line.split_once("://")
+                {
+                    per_channel.entry(msg.user.clone()).or_default().push((
+                        msg.time,
+                        schema.into(),
+                        line.into(),
+                    ));
+                } else if let Some((schema @ "https", body)) = line.split_once("://")
+                    && body.starts_with("t.me/proxy?")
+                {
+                    per_channel.entry(msg.user.clone()).or_default().push((
+                        msg.time,
+                        schema.into(),
+                        line.into(),
+                    ));
+                }
+            }
+        }
+
+        let total = per_channel.values().map(|v| v.len()).sum::<usize>();
+
+        eprintln!(
+            "+{:=^100}\n| Alive channels ({} total):\n+{:=^100}",
+            "", total, ""
+        );
+        for (c, lines) in per_channel {
+            eprintln!("{:=^100}\n{}: {}\n{:-^100}", "", c, lines.len(), "");
+            for (time, schema, line) in lines {
+                eprintln!("- [{}] <{}> {}", time, schema, line);
+            }
+        }
+        eprintln!(
+            "+{:=^100}\n| Alive channels ({} total):\n+{:=^100}",
+            "", total, ""
+        );
+
+        Ok(())
+    }
 }
