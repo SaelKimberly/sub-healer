@@ -52,18 +52,21 @@ memchr = { version = "*" }
 
 serde = { version = "*", features = ["derive"] }
 serde_json = { version = "*" }
+simd-json = { version = "*" }
 
 rapidhash = { version = "*" }
+chrono = { version = "*", features = ["serde", "clock"] }
 
 reqwest = { version = "*", features = ["stream"] }
 scraper = { version = "*" }
 regex = { version = "*" }
 yaml-rust2 = { version = "*" }
 mimalloc = { version = "*" }
-smartstring = { version = "*" }
+smartstring = { version = "*", features = ["serde"] }
 rayon = { version = "*" }
 rustc-hash = { version = "*" }
 rusqlite = { version = "*", features = ["bundled"] }
 htmlize = { version = "1.1.0", features = ["entities", "unescape_fast"] }
+ego-tree = { version = "*" }
 
 [dev-dependencies]
