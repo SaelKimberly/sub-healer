@@ -5,8 +5,7 @@ use crate::UrlX;
 
 pub const SCHEMA_SOURCES: &str = r#"
 CREATE TABLE IF NOT EXISTS sources (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    url_hash TEXT UNIQUE NOT NULL,
+    id INTEGER PRIMARY KEY,
     url TEXT NOT NULL
 );
 "#;
@@ -89,23 +88,21 @@ pub fn init_db(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-fn hash_source_url(url: &str) -> String {
+fn hash_source_url(url: &str) -> i64 {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
     let mut hasher = DefaultHasher::new();
     url.hash(&mut hasher);
-    format!("{:016x}", hasher.finish())
+    hasher.finish() as i64
 }
 
 pub fn upsert_source(conn: &Connection, url: &str) -> Result<i64> {
-    let url_hash = hash_source_url(url);
+    let url_id = hash_source_url(url);
 
     let existing: Option<i64> = conn
-        .query_row(
-            "SELECT id FROM sources WHERE url_hash = ?1",
-            [&url_hash],
-            |row| row.get(0),
-        )
+        .query_row("SELECT id FROM sources WHERE id = ?1", [url_id], |row| {
+            row.get(0)
+        })
         .ok();
 
     if let Some(id) = existing {
@@ -113,10 +110,10 @@ pub fn upsert_source(conn: &Connection, url: &str) -> Result<i64> {
     }
 
     conn.execute(
-        "INSERT INTO sources (url_hash, url) VALUES (?1, ?2)",
-        params![url_hash, url],
+        "INSERT INTO sources (id, url) VALUES (?1, ?2)",
+        params![url_id, url],
     )?;
-    Ok(conn.last_insert_rowid())
+    Ok(url_id)
 }
 
 #[derive(Serialize, Deserialize)]
