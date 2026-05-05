@@ -33,7 +33,7 @@ pub struct TgWebMessage {
     pub user: TinyText,
     pub time: DateTime<Utc>,
     pub msg_id: u32,
-    pub msg_urls: Arc<[String]>,
+    pub msg_urls: Option<Arc<[String]>>,
 }
 
 enum TgEvent {
@@ -83,141 +83,161 @@ impl Stream for TgWebMessageStream {
 
 /// Parse a single message
 #[inline]
-fn parse_message(channel_id: &str, msg_id: u32, msg: ElementRef<'_>) -> Option<TgWebMessage> {
-    let mut msg_text = msg.select(&TG_WEB_TEXT_SELECTOR).next()?.traverse();
+fn parse_message(channel_id: &str, msg_id: u32, msg: ElementRef<'_>) -> TgWebMessage {
+    fn extract_urls(channel_id: &str, msg: ElementRef<'_>) -> Option<Arc<[String]>> {
+        let mut msg_text = msg.select(&TG_WEB_TEXT_SELECTOR).next()?.traverse();
 
-    let mut msg_tail = Option::<&str>::None;
+        let mut msg_tail = Option::<&str>::None;
 
-    let mut msg_urls = Vec::<String>::new();
-    {
-        let mut is_found: bool = false;
+        let mut msg_urls = Vec::<String>::new();
+        {
+            let mut is_found: bool = false;
 
-        let mut curr_url = msg_urls.push_mut(String::new());
-        loop {
-            // while let Some(chunk) = msg_tail.or_else(|| msg_text.next()) {
-            let chunk = if let Some(tail) = msg_tail {
-                tail
-            } else if let Some(edge) = msg_text.next() {
-                if let Edge::Open(node) = edge {
-                    match node.value() {
-                        Node::Text(t) => t.as_ref(),
-                        Node::Element(e) if e.name() == "br" => "\n",
-                        _ => {
-                            continue;
+            let mut curr_url = msg_urls.push_mut(String::new());
+            loop {
+                // while let Some(chunk) = msg_tail.or_else(|| msg_text.next()) {
+                let chunk = if let Some(tail) = msg_tail {
+                    tail
+                } else if let Some(edge) = msg_text.next() {
+                    if let Edge::Open(node) = edge {
+                        match node.value() {
+                            Node::Text(t) => t.as_ref(),
+                            Node::Element(e) if e.name() == "br" => "\n",
+                            _ => {
+                                continue;
+                            }
                         }
+                    } else {
+                        continue;
                     }
                 } else {
-                    continue;
-                }
-            } else {
-                break;
-            };
-            // 1: If we are already in URL, we should append to it
-            if is_found {
-                if let Some((eof, new_tail)) = chunk.split_once('\n') {
-                    // 1.1 If we found a new line, there is an EOF
-                    // - Save the tail
-                    if !new_tail.is_empty() {
-                        msg_tail = Some(new_tail);
+                    break;
+                };
+                // 1: If we are already in URL, we should append to it
+                if is_found {
+                    if let Some((eof, new_tail)) = chunk.split_once('\n') {
+                        // 1.1 If we found a new line, there is an EOF
+                        // - Save the tail
+                        if !new_tail.is_empty() {
+                            msg_tail = Some(new_tail);
+                        }
+                        // - Set is_found to false
+                        is_found = false;
+                        // - Append eof to the current URL
+                        if !eof.is_empty() {
+                            curr_url.push_str(eof);
+                        }
+                        // - Start a new URL
+                        curr_url = msg_urls.push_mut(String::new());
+                    } else {
+                        // 1.2 If we did not found a new line, there is no EOF
+                        // - Append to the current URL
+                        curr_url.push_str(chunk);
                     }
-                    // - Set is_found to false
-                    is_found = false;
-                    // - Append eof to the current URL
-                    if !eof.is_empty() {
-                        curr_url.push_str(eof);
-                    }
-                    // - Start a new URL
-                    curr_url = msg_urls.push_mut(String::new());
-                } else {
-                    // 1.2 If we did not found a new line, there is no EOF
-                    // - Append to the current URL
-                    curr_url.push_str(chunk);
-                }
-            } else if let Some((schema, rest)) = chunk.split_once("://") {
-                let schema: &'static str = match schema.trim_start().to_ascii_lowercase().as_str() {
-                    "vless" => "vless",
-                    "vmess" => "vmess",
-                    "trojan" => "trojan",
-                    "warp" => "warp",
-                    "ss" | "shadowsocks" => "ss",
-                    "ssr" | "shadowsocksr" => "ssr",
-                    "anytls" => "anytls",
-                    "slipnet" => "slipnet",
-                    "slipnet-enc" => "slipnet-enc",
-                    "hy" | "hhy" | "hysteria" | "hhysteria" => "hy",
-                    "hy2" | "hhy2" | "hysteria2" | "hhysteria2" => "hy2",
-                    "https"
-                        if rest.starts_with("t.me/socks?") | rest.starts_with("t.me/proxy?") =>
-                    {
-                        "https"
-                    }
-                    "tg" => "tg",
-                    "wireguard" => "wireguard",
-                    other => {
-                        tracing::warn!(
+                } else if let Some((schema, rest)) = chunk.split_once("://") {
+                    let schema: &'static str =
+                        match schema.trim_start().to_ascii_lowercase().as_str() {
+                            "vless" => "vless",
+                            "vmess" => "vmess",
+                            "trojan" => "trojan",
+                            "warp" => "warp",
+                            "ss" | "shadowsocks" => "ss",
+                            "ssr" | "shadowsocksr" => "ssr",
+                            "anytls" => "anytls",
+                            "slipnet" => "slipnet",
+                            "slipnet-enc" => "slipnet-enc",
+                            "hy" | "hhy" | "hysteria" | "hhysteria" => "hy",
+                            "hy2" | "hhy2" | "hysteria2" | "hhysteria2" => "hy2",
+                            "https"
+                                if rest.starts_with("t.me/socks?")
+                                    | rest.starts_with("t.me/proxy?") =>
+                            {
+                                "https"
+                            }
+                            "tg" => "tg",
+                            "wireguard" => "wireguard",
+                            other => {
+                                tracing::warn!(
                             target: "mining::tg_channel",
                             id = channel_id,
                             "Skip URL: [{other}://{}]",rest.trim_end());
-                        continue;
-                    }
-                };
-                curr_url.push_str(schema);
-                curr_url.push_str("://");
-                // 2: If we found a schema, we should start a new URL
-                // - Set is_found to true
-                if let Some((eof, new_tail)) = rest.split_once('\n') {
-                    // 2.1 If we found a new line, there is an EOF
-                    // - Save the tail
-                    if !new_tail.is_empty() {
-                        msg_tail = Some(new_tail);
-                    }
-                    // - Set is_found to false
-                    is_found = false;
-                    // - Append eof to the current URL
-                    curr_url.push_str(eof);
-                    // - Start a new URL
-                    curr_url = msg_urls.push_mut(String::new());
-                } else {
-                    // 2.2 If we did not found a new line, there is a beginning of URL
+                                continue;
+                            }
+                        };
+                    curr_url.push_str(schema);
+                    curr_url.push_str("://");
+                    // 2: If we found a schema, we should start a new URL
                     // - Set is_found to true
-                    is_found = true;
+                    if let Some((eof, new_tail)) = rest.split_once('\n') {
+                        // 2.1 If we found a new line, there is an EOF
+                        // - Save the tail
+                        if !new_tail.is_empty() {
+                            msg_tail = Some(new_tail);
+                        }
+                        // - Set is_found to false
+                        is_found = false;
+                        // - Append eof to the current URL
+                        curr_url.push_str(eof);
+                        // - Start a new URL
+                        curr_url = msg_urls.push_mut(String::new());
+                    } else {
+                        // 2.2 If we did not found a new line, there is a beginning of URL
+                        // - Set is_found to true
+                        is_found = true;
 
-                    // - Append schema and rest to the current URL
-                    curr_url.push_str(rest);
+                        // - Append schema and rest to the current URL
+                        curr_url.push_str(rest);
+                    }
                 }
             }
         }
-    }
 
-    msg_urls.retain_mut(|s| {
-        if s.is_empty() || s.ends_with('…') || s.ends_with("…»") {
-            false
-        } else {
-            if let Some((i, _)) = s.char_indices().rev().take_while(|(_, c)| *c == '`').last() {
-                s.truncate(i);
+        msg_urls.retain_mut(|s| {
+            if s.is_empty() || s.ends_with('…') || s.ends_with("…»") {
+                false
+            } else {
+                if let Some((i, _)) = s.char_indices().rev().take_while(|(_, c)| *c == '`').last() {
+                    s.truncate(i);
+                }
+                true
             }
-            true
+        });
+
+        if msg_urls.is_empty() {
+            None
+        } else {
+            Some(Arc::from(msg_urls.as_slice()))
         }
-    });
+    }
 
     let user = msg
         .select(&TG_WEB_USER_SELECTOR)
-        .next()?
-        .attr("href")?
-        .rsplit_once('/')?
+        .next()
+        .expect("Should be presented on every message")
+        .attr("href")
+        .expect("Should be presented for user")
+        .rsplit_once('/')
+        .expect("Always presented")
         .1;
 
-    let time = msg.select(&TG_WEB_TIME_SELECTOR).next()?.attr("datetime")?;
-    let time =DateTime::parse_from_rfc3339(time).inspect_err(
-            |e| tracing::warn!(target: "mining::tg_channel", id=channel_id, "Failed to parse time: {e}"),
-        ).ok()?.to_utc();
+    let time = msg
+        .select(&TG_WEB_TIME_SELECTOR)
+        .next()
+        .expect("Should be presented on every message")
+        .attr("datetime")
+        .expect("Should be presented for time");
 
-    Some(TgWebMessage {
+    let time = match DateTime::parse_from_rfc3339(time).map(|dt| dt.to_utc()) {
+        Ok(time) => time,
+        Err(e) => panic!("Failed to parse time: {e}"),
+    };
+
+    TgWebMessage {
         user: user.into(),
         time,
         msg_id,
-        msg_urls: Arc::from(msg_urls.as_slice()),
-    })
+        msg_urls: extract_urls(channel_id, msg),
+    }
 }
 
 struct TgChannelFetch {
@@ -353,9 +373,7 @@ impl TgChannelFetch {
                     };
                     _ = first_id.get_or_insert(msg_id);
 
-                    let Some(msg) = parse_message(&channel_id, msg_id, msg) else {
-                        continue;
-                    };
+                    let msg = parse_message(&channel_id,msg_id, msg);
 
                     if backfill.is_some_and(|backfill| msg.time < backfill) {
                         has_older = true;
@@ -369,7 +387,7 @@ impl TgChannelFetch {
                     }
                 }
 
-                if !has_older && let Some(backfill) = backfill && let Some(first_id) = first_id
+                if !has_older && let Some(backfill) = backfill && let Some(first_id @ 2..) = first_id
                     && sender.blocking_send(TgEvent::Backfill(TgChannelFetch {
                         client: client.clone(),
                         channel: channel_id.clone(),
@@ -513,13 +531,13 @@ mod tests {
         let mut per_channel = BTreeMap::<TinyText, Vec<(DateTime<Utc>, TinyText, String)>>::new();
 
         while let Some(msg) = tg_messages.next().await {
-            if msg.msg_urls.is_empty() {
+            let Some(msg_urls) = msg.msg_urls.as_deref() else {
                 continue;
-            }
+            };
             per_channel
                 .entry(msg.user)
                 .or_default()
-                .extend(msg.msg_urls.iter().map(|msg_url| {
+                .extend(msg_urls.iter().map(|msg_url| {
                     let (schema, _) = msg_url.split_once("://").expect("Should be a schema");
                     (msg.time, schema.into(), msg_url.clone())
                 }));
