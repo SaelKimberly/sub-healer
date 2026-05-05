@@ -395,14 +395,14 @@ impl TgChannelFetch {
 }
 
 pub enum Backfill {
-    AllAfter(DateTime<Utc>),
+    Upto(DateTime<Utc>),
     Last(TimeDelta),
 }
 
 impl Backfill {
     pub fn to_min_datetime(&self) -> DateTime<Utc> {
         match self {
-            Backfill::AllAfter(datetime) => *datetime,
+            Backfill::Upto(datetime) => *datetime,
             Backfill::Last(time) => Utc::now() - *time,
         }
     }
