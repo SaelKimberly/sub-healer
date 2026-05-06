@@ -13,8 +13,6 @@ use tokio::task::JoinSet;
 
 use crate::urlx::TinyText;
 
-const CONCURRENT_FETCH: usize = 32;
-
 /// Selector for outer message container
 static TG_WEB_MESSAGE_SELECTOR: LazyLock<scraper::Selector> =
     LazyLock::new(|| scraper::Selector::parse("div.tgme_widget_message").unwrap());
@@ -33,7 +31,7 @@ pub struct TgWebMessage {
     pub user: TinyText,
     pub time: DateTime<Utc>,
     pub msg_id: u32,
-    pub msg_urls: Option<Arc<[String]>>,
+    pub msg_urls: Option<Box<[String]>>,
 }
 
 enum TgEvent {
@@ -84,7 +82,7 @@ impl Stream for TgWebMessageStream {
 /// Parse a single message
 #[inline]
 fn parse_message(channel_id: &str, msg_id: u32, msg: ElementRef<'_>) -> TgWebMessage {
-    fn extract_urls(channel_id: &str, msg: ElementRef<'_>) -> Option<Arc<[String]>> {
+    fn extract_urls(channel_id: &str, msg: ElementRef<'_>) -> Option<Box<[String]>> {
         let mut msg_text = msg.select(&TG_WEB_TEXT_SELECTOR).next()?.traverse();
 
         let mut msg_tail = Option::<&str>::None;
@@ -206,7 +204,7 @@ fn parse_message(channel_id: &str, msg_id: u32, msg: ElementRef<'_>) -> TgWebMes
         if msg_urls.is_empty() {
             None
         } else {
-            Some(Arc::from(msg_urls.as_slice()))
+            Some(Box::from(msg_urls.as_slice()))
         }
     }
 
