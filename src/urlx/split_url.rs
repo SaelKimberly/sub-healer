@@ -5,13 +5,24 @@ use bstr::ByteSlice;
 
 use super::{HostSpec, PortSpec, SchemeX, TinyText};
 
+/// Raw Url (no parsing, just splitting to parts)
+///
+/// [schema]://userinfo[@channel]@[host:port]/[path]?[query]#[fragment]
+///
+/// Only 'userinfo' parameter is required (opposite to url::Url behaviour, where hostport is required)
 #[cfg_attr(test, derive(Debug))]
 pub struct RawUrlX<'a> {
+    /// `[schema]`
     pub schema: SchemeX,
+    /// `userinfo`
     pub userinfo: &'a str,
+    /// `[host:port]`
     pub hostport: Option<&'a str>,
+    /// `[/path]`
     pub path: Option<&'a str>,
+    /// `[query]`
     pub query: Option<&'a str>,
+    /// `[fragment]`
     pub fragment: Option<&'a str>,
 }
 
