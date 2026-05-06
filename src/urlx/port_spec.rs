@@ -1,7 +1,5 @@
 use std::{ops::Range, str::FromStr};
 
-use nom::{IResult, multi::separated_list1, sequence::separated_pair};
-
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub enum PortDecl {
     Single(u16),
