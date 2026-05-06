@@ -1,4 +1,4 @@
-use std::{borrow::Cow, collections::HashMap, hint::cold_path};
+use std::{borrow::Cow, hint::cold_path};
 
 use base64::Engine;
 use bstr::ByteSlice;
@@ -79,7 +79,7 @@ impl<'a> RawUrlX<'a> {
     /// assert_eq!(userinfo, b"userinfo");
     /// ```
     pub fn userinfo(&self, expect_b64: bool) -> Result<Cow<'a, [u8]>, base64::DecodeError> {
-        Self::userinfo_smart(&self, |_| expect_b64)
+        Self::userinfo_smart(self, |_| expect_b64)
     }
 
     pub fn userinfo_smart(
@@ -269,13 +269,11 @@ impl<'a> RawUrlX<'a> {
         // * ==============================
         // * [channel]@[host:port] <-split-> [/path]
         // * ==============================
-        let path = if let Some(pos) = unparsed.find('/') {
+        let path = unparsed.find('/').map(|pos| {
             let (rest, path) = unparsed.split_at(pos);
             unparsed = rest;
-            Some(path)
-        } else {
-            None
-        };
+            path
+        });
 
         // ? 6. Remove channel
         // * ==============================
