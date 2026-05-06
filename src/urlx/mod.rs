@@ -22,12 +22,12 @@ pub struct UrlX {
     schema: SchemeX,
 
     /// host (may be included in username, always present)
-    #[serde(with = "host_serde")]
-    host: HostSpec,
+    #[serde(default, with = "host_serde")]
+    host: Option<HostSpec>,
 
     /// port (may be included in username, always present)
-    #[serde(with = "port_serde")]
-    port: PortSpec,
+    #[serde(default, with = "port_serde")]
+    port: Option<PortSpec>,
 
     /// username part (always present)
     username: TinyText,
@@ -59,11 +59,10 @@ impl UrlX {
             self.query
                 .iter()
                 .map(|(k, v)| {
-                    if let Some(v) = v {
-                        format!("{}={}", k, urlencoding::encode(v))
-                    } else {
-                        format!("{}=", k)
-                    }
+                    v.as_ref().map_or_else(
+                        || format!("{}=", k),
+                        |v| format!("{}={}", k, urlencoding::encode(v)),
+                    )
                 })
                 .collect::<Vec<_>>()
                 .join("&")

@@ -6,24 +6,32 @@ pub(super) mod host_serde {
 
     use serde::{Deserialize, Serialize};
 
-    pub fn deserialize<'de, D>(d: D) -> Result<super::HostSpec, D::Error>
+    pub fn deserialize<'de, D>(d: D) -> Result<Option<super::HostSpec>, D::Error>
     where
         D: serde::Deserializer<'de>,
     {
-        let s = super::TinyText::deserialize(d)?;
-        Ok(rustls::pki_types::ServerName::try_from(s.as_str())
-            .map_err(|e| serde::de::Error::custom(format!("invalid server name: {e}")))?
-            .to_owned())
+        let Some(s) = Option::<super::TinyText>::deserialize(d)? else {
+            return Ok(None);
+        };
+
+        let s = rustls::pki_types::ServerName::try_from(s.as_str())
+            .map_err(|e| serde::de::Error::custom(format!("invalid server name: {e}")))?;
+
+        Ok(Some(s.to_owned()))
     }
 
-    pub fn serialize<S>(v: &super::HostSpec, s: S) -> Result<S::Ok, S::Error>
+    pub fn serialize<S>(v: &Option<super::HostSpec>, s: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
     {
-        let Cow::Owned(text) = v.to_str() else {
-            unreachable!()
-        };
-        <String as Serialize>::serialize(&text, s)
+        v.as_ref()
+            .map(|v| {
+                let Cow::Owned(v) = v.to_str() else {
+                    unreachable!();
+                };
+                v
+            })
+            .serialize(s)
     }
 }
 
@@ -31,19 +39,23 @@ pub(super) mod host_serde {
 pub(super) mod port_serde {
     use serde::{Deserialize, Serialize};
 
-    pub fn deserialize<'de, D>(d: D) -> Result<super::PortSpec, D::Error>
+    pub fn deserialize<'de, D>(d: D) -> Result<Option<super::PortSpec>, D::Error>
     where
         D: serde::Deserializer<'de>,
     {
-        let s = super::TinyText::deserialize(d)?;
-        s.parse()
-            .map_err(|e| serde::de::Error::custom(format!("invalid port number: {e}")))
+        let Some(s) = Option::<super::TinyText>::deserialize(d)? else {
+            return Ok(None);
+        };
+        let s = s
+            .parse()
+            .map_err(|e| serde::de::Error::custom(format!("invalid port number: {e}")))?;
+        Ok(Some(s))
     }
 
-    pub fn serialize<S>(v: &super::PortSpec, s: S) -> Result<S::Ok, S::Error>
+    pub fn serialize<S>(v: &Option<super::PortSpec>, s: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
     {
-        <String as Serialize>::serialize(&v.to_string(), s)
+        v.as_ref().map(|v| v.to_string()).serialize(s)
     }
 }
