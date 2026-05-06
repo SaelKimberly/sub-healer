@@ -1,5 +1,4 @@
 mod parse_url;
-mod parsed;
 mod port_spec;
 mod schemex;
 mod serde_util;
@@ -17,33 +16,36 @@ pub use split_url::RawUrlX;
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct UrlX {
-    hashsum: u64,
+    /// hash of unique connection-defining url components
+    pub(crate) uid: u64,
+    /// hash of unique connection-defining url components (without specific host and port)
+    pub(crate) sig: u64,
 
-    schema: SchemeX,
+    pub(crate) schema: SchemeX,
 
     /// host (may be included in username, always present)
     #[serde(default, with = "host_serde")]
-    host: Option<HostSpec>,
+    pub(crate) host: Option<HostSpec>,
 
     /// port (may be included in username, always present)
     #[serde(default, with = "port_serde")]
-    port: Option<PortSpec>,
+    pub(crate) port: Option<PortSpec>,
 
     /// username part (always present)
-    username: TinyText,
+    pub(crate) username: TinyText,
     /// password (also, identity for protocols with encoded username)
-    password: Option<TinyText>,
+    pub(crate) password: Option<TinyText>,
     /// path
-    path: Option<TinyText>,
+    pub(crate) path: Option<TinyText>,
     /// query
-    query: Vec<(TinyText, Option<TinyText>)>,
+    pub(crate) query: Vec<(TinyText, Option<TinyText>)>,
     /// fragment
-    fragment: Option<TinyText>,
+    pub(crate) fragment: Option<TinyText>,
 
     /// detected transport (metadata)
-    transport: Option<TinyText>,
+    pub(crate) transport: Option<TinyText>,
     /// detected security (metadata)
-    security: Option<TinyText>,
+    pub(crate) security: Option<TinyText>,
 }
 
 impl UrlX {
