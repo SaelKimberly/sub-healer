@@ -1,3 +1,7 @@
+use std::{str::FromStr, sync::LazyLock};
+
+use aho_corasick::AhoCorasick;
+
 use super::TinyText;
 
 #[derive(Debug, Clone, Hash, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -13,7 +17,11 @@ pub enum SchemeX {
     TUIC,
     Warp,
     AnyTLS,
-    MTProto,
+    Https,
+    Tg,
+    SlipnetEnc,
+    Slipnet,
+    WireGuard,
     Unknown(TinyText),
 }
 impl SchemeX {
@@ -29,91 +37,61 @@ impl SchemeX {
             Self::TUIC => "tuic",
             Self::Warp => "warp",
             Self::AnyTLS => "anytls",
-            Self::MTProto => "http",
+            Self::Https => "https",
+            Self::Tg => "tg",
+            Self::Slipnet => "slipnet",
+            Self::SlipnetEnc => "slipnet-enc",
+            Self::WireGuard => "wireguard",
             Self::Unknown(s) => s.as_str(),
         }
     }
 
-    pub fn slice_input<'a>(s: &'a str) -> Vec<(SchemeX, &'a str)> {
-        static KNOWN_SCHEMAS: &[&str] = &[
-            "vless://",
-            "vmess://",
-            "trojan://",
-            "hhysteria2://",
-            "hhysteria://",
-            "hysteria2://",
-            "hysteria://",
-            "hy2://",
-            "hy://",
-            "warp://",
-            "anytls://",
-            "ss://",
-            "ssr://",
-            "https://",
-        ];
+    pub fn slice_input(s: &str) -> Vec<(Self, &str)> {
+        static SCHEMA_AC: LazyLock<AhoCorasick> = LazyLock::new(|| {
+            AhoCorasick::builder()
+                .ascii_case_insensitive(true)
+                .match_kind(aho_corasick::MatchKind::LeftmostFirst)
+                .build([
+                    "vless://",
+                    "vmess://",
+                    "trojan://",
+                    "hhysteria2://",
+                    "hhysteria://",
+                    "hysteria2://",
+                    "hysteria://",
+                    "hy2://",
+                    "hy://",
+                    "warp://",
+                    "anytls://",
+                    "ss://",
+                    "ssr://",
+                    "https://",
+                    "tg://",
+                    "slipnet://",
+                    "tuic://",
+                    "wireguard://",
+                    "slipnet-enc://",
+                ])
+                .unwrap()
+        });
 
-        let mut slice = Option::<(&'static str, &'a str)>::None;
-        let mut result = Vec::<(&'static str, &'a str)>::with_capacity(1);
+        let mut last = None;
 
-        // 1: Find first schema in line
-        if let Some(prefix) = s.split_inclusive("://").next() {
-            for schema in KNOWN_SCHEMAS {
-                if let Some(prefix) = prefix.strip_suffix(schema) {
-                    let s = if prefix.is_empty() {
-                        s
-                    } else {
-                        s.strip_prefix(prefix)
-                            .expect("Prefix is always a part of line")
-                    };
-                    slice.replace((schema, s));
-                    break;
-                }
+        let mut chunks = Vec::new();
+        for m in SCHEMA_AC.find_iter(s) {
+            let schema_area = s.get(m.range()).unwrap().split_once("://").unwrap().0;
+            let Ok(schema) = Self::from_str(schema_area);
+
+            if let Some((schema, begin)) = last.replace((schema, m.range().start)) {
+                let end = m.range().start;
+                chunks.push((schema, s.get(begin..end).unwrap()));
             }
         }
 
-        while let Some((schema, sx)) = slice.take() {
-            if sx.is_empty() || sx.len() < 5 {
-                result.push((schema, sx));
-                break;
-            }
-
-            // try to find another known schema in the area of current url (longest first)
-            let mut min_schema_pos = Option::<(usize, &'static str)>::None;
-
-            for s in KNOWN_SCHEMAS {
-                let idx = sx.floor_char_boundary(5);
-                let Some(pos) = sx[idx..].find(s).map(|p| p + idx) else {
-                    continue;
-                };
-                if let Some((current, found)) = min_schema_pos.as_mut() {
-                    if pos < *current {
-                        *current = pos;
-                        *found = s;
-                    }
-                } else {
-                    min_schema_pos = Some((pos, *s));
-                }
-            }
-
-            if let Some((min_schema_pos, another_schema)) = min_schema_pos {
-                let (prefix, schema_and_tail) = sx.split_at(min_schema_pos);
-                result.push((schema, prefix));
-                _ = slice.replace((another_schema, schema_and_tail));
-            } else {
-                result.push((schema, sx));
-                break;
-            }
+        if let Some((schema, begin)) = last.take() {
+            chunks.push((schema, s.get(begin..).unwrap()));
         }
-
-        result
-            .into_iter()
-            .map(|(schema, slice)| {
-                (
-                    <SchemeX as std::str::FromStr>::from_str(schema).unwrap(),
-                    slice,
-                )
-            })
-            .collect()
+        chunks
     }
 }
 
@@ -127,20 +105,59 @@ impl std::str::FromStr for SchemeX {
     type Err = std::convert::Infallible;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let r = match s.strip_suffix("://").unwrap_or(s) {
-            "vless" => SchemeX::Vless,
-            "vmess" => SchemeX::Vmess,
-            "shadowsocks" | "ss" => SchemeX::SS,
-            "ssr" => SchemeX::SSR,
-            "hhysteria2" | "hysteria2" | "hhy2" | "hy2" => SchemeX::Hysteria2,
-            "hhysteria" | "hysteria" | "hhy" | "hy" => SchemeX::Hysteria,
-            "trojan" => SchemeX::Trojan,
-            "tuic" => SchemeX::TUIC,
-            "warp" => SchemeX::Warp,
-            "anytls" => SchemeX::AnyTLS,
-            "https" => SchemeX::MTProto,
-            _ => SchemeX::Unknown(s.into()),
-        };
-        Ok(r)
+        macro_rules! checked_enum {
+            (
+                $input: expr,
+                $variant: ident => $pat: literal $(, $pat2: literal)*;
+                $($variant2: ident => $pat3: literal $(, $pat4:literal)*;)*
+            ) => {{
+                let scheme = match s.to_ascii_lowercase().as_str() {
+                    $pat $(| $pat2)* => Self::$variant,
+                    $($pat3 $(| $pat4)* => Self::$variant2,)*
+                    _ => Self::Unknown(s.into()),
+                };
+                #[cfg(test)]
+                match scheme { Self::$variant => (), $(Self::$variant2 => (),)* Self::Unknown(_) => (), }
+                scheme
+            }}
+        }
+
+        let scheme = checked_enum!(
+            s.strip_suffix("://").unwrap_or(s),
+            Vless => "vless";
+            Vmess => "vmess";
+            SS => "shadowsocks", "ss";
+            SSR => "ssr";
+            Hysteria2 => "hhysteria2", "hysteria2", "hhy2", "hy2";
+            Hysteria => "hhysteria", "hysteria", "hhy", "hy";
+            Trojan => "trojan";
+            TUIC => "tuic";
+            Warp => "warp";
+            AnyTLS => "anytls";
+            Https => "https";
+            Tg => "tg";
+            Slipnet => "slipnet";
+            SlipnetEnc => "slipnet-enc";
+            WireGuard => "wireguard";
+        );
+
+        Ok(scheme)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_slice_input() {
+        let input = include_str!("/home/user/oss/sub-healer/v2ray.txt");
+
+        let chunks = SchemeX::slice_input(input);
+        for (schema, c) in &chunks {
+            let c = c.lines().collect::<Vec<_>>().join("");
+            eprintln!("{schema:>15}| {c}");
+        }
+        eprintln!("Total: {}", chunks.len());
     }
 }

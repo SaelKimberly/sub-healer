@@ -68,5 +68,6 @@ rustc-hash = { version = "*" }
 rusqlite = { version = "*", features = ["bundled"] }
 htmlize = { version = "1.1.0", features = ["entities", "unescape_fast"] }
 ego-tree = { version = "*" }
+aho-corasick = { version = "*" }
 
 [dev-dependencies]
