@@ -2,7 +2,6 @@ use super::{HostSpec, PortSpec, TinyText};
 
 #[allow(dead_code)]
 pub(super) mod host_serde {
-    use std::borrow::Cow;
 
     use serde::{Deserialize, Serialize};
 
@@ -24,14 +23,7 @@ pub(super) mod host_serde {
     where
         S: serde::Serializer,
     {
-        v.as_ref()
-            .map(|v| {
-                let Cow::Owned(v) = v.to_str() else {
-                    unreachable!();
-                };
-                v
-            })
-            .serialize(s)
+        v.as_ref().map(|v| v.to_str()).serialize(s)
     }
 }
 
