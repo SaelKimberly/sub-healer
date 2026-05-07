@@ -8,6 +8,7 @@ mod valid_url;
 
 use serde_util::{host_serde, port_serde};
 
+pub(crate) use user_info::UserInfo;
 pub(crate) type TinyText = smartstring::SmartString<smartstring::LazyCompact>;
 pub(crate) type HostSpec = rustls::pki_types::ServerName<'static>;
 
@@ -20,6 +21,9 @@ pub struct UrlX {
     /// hash of unique connection-defining url components
     pub(crate) uid: u64,
     /// hash of unique connection-defining url components (without specific host and port)
+    /// useful for statistics about specific signature lifetime across the observed data:
+    /// - frequency of each signature per hour/day
+    /// - earliest and latest appearance of each signature
     pub(crate) sig: u64,
 
     pub(crate) schema: SchemeX,
@@ -33,7 +37,7 @@ pub struct UrlX {
     pub(crate) port: Option<PortSpec>,
 
     /// username part (always present)
-    pub(crate) username: TinyText,
+    pub(crate) username: UserInfo,
     /// password (also, identity for protocols with encoded username)
     pub(crate) password: Option<TinyText>,
     /// path
