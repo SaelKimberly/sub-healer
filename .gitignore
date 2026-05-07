@@ -1,1 +1,8 @@
 /target
+/__pycache__
+sub-healer.code-workspace
+.memelord/
+*.txt
+*.db
+*.db-journal
+opencode.json
