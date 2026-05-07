@@ -127,7 +127,7 @@ impl std::str::FromStr for SchemeX {
             Vless => "vless";
             Vmess => "vmess";
             SS => "shadowsocks", "ss";
-            SSR => "ssr";
+            SSR => "shadowsocksr", "ssr";
             Hysteria2 => "hhysteria2", "hysteria2", "hhy2", "hy2";
             Hysteria => "hhysteria", "hysteria", "hhy", "hy";
             Trojan => "trojan";
