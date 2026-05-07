@@ -3,6 +3,7 @@ mod port_spec;
 mod schemex;
 mod serde_util;
 mod split_url;
+mod user_info;
 mod valid_url;
 
 use serde_util::{host_serde, port_serde};
