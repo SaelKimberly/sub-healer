@@ -1,7 +1,8 @@
 mod error;
 pub mod mining;
 mod utils;
-pub mod db;
+
+pub mod urlx;
 
 use rustc_hash::FxHashSet;
 use std::borrow::Cow;
