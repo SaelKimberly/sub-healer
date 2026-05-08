@@ -2,6 +2,7 @@ use std::{borrow::Cow, hint::cold_path};
 
 use base64::Engine;
 use bstr::ByteSlice;
+use rustls::pki_types::ServerName;
 
 use super::{HostSpec, PortSpec, SchemeX, TinyText};
 
@@ -242,12 +243,62 @@ impl<'a> RawUrlX<'a> {
                 (userinfo, None)
             };
 
+            // ? Userinfo may be a URL without credentials
+            // * ==============================
+            // * [host[:port]]/[path]?[query]
+            // * ==============================
+            unparsed = userinfo;
+
+            // ?  Extract query
+            // * ==============================
+            // * [host[:port]]/[path] <-split-> ?[query]
+            // * ==============================
+            let query = if let Some((rest, query)) = unparsed.split_once('?') {
+                unparsed = rest;
+
+                (!query.is_empty()).then_some(query)
+            } else {
+                None
+            };
+
+            // ? Extract path
+            // * ==============================
+            // * [host[:port]] <-split-> [/path]
+            // * ==============================
+            let (rest, mut path) = if let Some(pos) = unparsed.find('/') {
+                let (rest, path) = unparsed.split_at(pos);
+                (rest, Some(path))
+            } else {
+                let rest = unparsed;
+                (rest, None)
+            };
+
+            let hostport = if let Ok(host) = {
+                let span = rest.as_bytes().into();
+                crate::utils::host_port::host_port_spec(span)
+                    .map(|(_, (h, _))| h)
+                    .or_else(|_| crate::utils::host_port::host(span).map(|(_, h)| h))
+            } && {
+                // DNS names without a dot are not allowed
+                if let ServerName::DnsName(ref n) = host {
+                    n.as_ref().contains('.')
+                } else {
+                    true
+                }
+            } {
+                unparsed = rest;
+                Some(unparsed)
+            } else {
+                _ = path.take();
+                None
+            };
+
             return Some(Self {
                 schema,
-                userinfo,
-                hostport: None,
-                path: None,
-                query: None,
+                userinfo: hostport.unwrap_or(unparsed),
+                hostport,
+                path,
+                query,
                 fragment,
             });
         };
