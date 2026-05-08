@@ -1,18 +1,13 @@
-use std::{
-    borrow::Cow,
-    collections::{BTreeMap, HashMap},
-    str::FromStr,
-};
+use std::{borrow::Cow, collections::BTreeMap};
 
 use base64::Engine;
 use bstr::ByteSlice;
-use nom::Err;
+use rusqlite::Name;
 use rustls::pki_types::ServerName;
-use serde_json::Value;
 
-use crate::urlx::{UserInfo, user_info::UserInfoEncoding};
+use crate::urlx::{HostSpec, PortSpec, UserInfo, user_info::UserInfoEncoding};
 
-use super::{HostSpec, PortSpec, RawUrlX, SchemeX, TinyText, UrlX};
+use super::{RawUrlX, SchemeX, TinyText, UrlX};
 
 #[derive(Debug, thiserror::Error)]
 pub enum ParseError {
@@ -433,17 +428,410 @@ fn _parse_ssr(raw: &Input) -> Output {
         fragment: remarks,
     }))
 }
-fn _parse_mtproto(raw: &Input) -> Output {
-    todo!()
-}
-
-// ==================================================
 
 fn _parse_vless(raw: &Input) -> Output {
-    todo!()
+    let (username, hostport) = if let Some(hostport) = raw.hostport {
+        let username = raw.userinfo;
+        (username, hostport)
+    } else {
+        let userinfo = raw.userinfo;
+        let (userinfo, hostport) = userinfo.split_once('@').ok_or_else(|| {
+            ParseError::InvalidUserInfo(format!("{}: missing hostport", userinfo).into())
+        })?;
+        (userinfo, hostport)
+    };
+
+    let (host, port) = _parse_hostport(hostport)?;
+    let uuid = uuid::Uuid::parse_str(username)
+        .map_err(|_| ParseError::InvalidUserInfo(format!("invalid UUID: {}", username).into()))?;
+
+    let query_string = raw.query.unwrap_or("");
+    let query_pairs: Vec<(TinyText, Option<TinyText>)> = if query_string.is_empty() {
+        vec![]
+    } else {
+        query_string
+            .split('&')
+            .filter_map(|s| {
+                if let Some((k, v)) = s.split_once('=') {
+                    if v.is_empty() {
+                        Some((TinyText::from(k), None))
+                    } else {
+                        Some((TinyText::from(k), Some(TinyText::from(v))))
+                    }
+                } else if !s.is_empty() {
+                    Some((TinyText::from(s), None))
+                } else {
+                    None
+                }
+            })
+            .collect()
+    };
+
+    let security = query_pairs
+        .iter()
+        .find(|(k, _)| k.as_str() == "security")
+        .map(|(_, v)| v.as_ref())
+        .flatten()
+        .map(|v| TinyText::from(v.as_str()))
+        .unwrap_or_else(|| "none".into());
+    let transport = query_pairs
+        .iter()
+        .find(|(k, _)| k.as_str() == "type")
+        .map(|(_, v)| v.as_ref())
+        .flatten()
+        .map(|v| TinyText::from(v.as_str()))
+        .unwrap_or_else(|| "tcp".into());
+    let path = query_pairs
+        .iter()
+        .find(|(k, _)| k.as_str() == "path")
+        .map(|(_, v)| v.as_ref())
+        .flatten()
+        .cloned();
+
+    let remarks = raw
+        .fragment
+        .map(urlencoding::decode)
+        .transpose()
+        .map_err(|e| ParseError::InvalidConf("remarks".into(), e.to_string().into()))?
+        .map(TinyText::from);
+
+    Ok(Some(UrlX {
+        uid: 0,
+        sig: 0,
+        schema: SchemeX::Vless,
+        username: super::UserInfo::Text(username.into(), super::user_info::UserInfoEncoding::URL),
+        password: Some(uuid.to_string().into()),
+        host: Some(host),
+        port: Some(port),
+        path: path,
+        query: query_pairs,
+        transport: Some(transport),
+        security: Some(security),
+        fragment: remarks,
+    }))
 }
 
-// fn parse(raw: &mut Input) -> Output {
+fn _parse_trojan(raw: &Input) -> Output {
+    let (username, hostport) = if let Some(hostport) = raw.hostport {
+        (raw.userinfo, hostport)
+    } else {
+        let userinfo = raw.userinfo;
+        let (username, hostport) = userinfo.split_once('@').ok_or_else(|| {
+            ParseError::InvalidUserInfo(format!("{}: missing hostport", userinfo).into())
+        })?;
+        (username, hostport)
+    };
+
+    let (host, port) = _parse_hostport(hostport)?;
+
+    let query_string = raw.query.unwrap_or("");
+    let query_pairs: Vec<(TinyText, Option<TinyText>)> = if query_string.is_empty() {
+        vec![]
+    } else {
+        query_string
+            .split('&')
+            .filter_map(|s| {
+                if let Some((k, v)) = s.split_once('=') {
+                    if v.is_empty() {
+                        Some((TinyText::from(k), None))
+                    } else {
+                        Some((TinyText::from(k), Some(TinyText::from(v))))
+                    }
+                } else if !s.is_empty() {
+                    Some((TinyText::from(s), None))
+                } else {
+                    None
+                }
+            })
+            .collect()
+    };
+
+    let security = query_pairs
+        .iter()
+        .find(|(k, _)| k.as_str() == "security")
+        .map(|(_, v)| v.as_ref())
+        .flatten()
+        .map(|v| TinyText::from(v.as_str()))
+        .unwrap_or_else(|| "tls".into());
+    let transport = query_pairs
+        .iter()
+        .find(|(k, _)| k.as_str() == "type")
+        .map(|(_, v)| v.as_ref())
+        .flatten()
+        .map(|v| TinyText::from(v.as_str()))
+        .unwrap_or_else(|| "tcp".into());
+    let path = query_pairs
+        .iter()
+        .find(|(k, _)| k.as_str() == "path")
+        .map(|(_, v)| v.as_ref())
+        .flatten()
+        .cloned();
+
+    let remarks = raw
+        .fragment
+        .map(urlencoding::decode)
+        .transpose()
+        .map_err(|e| ParseError::InvalidConf("remarks".into(), e.to_string().into()))?
+        .map(TinyText::from);
+
+    Ok(Some(UrlX {
+        uid: 0,
+        sig: 0,
+        schema: SchemeX::Trojan,
+        username: super::UserInfo::Text(username.into(), super::user_info::UserInfoEncoding::URL),
+        password: Some(username.into()),
+        host: Some(host),
+        port: Some(port),
+        path: path,
+        query: query_pairs,
+        transport: Some(transport),
+        security: Some(security),
+        fragment: remarks,
+    }))
+}
+
+fn _parse_hysteria2(raw: &Input) -> Output {
+    let (username, hostport) = if let Some(hostport) = raw.hostport {
+        (raw.userinfo, hostport)
+    } else {
+        let userinfo = raw.userinfo;
+        let (username, hostport) = userinfo.split_once('@').ok_or_else(|| {
+            ParseError::InvalidUserInfo(format!("{}: missing hostport", userinfo).into())
+        })?;
+        (username, hostport)
+    };
+
+    let (host, port) = _parse_hostport(hostport)?;
+
+    let query_string = raw.query.unwrap_or("");
+    let query_pairs: Vec<(TinyText, Option<TinyText>)> = if query_string.is_empty() {
+        vec![]
+    } else {
+        query_string
+            .split('&')
+            .filter_map(|s| {
+                if let Some((k, v)) = s.split_once('=') {
+                    if v.is_empty() {
+                        Some((TinyText::from(k), None))
+                    } else {
+                        Some((TinyText::from(k), Some(TinyText::from(v))))
+                    }
+                } else if !s.is_empty() {
+                    Some((TinyText::from(s), None))
+                } else {
+                    None
+                }
+            })
+            .collect()
+    };
+
+    let security = query_pairs
+        .iter()
+        .find(|(k, _)| k.as_str() == "security")
+        .map(|(_, v): &(TinyText, Option<TinyText>)| v.as_ref())
+        .flatten()
+        .map(|v| TinyText::from(v.as_str()))
+        .unwrap_or_else(|| "tls".into());
+
+    let remarks = raw
+        .fragment
+        .map(urlencoding::decode)
+        .transpose()
+        .map_err(|e| ParseError::InvalidConf("remarks".into(), e.to_string().into()))?
+        .map(TinyText::from);
+
+    Ok(Some(UrlX {
+        uid: 0,
+        sig: 0,
+        schema: SchemeX::Hysteria2,
+        username: super::UserInfo::Text(username.into(), super::user_info::UserInfoEncoding::URL),
+        password: Some(username.into()),
+        host: Some(host),
+        port: Some(port),
+        path: None,
+        query: query_pairs,
+        transport: Some("udp".into()),
+        security: Some(security),
+        fragment: remarks,
+    }))
+}
+
+fn _parse_tg(raw: &Input) -> Output {
+    let is_socks = if let SchemeX::Https = raw.schema
+        && let "t.me" = raw.userinfo
+    {
+        match raw.path {
+            Some("/socks") => true,
+            Some("/proxy") => false,
+            _ => return NOT_ACCEPTED,
+        }
+    } else if let SchemeX::Tg = raw.schema {
+        match raw.userinfo {
+            "socks" => true,
+            "proxy" => false,
+            _ => return NOT_ACCEPTED,
+        }
+    } else {
+        return NOT_ACCEPTED;
+    };
+
+    let query = raw
+        .query()
+        .map_err(|e| ParseError::InvalidConf("query".into(), e.to_string().into()))?;
+
+    let host: HostSpec = {
+        let host_raw = query
+            .iter()
+            .find_map(|(k, v)| if k == "server" { v.as_ref() } else { None })
+            .ok_or(ParseError::MissingHost)?;
+        ServerName::try_from(host_raw.as_str())
+            .map_err(|e| ParseError::InvalidConf("server".into(), e.to_string().into()))?
+            .to_owned()
+    };
+
+    let port: PortSpec = {
+        let port_raw = query
+            .iter()
+            .find_map(|(k, v)| if k == "port" { v.as_ref() } else { None })
+            .ok_or(ParseError::MissingPort)?;
+
+        port_raw
+            .parse::<u16>()
+            .map(PortSpec::new_with)
+            .map_err(|e| ParseError::InvalidConf("port".into(), e.to_string().into()))?
+    };
+
+    let secret = query
+        .iter()
+        .find_map(|(k, v)| if k == "secret" { v.as_ref() } else { None })
+        .ok_or(ParseError::MissingConf("secret".into()))?;
+
+    let remarks = raw
+        .fragment
+        .map(urlencoding::decode)
+        .transpose()
+        .map_err(|e| ParseError::InvalidConf("remarks".into(), e.to_string().into()))?
+        .map(TinyText::from);
+
+    Ok(Some(UrlX {
+        uid: 0,
+        sig: 0,
+        schema: SchemeX::Tg,
+        username: super::UserInfo::Text(secret.clone(), super::user_info::UserInfoEncoding::URL),
+        password: Some(secret.clone()),
+        host: Some(host),
+        port: Some(port),
+        path: None,
+        query: vec![],
+        transport: Some(if is_socks { "socks" } else { "mtproto" }.into()),
+        security: Some("tls".into()),
+        fragment: remarks,
+    }))
+}
+
+fn _parse_slipnet(raw: &Input) -> Output {
+    let encrypted = matches!(raw.schema, SchemeX::SlipnetEnc);
+    let config_data = raw.userinfo;
+
+    if encrypted {
+        return Ok(Some(UrlX {
+            uid: 0,
+            sig: 0,
+            schema: SchemeX::SlipnetEnc,
+            username: super::UserInfo::Text(
+                config_data.into(),
+                super::user_info::UserInfoEncoding::B64,
+            ),
+            password: Some(config_data.into()),
+            host: None,
+            port: None,
+            path: None,
+            query: vec![],
+            transport: None,
+            security: None,
+            fragment: None,
+        }));
+    }
+
+    let decoded = base64::prelude::BASE64_STANDARD_NO_PAD.decode(config_data);
+
+    let bytes = match decoded {
+        Ok(b) => b,
+        Err(_) => {
+            return NOT_ACCEPTED;
+        }
+    };
+
+    let text = match String::from_utf8(bytes) {
+        Ok(t) => t,
+        Err(_) => {
+            return NOT_ACCEPTED;
+        }
+    };
+
+    let fields: Vec<&str> = text.split('|').collect();
+
+    if fields.len() < 12 {
+        return NOT_ACCEPTED;
+    }
+
+    let domain = fields
+        .get(3)
+        .map(|s| *s)
+        .filter(|s| !s.is_empty())
+        .map(TinyText::from);
+    let public_key = fields
+        .get(11)
+        .map(|s| *s)
+        .filter(|s| !s.is_empty())
+        .map(TinyText::from);
+    let tunnel_type = fields
+        .get(1)
+        .map(|s| *s)
+        .filter(|s| !s.is_empty())
+        .map(TinyText::from);
+    let local_port = fields.get(8).and_then(|s| s.parse::<u16>().ok());
+
+    let query: Vec<(TinyText, Option<TinyText>)> = std::iter::empty()
+        .chain(
+            public_key
+                .as_ref()
+                .map(|pk| (TinyText::from("pk"), Some(pk.clone()))),
+        )
+        .chain(
+            tunnel_type
+                .as_ref()
+                .map(|tt| (TinyText::from("type"), Some(tt.clone()))),
+        )
+        .collect();
+
+    let port = local_port.map(PortSpec::new_with);
+
+    let remarks = raw
+        .fragment
+        .map(urlencoding::decode)
+        .transpose()
+        .map_err(|e| ParseError::InvalidConf("remarks".into(), e.to_string().into()))?
+        .map(TinyText::from);
+
+    Ok(Some(UrlX {
+        uid: 0,
+        sig: 0,
+        schema: SchemeX::Slipnet,
+        username: super::UserInfo::Text(
+            config_data.into(),
+            super::user_info::UserInfoEncoding::B64,
+        ),
+        password: Some(config_data.into()),
+        host: None,
+        port,
+        path: None,
+        query,
+        transport: tunnel_type,
+        security: None,
+        fragment: remarks,
+    }))
+}
 //     if let Some(mut userinfo) = raw
 //         .userinfo_only(raw.schema != SchemeX::MTProto, true)
 //         .map_err(|e| ParseError::InvalidUserInfo(raw.userinfo.into()))?
@@ -502,7 +890,19 @@ pub fn visit_basic(raw: &Input) -> Result<UrlX, ParseError> {
         SchemeX::SS => _parse_ss(raw),
         SchemeX::SSR => _parse_ssr(raw),
         SchemeX::Vmess => _parse_vmess(raw),
+        SchemeX::Vless => _parse_vless(raw),
+        SchemeX::Trojan => _parse_trojan(raw),
+        SchemeX::Hysteria2 => _parse_hysteria2(raw),
+        SchemeX::Tg | SchemeX::Https => _parse_tg(raw),
 
+        ref other @ SchemeX::Slipnet | ref other @ SchemeX::SlipnetEnc => {
+            tracing::debug!(target: "visit", "SlipNet - trying to parse as slipnet");
+            _parse_slipnet(raw)
+        }
+        ref other @ SchemeX::Hysteria => {
+            tracing::debug!(target: "visit", "Hysteria not implemented, treating as Hysteria2");
+            _parse_hysteria2(raw)
+        }
         ref other => unimplemented!("{other}"),
     };
 
@@ -533,10 +933,19 @@ pub fn visit_basic(raw: &Input) -> Result<UrlX, ParseError> {
         if let Ok(Some(v)) = _parse_vmess(raw) {
             break 'block v;
         }
-        if let Ok(Some(v)) = _parse_mtproto(raw) {
+        if let Ok(Some(v)) = _parse_vless(raw) {
             break 'block v;
         }
-        if let Ok(Some(v)) = _parse_vless(raw) {
+        if let Ok(Some(v)) = _parse_trojan(raw) {
+            break 'block v;
+        }
+        if let Ok(Some(v)) = _parse_hysteria2(raw) {
+            break 'block v;
+        }
+        if let Ok(Some(v)) = _parse_slipnet(raw) {
+            break 'block v;
+        }
+        if let Ok(Some(v)) = _parse_tg(raw) {
             break 'block v;
         }
 
@@ -590,5 +999,143 @@ mod tests {
             "{}",
             serde_json::to_string_pretty(&serde_json::to_value(url).unwrap()).unwrap()
         );
+    }
+
+    #[test]
+    fn test_vless() {
+        let url = "vless://6202b230-417c-4d8e-b624-0f71afa9c75d@159.223.24.65:443?path=/?ed=2560&security=tls&encryption=none&sni=test.ir&type=ws";
+
+        let raw = RawUrlX::from(url);
+        let url = visit_basic(&raw).expect("failed");
+
+        eprintln!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::to_value(&url).unwrap()).unwrap()
+        );
+
+        assert_eq!(url.schema, SchemeX::Vless);
+    }
+
+    #[test]
+    fn test_vless_reality() {
+        let url = "vless://6202b230-417c-4d8e-b624-0f71afa9c75d@159.223.24.65:443?security=reality&encryption=none&type=tcp&flow=xtls-rprx-vision&pbk=abc123";
+
+        let raw = RawUrlX::from(url);
+        let url = visit_basic(&raw).expect("failed");
+
+        eprintln!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::to_value(&url).unwrap()).unwrap()
+        );
+
+        assert_eq!(url.schema, SchemeX::Vless);
+    }
+
+    #[test]
+    fn test_trojan() {
+        let url = "trojan://humanity@172.64.152.23:443?security=tls&type=ws&path=/assignment&sni=www.creationlong.org";
+
+        let raw = RawUrlX::from(url);
+        let url = visit_basic(&raw).expect("failed");
+
+        eprintln!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::to_value(&url).unwrap()).unwrap()
+        );
+
+        assert_eq!(url.schema, SchemeX::Trojan);
+    }
+
+    #[test]
+    fn test_hysteria2() {
+        let url = "hysteria2://b4bd0613-ff7c-4f2f-954d-185915e6ddad@206.71.158.41:35000?security=tls&obfs=salamander&obfs-password=password123&insecure=1&sni=jnir.pichondan.com";
+
+        let raw = RawUrlX::from(url);
+        let url = visit_basic(&raw).expect("failed");
+
+        eprintln!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::to_value(&url).unwrap()).unwrap()
+        );
+
+        assert_eq!(url.schema, SchemeX::Hysteria2);
+    }
+
+    #[test]
+    fn test_hy2() {
+        let url =
+            "hy2://linux.do@[2a01:4f9:4b:f378::1]:13599?security=tls&insecure=1&sni=www.bing.com";
+
+        let raw = RawUrlX::from(url);
+        let url = visit_basic(&raw).expect("failed");
+
+        eprintln!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::to_value(&url).unwrap()).unwrap()
+        );
+
+        assert_eq!(url.schema, SchemeX::Hysteria2);
+    }
+
+    #[test]
+    fn test_tg() {
+        let url = "https://t.me/proxy?server=146.185.211.126&port=443&secret=ee1e36377253a29133d290f3d14ae0163873756e342d32302e757365726170692e636f6d";
+
+        let raw = RawUrlX::from(url);
+        eprintln!("{raw:?}");
+        let url = visit_basic(&raw).expect("failed");
+
+        eprintln!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::to_value(&url).unwrap()).unwrap()
+        );
+
+        assert_eq!(url.schema, SchemeX::Tg);
+    }
+
+    #[test]
+    fn test_tg_hostname() {
+        let url = "https://t.me/proxy?server=proxium.rest&port=888&secret=a669r5a45920422f9d417e4867efdc4fb8jllllloo9w88220wpwoow9";
+
+        let raw = RawUrlX::from(url);
+        let url = visit_basic(&raw).expect("failed");
+
+        eprintln!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::to_value(&url).unwrap()).unwrap()
+        );
+
+        assert_eq!(url.schema, SchemeX::Tg);
+    }
+
+    #[test]
+    fn test_slipnet() {
+        let url = "slipnet://MjJ8ZG5zdHR8ZG5zdHQtc29ja3N8dC5zaGFtbG91Lm9ubGluZXw4LjguOC44OjUzOjB8MHw1MDAwfGJicnwxMDgwfDEyNy4wLjAuMXwwfDg0ZTcxMjU3ZjRjZDkyZThmZjFiZDFlNTFjOWE5NGY3MjRlOWU5MTM2MzgxNDliN2FlNDJmNjhiNjljNTRkMjd8aXJhbnV4fglyYW51eHwwfHx8MjJ8MHw0NS4xNDguMjguMTE1fDB8fHVkcHxwYXNzd29yZHx8fHwwfDQ0M3x8fDB8fDB8MHx8MHx8MHwwfDEwODB8MHx0eHR8MTAxfDB8MHwwfDB8MHwwfDB8fHw4MDgwfHwwfC98MXx8";
+
+        let raw = RawUrlX::from(url);
+        let url = visit_basic(&raw).expect("failed");
+
+        eprintln!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::to_value(&url).unwrap()).unwrap()
+        );
+
+        assert_eq!(url.schema, SchemeX::Slipnet);
+    }
+
+    #[test]
+    fn test_slipnet_enc() {
+        let url = "slipnet-enc://Ac3GD6rpCy53w/nMNSrt/pGttnE/aagWaQyqTM+rr1LJgl5T8xRs+5IWD/pe+tKPpz2eUHYXEza8roniezFp25RM6iHo902gfJYZFg5lGVaQMjwQPu6BlBBFSCjVehs70Kgf1Fx56ha566VkTPsJDu37in+EKjaHxijwEJydn4o8n6YgSoyOsxd9OzQufIXRkPM3K5FGFUG9nYSV4oBe2hUmtJVRT+q8CONfij91e9dn3FnbQfvkst08zfah4WaAHkJEIPw28CwzExsPOjRexMTmrRsZZZuliTRmncnM0gI6WmGGKe2jdizCZN6TnDM2efkWLjfWk3+d26O+xTgJZ+lUqI/h7swa11p2OzsAdNpNnNSCMECvM8TbTuwfFeY6X668AebOi8SVHTLe5S31+ZXObdlQYQFC57aU1XXmYjI6pPFbfWjPgvtmO9mR+GQ0yp0Gg+yM6ufxra4qDhmIQWbcTfqHCc1bxCMjyYdC9d+9TGapCM41IJwnoDl7zer2G+3NkEZ0E2edw4/lXxS3D95GN0PEudoi+ic/hnFeeMPUWFoAyApi9F/KwBItcjkSKqvkluNgQdzL0UmcLWkyVuhBJ8rWSdMU5ZKUqccpeiNKlKRhQ6a2b9Buiz4YxfQ4LRbVUVllZaX84hxJgMeaMg9Jp+CJmSyUD0QkN+si6pd6+31yRIZpFHGk0UnYJ9hZQuqeczecc88d0oRDMGf/rDBt198/caUJpKo=";
+
+        let raw = RawUrlX::from(url);
+        eprintln!("{raw:?}");
+        let url = visit_basic(&raw).expect("failed");
+
+        eprintln!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::to_value(&url).unwrap()).unwrap()
+        );
+
+        assert_eq!(url.schema, SchemeX::SlipnetEnc);
     }
 }
