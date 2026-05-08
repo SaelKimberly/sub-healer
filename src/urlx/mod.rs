@@ -59,9 +59,89 @@ impl UrlX {
             .iter()
             .find_map(|(k, v)| if k == key { v.as_ref() } else { None })
     }
-    pub fn query_string(&self) -> Option<String> {
-        if self.query.is_empty() {
-            None
+
+    fn _safe_hostport(&self, default_port: Option<u16>) -> Result<String, ParseError> {
+        let addr = match self.host {
+            Some(ref addr @ ServerName::IpAddress(IpAddr::V6(_))) => format!("[{}]", addr.to_str()),
+            Some(ref addr) => addr.to_str().into_owned(),
+            None => return Err(ParseError::MissingHost),
+        };
+        if let Some(ref spec) = self
+            .port
+            .as_ref()
+            .map(ToString::to_string)
+            .or_else(|| default_port.as_ref().map(ToString::to_string))
+        {
+            Ok(format!("{}:{}", addr, spec))
+        } else {
+            Err(ParseError::MissingPort)
+        }
+    }
+    fn _safe_userinfo(&self) -> Result<String, ParseError> {
+        Ok(self
+            .username
+            .as_url_safe()
+            .map_err(|e| ParseError::InvalidConf("username".into(), e.to_string().into()))?
+            .as_str()
+            .to_string())
+    }
+
+    fn _reconstruct_vless(&mut self) -> Result<String, ParseError> {
+        // 1: Create a URL base from the components
+        let mut url = url::Url::parse(
+            format!(
+                "{}://{}@{}",
+                self.schema.as_str(),
+                self._safe_userinfo()?,
+                self._safe_hostport(None)?,
+            )
+            .as_str(),
+        )
+        .map_err(|e| ParseError::Unknown(e.into()))?;
+
+        if let Some(ref path) = self.path {
+            url.set_path(path.as_str());
+        }
+
+        if !self.query.is_empty() {
+            self.query.sort_by_key(|(k, _)| k.clone());
+
+            let mut q = url.query_pairs_mut();
+
+            for (k, v) in &self.query {
+                if let Some(v) = v {
+                    q.append_pair(k, v);
+                } else {
+                    q.append_key_only(k);
+                }
+            }
+
+            _ = q.finish();
+        }
+        if let Some(ref frag) = self.fragment {
+            let frag = Unescaper::default()
+                .enc_pct()
+                .enc_uni(true)
+                .chardet(true, true)
+                .do_unescape(frag.as_bytes())
+                .unwrap();
+            let frag = frag.trim();
+            let frag = frag.split_whitespace().collect::<Vec<_>>().join(" ");
+            if !frag.is_empty() {
+                url.set_fragment(Some(frag.as_str()));
+            }
+        }
+
+        url.set_username(
+            self.username
+                .as_url_safe()
+                .map_err(|e| ParseError::InvalidConf("username".into(), e.to_string().into()))?
+                .as_str(),
+        )
+        .expect("username should be always present");
+
+        Ok(url.to_string())
+    }
         } else {
             self.query
                 .iter()
