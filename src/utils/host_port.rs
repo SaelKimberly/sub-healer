@@ -133,7 +133,7 @@ pub fn port_specs<'a>(span: Span<'a>) -> RawResult<'a, PortSpec> {
         };
         match tag(",").parse(tail) {
             RawResult::Ok((tail, _)) => base = tail,
-            _ => break Ok((base, spec.sort())),
+            _ => break Ok((tail, spec.sort())),
         }
     }
 }
