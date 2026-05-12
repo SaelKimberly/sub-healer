@@ -131,6 +131,7 @@ fn _parse_vmess(raw: &Input) -> Output {
             .ok_or(ParseError::MissingPort)
             .and_then(|v| {
                 v.as_u64()
+                    .or_else(|| v.as_str().and_then(|s| s.parse::<u64>().ok()))
                     .ok_or_else(|| ParseError::InvalidPort(format!("cannot parse: {}", v).into()))
             })?;
 
@@ -470,22 +471,19 @@ fn _parse_vless(raw: &Input) -> Output {
     let security = query_pairs
         .iter()
         .find(|(k, _)| k.as_str() == "security")
-        .map(|(_, v)| v.as_ref())
-        .flatten()
+        .and_then(|(_, v)| v.as_ref())
         .map(|v| TinyText::from(v.as_str()))
         .unwrap_or_else(|| "none".into());
     let transport = query_pairs
         .iter()
         .find(|(k, _)| k.as_str() == "type")
-        .map(|(_, v)| v.as_ref())
-        .flatten()
+        .and_then(|(_, v)| v.as_ref())
         .map(|v| TinyText::from(v.as_str()))
         .unwrap_or_else(|| "tcp".into());
     let path = query_pairs
         .iter()
         .find(|(k, _)| k.as_str() == "path")
-        .map(|(_, v)| v.as_ref())
-        .flatten()
+        .and_then(|(_, v)| v.as_ref())
         .cloned();
 
     let remarks = raw
@@ -503,7 +501,7 @@ fn _parse_vless(raw: &Input) -> Output {
         password: Some(uuid.to_string().into()),
         host: Some(host),
         port: Some(port),
-        path: path,
+        path,
         query: query_pairs,
         transport: Some(transport),
         security: Some(security),
@@ -546,26 +544,27 @@ fn _parse_trojan(raw: &Input) -> Output {
             .collect()
     };
 
-    let security = query_pairs
+    let security: TinyText = query_pairs
         .iter()
         .find(|(k, _)| k.as_str() == "security")
-        .map(|(_, v)| v.as_ref())
-        .flatten()
-        .map(|v| TinyText::from(v.as_str()))
-        .unwrap_or_else(|| "tls".into());
-    let transport = query_pairs
+        .and_then(|(_, v)| v.as_deref())
+        .unwrap_or("tls")
+        .into();
+    let transport: TinyText = query_pairs
         .iter()
         .find(|(k, _)| k.as_str() == "type")
-        .map(|(_, v)| v.as_ref())
-        .flatten()
-        .map(|v| TinyText::from(v.as_str()))
-        .unwrap_or_else(|| "tcp".into());
-    let path = query_pairs
-        .iter()
-        .find(|(k, _)| k.as_str() == "path")
-        .map(|(_, v)| v.as_ref())
-        .flatten()
-        .cloned();
+        .and_then(|(_, v)| v.as_deref())
+        .unwrap_or("tcp")
+        .into();
+    let path = query_pairs.iter().find_map(|(k, v)| {
+        if k.as_str() == "path"
+            && let Some(v) = v
+        {
+            Some(v.to_owned())
+        } else {
+            None
+        }
+    });
 
     let remarks = raw
         .fragment
@@ -582,7 +581,7 @@ fn _parse_trojan(raw: &Input) -> Output {
         password: Some(username.into()),
         host: Some(host),
         port: Some(port),
-        path: path,
+        path,
         query: query_pairs,
         transport: Some(transport),
         security: Some(security),
@@ -625,13 +624,12 @@ fn _parse_hysteria2(raw: &Input) -> Output {
             .collect()
     };
 
-    let security = query_pairs
+    let security: TinyText = query_pairs
         .iter()
         .find(|(k, _)| k.as_str() == "security")
-        .map(|(_, v): &(TinyText, Option<TinyText>)| v.as_ref())
-        .flatten()
-        .map(|v| TinyText::from(v.as_str()))
-        .unwrap_or_else(|| "tls".into());
+        .and_then(|(_, v)| v.as_deref())
+        .unwrap_or("tls")
+        .into();
 
     let remarks = raw
         .fragment
@@ -657,15 +655,13 @@ fn _parse_hysteria2(raw: &Input) -> Output {
 }
 
 fn _parse_tg(raw: &Input) -> Output {
-    let is_socks = if let SchemeX::Https = raw.schema
-        && let "t.me" = raw.userinfo
-    {
+    let is_socks = if raw.schema == SchemeX::Https && raw.userinfo == "t.me" {
         match raw.path {
             Some("/socks") => true,
             Some("/proxy") => false,
             _ => return NOT_ACCEPTED,
         }
-    } else if let SchemeX::Tg = raw.schema {
+    } else if raw.schema == SchemeX::Tg {
         match raw.userinfo {
             "socks" => true,
             "proxy" => false,
@@ -717,8 +713,8 @@ fn _parse_tg(raw: &Input) -> Output {
         uid: 0,
         sig: 0,
         schema: SchemeX::Tg,
-        username: super::UserInfo::Text(secret.clone(), super::user_info::UserInfoEncoding::URL),
-        password: Some(secret.clone()),
+        username: super::UserInfo::Text(secret.to_owned(), super::user_info::UserInfoEncoding::URL),
+        password: Some(secret.to_owned()),
         host: Some(host),
         port: Some(port),
         path: None,
@@ -777,20 +773,25 @@ fn _parse_slipnet(raw: &Input) -> Output {
 
     let domain = fields
         .get(3)
-        .map(|s| *s)
+        .copied()
         .filter(|s| !s.is_empty())
         .map(TinyText::from);
     let public_key = fields
         .get(11)
-        .map(|s| *s)
+        .copied()
         .filter(|s| !s.is_empty())
         .map(TinyText::from);
     let tunnel_type = fields
         .get(1)
-        .map(|s| *s)
+        .copied()
         .filter(|s| !s.is_empty())
         .map(TinyText::from);
     let local_port = fields.get(8).and_then(|s| s.parse::<u16>().ok());
+
+    let host = domain
+        .as_ref()
+        .and_then(|d| ServerName::try_from(d.as_str()).ok())
+        .map(|s| s.to_owned());
 
     let query: Vec<(TinyText, Option<TinyText>)> = std::iter::empty()
         .chain(
@@ -823,7 +824,7 @@ fn _parse_slipnet(raw: &Input) -> Output {
             super::user_info::UserInfoEncoding::B64,
         ),
         password: Some(config_data.into()),
-        host: None,
+        host,
         port,
         path: None,
         query,
@@ -895,11 +896,11 @@ pub fn visit_basic(raw: &Input) -> Result<UrlX, ParseError> {
         SchemeX::Hysteria2 => _parse_hysteria2(raw),
         SchemeX::Tg | SchemeX::Https => _parse_tg(raw),
 
-        ref other @ SchemeX::Slipnet | ref other @ SchemeX::SlipnetEnc => {
+        ref _other @ (SchemeX::Slipnet | SchemeX::SlipnetEnc) => {
             tracing::debug!(target: "visit", "SlipNet - trying to parse as slipnet");
             _parse_slipnet(raw)
         }
-        ref other @ SchemeX::Hysteria => {
+        ref _other @ SchemeX::Hysteria => {
             tracing::debug!(target: "visit", "Hysteria not implemented, treating as Hysteria2");
             _parse_hysteria2(raw)
         }
@@ -989,7 +990,7 @@ mod tests {
 
     #[test]
     fn test_ss() {
-        tracing_subscriber::fmt().compact().init();
+        _ = tracing_subscriber::fmt().compact().try_init();
 
         let url = "vmess://Y2hhY2hhMjAtaWV0Zi1wb2x5MTMwNTozMTM0NzA1Ny03YWY1LTQ1NjItYjkxMi1mMWMyMTdjNGMxNjA@hnt.cndns.shop:27761#%F0%9F%87%A8%F0%9F%87%B3_CN_%E4%B8%AD%E5%9B%BD-%3E%F0%9F%87%B7%F0%9F%87%BA_RU_%E4%BF%84%E7%BD%97%E6%96%AF%E8%81%94%E9%82%A6";
         let raw = RawUrlX::from(url);
@@ -999,6 +1000,189 @@ mod tests {
             "{}",
             serde_json::to_string_pretty(&serde_json::to_value(url).unwrap()).unwrap()
         );
+    }
+
+    #[test]
+    fn test_reconstruct_vmess() {
+        let input = "vmess://Y2hhY2hhMjAtaWV0Zi1wb2x5MTMwNTozMTM0NzA1Ny03YWY1LTQ1NjItYjkxMi1mMWMyMTdjNGMxNjA@hnt.cndns.shop:27761";
+
+        let raw = RawUrlX::from(input);
+        let parsed = visit_basic(&raw).expect("failed to parse");
+
+        let reconstructed = parsed.reconstruct();
+        eprintln!("input:        {}", input);
+        eprintln!("reconstructed: {}", reconstructed);
+
+        let raw2 = RawUrlX::from(reconstructed.as_str());
+        let reparsed = visit_basic(&raw2).expect("failed to re-parse");
+
+        assert_eq!(parsed.host, reparsed.host, "host mismatch");
+        assert_eq!(parsed.port, reparsed.port, "port mismatch");
+    }
+
+    #[test]
+    fn test_reconstruct_ssr() {
+        let input = "ssr://MTA3LjE1MS4xODIuMjUzOjgwODA6b3JpZ2luOnJjNC1tZDU6cGxhaW46TVRSbVJsQnlZbVY2UlROSVJGcDZjMDFQY2pZLz9ncm91cD1VMU5TVUhKdmRtbGtaWEkmcmVtYXJrcz04Si1IdXZDZmg3Z2dVMU5TTGVlLWp1V2J2UzFPUnVpbm8tbVVnZWlIcXVXSXR1V0pweTFEYUdGMFIxQlVMVlJwYTFSdmF5MVpiM1ZVZFdKbExURXdOeTR4TlRFdU1UZ3lMakkxTXpvNE1EZ3cmb2Jmc3BhcmFtPSZwcm90b3BhcmFtPQ";
+
+        let raw = RawUrlX::from(input);
+        let parsed = visit_basic(&raw).expect("failed to parse");
+
+        let reconstructed = parsed.reconstruct();
+        eprintln!("input:        {}", input);
+        eprintln!("reconstructed: {}", reconstructed);
+
+        let raw2 = RawUrlX::from(reconstructed.as_str());
+        let reparsed = visit_basic(&raw2).expect("failed to re-parse");
+
+        assert_eq!(parsed.host, reparsed.host, "host mismatch");
+        assert_eq!(parsed.port, reparsed.port, "port mismatch");
+    }
+
+    #[test]
+    fn test_reconstruct_ss() {
+        let input = "ss://Y2xlb2Y6cGFzc3dvcmRAMTI3LjAuMC4xOjgwODA=@127.0.0.1:8080";
+
+        let raw = RawUrlX::from(input);
+        let parsed = visit_basic(&raw).expect("failed to parse");
+
+        let reconstructed = parsed.reconstruct();
+        eprintln!("input:        {}", input);
+        eprintln!("reconstructed: {}", reconstructed);
+
+        let raw2 = RawUrlX::from(reconstructed.as_str());
+        let reparsed = visit_basic(&raw2).expect("failed to re-parse");
+
+        assert_eq!(parsed.host, reparsed.host, "host mismatch");
+        assert_eq!(parsed.port, reparsed.port, "port mismatch");
+    }
+
+    #[test]
+    fn test_reconstruct_vless() {
+        let input = "vless://6202b230-417c-4d8e-b624-0f71afa9c75d@159.223.24.65:443?path=/?ed=2560&security=tls&encryption=none&sni=test.ir&type=ws";
+
+        let raw = RawUrlX::from(input);
+        let parsed = visit_basic(&raw).expect("failed to parse");
+
+        let reconstructed = parsed.reconstruct();
+        eprintln!("input:        {}", input);
+        eprintln!("reconstructed: {}", reconstructed);
+
+        let raw2 = RawUrlX::from(reconstructed.as_str());
+        let reparsed = visit_basic(&raw2).expect("failed to re-parse");
+
+        assert_eq!(parsed.host, reparsed.host, "host mismatch");
+        assert_eq!(parsed.port, reparsed.port, "port mismatch");
+        assert_eq!(parsed.schema, reparsed.schema, "schema mismatch");
+    }
+
+    #[test]
+    fn test_reconstruct_trojan() {
+        let input = "trojan://humanity@172.64.152.23:443?security=tls&type=ws&path=/assignment&sni=www.creationlong.org";
+
+        let raw = RawUrlX::from(input);
+        let parsed = visit_basic(&raw).expect("failed to parse");
+
+        let reconstructed = parsed.reconstruct();
+        eprintln!("input:        {}", input);
+        eprintln!("reconstructed: {}", reconstructed);
+
+        let raw2 = RawUrlX::from(reconstructed.as_str());
+        let reparsed = visit_basic(&raw2).expect("failed to re-parse");
+
+        assert_eq!(parsed.host, reparsed.host, "host mismatch");
+        assert_eq!(parsed.port, reparsed.port, "port mismatch");
+    }
+
+    #[test]
+    fn test_reconstruct_hysteria2() {
+        let input = "hysteria2://b4bd0613-ff7c-4f2f-954d-185915e6ddad@206.71.158.41:35000?security=tls&obfs=salamander&obfs-password=password123&insecure=1&sni=jnir.pichondan.com";
+
+        let raw = RawUrlX::from(input);
+        let parsed = visit_basic(&raw).expect("failed to parse");
+
+        let reconstructed = parsed.reconstruct();
+        eprintln!("input:        {}", input);
+        eprintln!("reconstructed: {}", reconstructed);
+
+        let raw2 = RawUrlX::from(reconstructed.as_str());
+        let reparsed = visit_basic(&raw2).expect("failed to re-parse");
+
+        assert_eq!(parsed.host, reparsed.host, "host mismatch");
+        assert_eq!(parsed.port, reparsed.port, "port mismatch");
+    }
+
+    #[test]
+    fn test_reconstruct_tg() {
+        let input = "https://t.me/proxy?server=146.185.211.126&port=443&secret=ee1e36377253a29133d290f3d14ae0163873756e342d32302e757365726170692e636f6d";
+
+        let raw = RawUrlX::from(input);
+        let parsed = visit_basic(&raw).expect("failed to parse");
+
+        let reconstructed = parsed.reconstruct();
+        eprintln!("input:        {}", input);
+        eprintln!("reconstructed: {}", reconstructed);
+
+        assert!(
+            reconstructed.contains("server="),
+            "should contain server param"
+        );
+        assert!(reconstructed.contains("port="), "should contain port param");
+        assert!(
+            reconstructed.contains("secret="),
+            "should contain secret param"
+        );
+    }
+
+    #[test]
+    fn test_reconstruct_slipnet() {
+        let input = "slipnet://MjJ8ZG5zdHR8ZG5zdHQtc29ja3N8dC5zaGFtbG91Lm9ubGluZXw4LjguOC44OjUzOjB8MHw1MDAwfGJicnwxMDgwfDEyNy4wLjAuMXwwfDg0ZTcxMjU3ZjRjZDkyZThmZjFiZDFlNTFjOWE5NGY3MjRlOWU5MTM2MzgxNDliN2FlNDJmNjhiNjljNTRkMjd8aXJhbnV4fglyYW51eHwwfHx8MjJ8MHw0NS4xNDguMjguMTE1fDB8fHVkcHxwYXNzd29yZHx8fHwwfDQ0M3x8fDB8fDB8MHx8MHx8MHwwfDEwODB8MHx0eHR8MTAxfDB8MHwwfDB8MHwwfDB8fHw4MDgwfHwwfC98MXx8";
+
+        let raw = RawUrlX::from(input);
+        let parsed = visit_basic(&raw).expect("failed to parse");
+
+        let reconstructed = parsed.reconstruct();
+        eprintln!("input:        {}", input);
+        eprintln!("reconstructed: {}", reconstructed);
+
+        assert!(
+            reconstructed.starts_with("slipnet://"),
+            "should start with slipnet://"
+        );
+    }
+
+    #[test]
+    fn test_reconstruct_slipnet_enc() {
+        let input = "slipnet-enc://Ac3GD6rpCy53w/nMNSrt/pGttnE/aagWaQyqTM+rr1LJgl5T8xRs+5IWD/pe+tKPpz2eUHYXEza8roniezFp25RM6iHo902gfJYZFg5lGVaQMjwQPu6BlBBFSCjVehs70Kgf1Fx56ha566VkTPsJDu37in+EKjaHxijwEJydn4o8n6YgSoyOsxd9OzQufIXRkPM3K5FGFUG9nYSV4oBe2hUmtJVRT+q8CONfij91e9dn3FnbQfvkst08zfah4WaAHkJEIPw28CwzExsPOjRexMTmrRsZZZuliTRmncnM0gI6WmGGKe2jdizCZN6TnDM2efkWLjfWk3+d26O+xTgJZ+lUqI/h7swa11p2OzsAdNpNnNSCMECvM8TbTuwfFeY6X668AebOi8SVHTLe5S31+ZXObdlQYQFC57aU1XXmYjI6pPFbfWjPgvtmO9mR+GQ0yp0Gg+yM6ufxra4qDhmIQWbcTfqHCc1bxCMjyYdC9d+9TGapCM41IJwnoDl7zer2G+3NkEZ0E2edw4/lXxS3D95GN0PEudoi+ic/hnFeeMPUWFoAyApi9F/KwBItcjkSKqvkluNgQdzL0UmcLWkyVuhBJ8rWSdMU5ZKUqccpeiNKlKRhQ6a2b9Buiz4YxfQ4LRbVUVllZaX84hxJgMeaMg9Jp+CJmSyUD0QkN+si6pd6+31yRIZpFHGk0UnYJ9hZQuqeczecc88d0oRDMGf/rDBt198/caUJpKo=";
+
+        let raw = RawUrlX::from(input);
+        let parsed = visit_basic(&raw).expect("failed to parse");
+
+        let reconstructed = parsed.reconstruct();
+        eprintln!("input:        {}", input);
+        eprintln!("reconstructed: {}", reconstructed);
+
+        assert_eq!(
+            input, reconstructed,
+            "slipnet-enc:// URLs must be exactly equal after reconstruction"
+        );
+    }
+
+    #[test]
+    fn test_reconstruct_wireguard() {
+        let input = "wireguard://MHlIYW5kYWNlZToxMjcuMC4wLjE6ODQ4Mw==";
+
+        let raw = RawUrlX::from(input);
+        let parsed = visit_basic(&raw).expect("failed to parse");
+
+        let reconstructed = parsed.reconstruct();
+        eprintln!("input:        {}", input);
+        eprintln!("reconstructed: {}", reconstructed);
+
+        let raw2 = RawUrlX::from(reconstructed.as_str());
+        let reparsed = visit_basic(&raw2).expect("failed to re-parse");
+
+        assert_eq!(parsed.host, reparsed.host, "host mismatch");
+        assert_eq!(parsed.port, reparsed.port, "port mismatch");
     }
 
     #[test]
@@ -1137,5 +1321,95 @@ mod tests {
         );
 
         assert_eq!(url.schema, SchemeX::SlipnetEnc);
+    }
+
+    #[test]
+    fn test_reconstruct_vmess_roundtrip() {
+        let input = "vmess://eyJhZGQiOiIxOTIuMjAwLjE2MC4xNiIsImFpZCI6IjAiLCJhbHBuIjoiIiwiZnAiOiIiLCJob3N0IjoiIiwiaWQiOiI5YjRjMmVkYS0zNDFlLTQ4OGYtYTNiMi0xZGM3MTZiOWYzNmEiLCJpbnNlY3VyZSI6IjEiLCJuZXQiOiJ3cyIsInBhdGgiOiIvIiwicG9ydCI6Ijg0NDMiLCJwcyI6IkBDbG91ZENpdHl5Iiwic2N5IjoiYXV0byIsInNuaSI6InN0ZWFtLmF2YWFhYWwuaXIiLCJ0bHMiOiJ0bHMiLCJ0eXBlIjoiLS0tIiwidiI6IjIifQ==";
+
+        let raw = RawUrlX::from(input);
+        let parsed = visit_basic(&raw).expect("failed to parse");
+
+        eprintln!("schema: {:?}", parsed.schema);
+        eprintln!("host: {:?}", parsed.host);
+        eprintln!("port: {:?}", parsed.port);
+        eprintln!("fragment: {:?}", parsed.fragment);
+
+        assert_eq!(parsed.schema, SchemeX::Vmess, "schema should be Vmess");
+
+        let reconstructed = parsed.reconstruct();
+        eprintln!("input:        {}", input);
+        eprintln!("reconstructed: {}", reconstructed);
+
+        assert!(
+            reconstructed.starts_with("vmess://"),
+            "should start with vmess://"
+        );
+
+        let raw2 = RawUrlX::from(reconstructed.as_str());
+        let reparsed = visit_basic(&raw2).expect("failed to re-parse");
+
+        assert_eq!(
+            parsed.schema, reparsed.schema,
+            "schema mismatch after re-parse"
+        );
+    }
+
+    #[test]
+    fn test_reconstruct_ssr_roundtrip() {
+        let input = "ssr://MTA3LjE1MS4xODIuMjUzOjgwODA6b3JpZ2luOnJjNC1tZDU6cGxhaW46TVRSbVJsQnlZbVY2UlROSVJGcDZjMDFQY2pZLz9ncm91cD1VMU5TVUhKdmRtbGtaWEkmcmVtYXJrcz04Si1IdXZDZmg3Z2dVMU5TTGVlLWp1V2J2UzFPUnVpbm8tbVVnZWlIcXVXSXR1V0pweTFEYUdGMFIxQlVMVlJwYTFSdmF5MVpiM1ZVZFdKbExURXdOeTR4TlRFdU1UZ3lMakkxTXpvNE1EZ3cmb2Jmc3BhcmFtPSZwcm90b3BhcmFtPQ";
+
+        let raw = RawUrlX::from(input);
+        let parsed = visit_basic(&raw).expect("failed to parse");
+
+        eprintln!("schema: {:?}", parsed.schema);
+        eprintln!("host: {:?}", parsed.host);
+        eprintln!("port: {:?}", parsed.port);
+        eprintln!("query: {:?}", parsed.query);
+
+        let reconstructed = parsed.reconstruct();
+        eprintln!("input:        {}", input);
+        eprintln!("reconstructed: {}", reconstructed);
+
+        assert!(
+            reconstructed.starts_with("ssr://"),
+            "should start with ssr://"
+        );
+
+        let raw2 = RawUrlX::from(reconstructed.as_str());
+        let reparsed = visit_basic(&raw2).expect("failed to re-parse");
+
+        assert_eq!(parsed.schema, reparsed.schema, "schema mismatch");
+        assert_eq!(parsed.host, reparsed.host, "host mismatch");
+        assert_eq!(parsed.port, reparsed.port, "port mismatch");
+    }
+
+    #[test]
+    fn test_reconstruct_slipnet_roundtrip() {
+        let input = "slipnet://MjJ8ZG5zdHR8ZG5zdHQtc29ja3N8dC5zaGFtbG91Lm9ubGluZXw4LjguOC44OjUzOjB8MHw1MDAwfGJicnwxMDgwfDEyNy4wLjAuMXwwfDg0ZTcxMjU3ZjRjZDkyZThmZjFiZDFlNTFjOWE5NGY3MjRlOWU5MTM2MzgxNDliN2FlNDJmNjhiNjljNTRkMjd8aXJhbnV4fglyYW51eHwwfHx8MjJ8MHw0NS4xNDguMjguMTE1fDB8fHVkcHxwYXNzd29yZHx8fHwwfDQ0M3x8fDB8fDB8MHx8MHx8MHwwfDEwODB8MHx0eHR8MTAxfDB8MHwwfDB8MHwwfDB8fHw4MDgwfHwwfC98MXx8";
+
+        let raw = RawUrlX::from(input);
+        let parsed = visit_basic(&raw).expect("failed to parse");
+
+        eprintln!("schema: {:?}", parsed.schema);
+        eprintln!("host: {:?}", parsed.host);
+        eprintln!("port: {:?}", parsed.port);
+        eprintln!("query: {:?}", parsed.query);
+
+        let reconstructed = parsed.reconstruct();
+        eprintln!("input:        {}", input);
+        eprintln!("reconstructed: {}", reconstructed);
+
+        assert_eq!(
+            input, reconstructed,
+            "slipnet:// URLs must be exactly equal after reconstruction"
+        );
+
+        let raw2 = RawUrlX::from(reconstructed.as_str());
+        let reparsed = visit_basic(&raw2).expect("failed to re-parse");
+
+        assert_eq!(parsed.schema, reparsed.schema, "schema mismatch");
+        assert_eq!(parsed.host, reparsed.host, "host mismatch");
+        assert_eq!(parsed.port, reparsed.port, "port mismatch");
     }
 }

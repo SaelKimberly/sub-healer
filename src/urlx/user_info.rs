@@ -134,6 +134,13 @@ impl UserInfo {
         }
     }
 
+    pub fn as_raw(&self) -> String {
+        match self {
+            Self::Text(t, _) => t.to_string(),
+            Self::Json(v) => serde_json::to_string(v).unwrap_or_default(),
+        }
+    }
+
     pub fn as_base64_decoded(&mut self) -> Result<&mut Self, UserInfoError> {
         if let Self::Text(t, e @ UserInfoEncoding::URL) = self {
             *t = _decode_from_b64(t.as_bytes())?.into();

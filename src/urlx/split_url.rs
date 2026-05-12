@@ -265,13 +265,16 @@ impl<'a> RawUrlX<'a> {
             // * ==============================
             // * [host[:port]] <-split-> [/path]
             // * ==============================
-            let (rest, mut path) = if let Some(pos) = unparsed.find('/') {
-                let (rest, path) = unparsed.split_at(pos);
-                (rest, Some(path))
-            } else {
-                let rest = unparsed;
-                (rest, None)
-            };
+            let (rest, mut path) = unparsed.find('/').map_or_else(
+                || {
+                    let rest = unparsed;
+                    (rest, None)
+                },
+                |pos| {
+                    let (rest, path) = unparsed.split_at(pos);
+                    (rest, Some(path))
+                },
+            );
 
             let hostport = if let Ok(host) = {
                 let span = rest.as_bytes().into();

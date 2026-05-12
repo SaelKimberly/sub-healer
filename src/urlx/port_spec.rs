@@ -6,7 +6,7 @@ pub enum PortDecl {
     Range(Range<u16>),
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PortSpec {
     ports: Vec<PortDecl>,
     total: usize,
@@ -33,7 +33,7 @@ impl std::fmt::Display for PortSpec {
 
 impl PortSpec {
     #[allow(clippy::new_without_default)]
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             ports: Vec::new(),
             total: 0,
@@ -162,7 +162,7 @@ impl FromStr for PortSpec {
     type Err = std::num::ParseIntError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let mut spec = PortSpec::new();
+        let mut spec = Self::new();
 
         for decl in s.split(',') {
             if let Some((s, e)) = decl.split_once('-') {
