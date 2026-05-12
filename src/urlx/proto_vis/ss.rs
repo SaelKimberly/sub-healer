@@ -1,6 +1,6 @@
 use base64::Engine;
 
-use crate::urlx::{HostSpec, PortSpec, RawUrlX, SchemeX, TinyText, UrlX, UserInfo};
+use crate::urlx::{HostSpec, ParseError, PortSpec, RawUrlX, SchemeX, TinyText, UrlX, UserInfo};
 
 pub struct SsProto;
 
@@ -67,8 +67,10 @@ impl super::ProtoVisitor for SsProto {
     }
 
     fn build(url: &UrlX) -> Result<String, super::ParseError> {
-        let raw_username = url.username.as_raw();
-        let encoded = base64::prelude::BASE64_STANDARD_NO_PAD.encode(raw_username.as_bytes());
+        let encoded = url
+            .username
+            .as_url_safe()
+            .map_err(|e| ParseError::InvalidUserInfo(format!("{}: {}", url.username, e).into()))?;
         let hostport = url._safe_hostport(None)?;
         Ok(format!("ss://{}@{}", encoded, hostport))
     }

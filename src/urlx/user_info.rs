@@ -24,10 +24,13 @@ impl From<NomError<'_>> for UserInfoError {
     }
 }
 
+/// Label, which says, how the raw underlying data should be encoded, when added to URL.
 #[allow(clippy::upper_case_acronyms)]
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum UserInfoEncoding {
+    /// Into Base64 (urlsafe)
     B64,
+    /// Just urlencode (default)
     #[default]
     URL,
 }
@@ -35,7 +38,9 @@ pub enum UserInfoEncoding {
 /// Contains decoded user info, with information about how it should be stored in URL.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum UserInfo {
+    /// Arbitrary text with encoding label
     Text(TinyText, UserInfoEncoding),
+    /// Json value (parsed). Will always be encoded to Base64 (urlsafe)
     Json(Value),
 }
 
@@ -118,6 +123,7 @@ impl UserInfo {
         }
     }
 
+    /// Convert to string, using stored label.
     pub fn as_url_safe(&self) -> Result<String, UserInfoError> {
         match self {
             Self::Text(t, UserInfoEncoding::B64) => {
@@ -134,13 +140,7 @@ impl UserInfo {
         }
     }
 
-    pub fn as_raw(&self) -> String {
-        match self {
-            Self::Text(t, _) => t.to_string(),
-            Self::Json(v) => serde_json::to_string(v).unwrap_or_default(),
-        }
-    }
-
+    /// Change the encoding label (if not already), to Base64 (urlsafe)
     pub fn as_base64_decoded(&mut self) -> Result<&mut Self, UserInfoError> {
         if let Self::Text(t, e @ UserInfoEncoding::URL) = self {
             *t = _decode_from_b64(t.as_bytes())?.into();
@@ -150,6 +150,7 @@ impl UserInfo {
         Ok(self)
     }
 
+    /// Try to change internal representation of data into parsed Json.
     pub fn as_json_decoded(&mut self, permissive: bool) -> Result<&mut Value, std::io::Error> {
         let text = match self {
             Self::Text(t, _) => t,

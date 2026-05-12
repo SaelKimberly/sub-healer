@@ -1,21 +1,22 @@
 use base64::Engine;
 
-use crate::urlx::{HostSpec, PortSpec, RawUrlX, SchemeX, TinyText, UrlX, UserInfo};
+use crate::urlx::{HostSpec, ParseError, PortSpec, RawUrlX, SchemeX, TinyText, UrlX, UserInfo};
 
 pub struct SlipnetProto;
 
 impl super::ProtoVisitor for SlipnetProto {
     fn parse(raw: &super::Input<'_>) -> Result<UrlX, super::ParseError> {
         let encrypted = matches!(raw.schema, SchemeX::SlipnetEnc);
-        let config_data = raw.userinfo;
+        let config_data = UserInfo::new_from_b64(raw.userinfo)
+            .map_err(|_| ParseError::InvalidUserInfo("Expected valid Base64".into()))?;
 
         if encrypted {
             return Ok(UrlX {
                 uid: 0,
                 sig: 0,
                 schema: SchemeX::SlipnetEnc,
-                username: UserInfo::Text(config_data.into(), UserInfoEncoding::B64),
-                password: Some(config_data.into()),
+                username: config_data,
+                password: None,
                 host: None,
                 port: None,
                 path: None,
@@ -26,20 +27,8 @@ impl super::ProtoVisitor for SlipnetProto {
             });
         }
 
-        let decoded = base64::prelude::BASE64_STANDARD_NO_PAD.decode(config_data);
-
-        let bytes = match decoded {
-            Ok(b) => b,
-            Err(_) => {
-                return Err(super::ParseError::InvalidStructure(super::SchemeX::Slipnet));
-            }
-        };
-
-        let text = match String::from_utf8(bytes) {
-            Ok(t) => t,
-            Err(_) => {
-                return Err(super::ParseError::InvalidStructure(super::SchemeX::Slipnet));
-            }
+        let Some(text) = config_data.as_text() else {
+            return Err(super::ParseError::InvalidStructure(super::SchemeX::Slipnet));
         };
 
         let fields: Vec<&str> = text.split('|').collect();
@@ -96,8 +85,8 @@ impl super::ProtoVisitor for SlipnetProto {
             uid: 0,
             sig: 0,
             schema: SchemeX::Slipnet,
-            username: UserInfo::Text(config_data.into(), UserInfoEncoding::B64),
-            password: Some(config_data.into()),
+            username: config_data,
+            password: None,
             host,
             port,
             path: None,
@@ -109,7 +98,10 @@ impl super::ProtoVisitor for SlipnetProto {
     }
 
     fn build(url: &UrlX) -> Result<String, super::ParseError> {
-        let config_data = url.username.as_raw();
+        let config_data = url
+            .username
+            .as_url_safe()
+            .map_err(|e| ParseError::InvalidUserInfo(e.to_string().into()))?;
         let schema_str = url.schema.as_str();
         Ok(format!("{}://{}", schema_str, config_data))
     }
