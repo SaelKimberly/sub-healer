@@ -71,3 +71,6 @@ ego-tree = { version = "*" }
 aho-corasick = { version = "*" }
 
 [dev-dependencies]
+# CPU profiling: `cargo flamegraph --bin v2ray-heal -- mine`
+# Requires: `cargo install flamegraph` and `sudo apt install linux-tools-common linux-tools-$(uname -r)` (or equivalent)
+flamegraph = "*"

@@ -13,6 +13,15 @@ rtk cargo test permissive_json
 
 # Run mining pipeline
 cargo run --bin v2ray-heal -- mine
+
+# CPU flamegraph (requires: cargo install flamegraph && sudo apt install linux-tools-common linux-tools-$(uname -r))
+cargo flamegraph --bin v2ray-heal -- mine
+
+# With custom frequency or duration
+cargo flamegraph -c "freq=100" --bin v2ray-heal -- mine
+
+# Memory flamegraph
+cargo flamegraph -m --bin v2ray-heal -- mine
 ```
 
 ## Memory System

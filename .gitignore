@@ -6,3 +6,4 @@ sub-healer.code-workspace
 *.db
 *.db-journal
 opencode.json
+.cargo/config.toml
