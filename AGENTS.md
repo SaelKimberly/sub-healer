@@ -1,5 +1,14 @@
 # v2ray-heal Agent Instructions
 
+## Project Purpose
+
+**v2ray-heal** is a Rust-based proxy subscription miner and aggregator that:
+- Scrapes Telegram channels for V2Ray proxy URLs (VLESS, VMess, Trojan, Shadowsocks, Hysteria2, etc.)
+- Downloads and parses v2ray subscription files from URLs
+- Parses, normalizes, and deduplicates proxy configurations
+- Validates connectivity and outputs curated subscription lists
+- Persists data to SQLite with time-travel upsert semantics to track origin and lifetime of every parsed config URL
+
 ## Quick Commands
 
 ```bash
@@ -8,8 +17,11 @@ rtk cargo check
 rtk cargo test
 rtk cargo build
 
-# Run specific test
-rtk cargo test permissive_json
+# Run specific test (filter by name)
+rtk cargo test test_vless
+rtk cargo test test_trojan
+rtk cargo test test_hysteria2
+rtk cargo test test_tg
 
 # Run mining pipeline
 cargo run --bin v2ray-heal -- mine
@@ -36,7 +48,10 @@ The repo uses `memelord` MCP for persistent memory across sessions. Configured i
 
 ## CLI Entrypoint
 
-`v2ray-heal mine` — runs the Telegram channel mining pipeline (fetch → extract → validate → output to DB + files).
+`v2ray-heal mine` — runs the full mining pipeline:
+1. Telegram channel scraping (fetch → extract → validate)
+2. v2ray subscription file downloading and parsing
+3. Output to SQLite database with origin tracking and lifetime analysis
 
 **Note**: Only `mine` subcommand is implemented. Other subcommands (`remote`, `local`, `config`, `stdin`) are `todo!()`.
 
@@ -44,6 +59,8 @@ The repo uses `memelord` MCP for persistent memory across sessions. Configured i
 
 - **`src/lib.rs`** — core library: subscription parsing, `UrlX` deduplication, download pipeline
 - **`src/urlx/`** — new URL parsing module (in development): `parse_url.rs`, `split_url.rs`, `user_info.rs`, `schemex.rs`, `port_spec.rs`
+  - **`src/urlx/mod.rs`** — `UrlX` struct (new, distinct from legacy in utils/urlx.rs), `ProtoVisitor` trait
+  - **`src/urlx/proto_vis/`** — protocol implementations: `vmess.rs`, `vless.rs`, `trojan.rs`, `ss.rs`, `ssr.rs`, `hysteria2.rs`, `slipnet.rs`, `tg.rs`
 - **`src/utils/`** — `urlx.rs` (legacy URL parse/normalize), `line.rs` (batch processing), `port.rs`, `host_port.rs`, `permissive_json.rs`
 - **`src/mining/`** — Telegram channel scraper: `telegram.rs`, `extractor.rs`, `validator.rs`, `output.rs`, `config.rs`
 - **`src/db.rs`** — SQLite persistence: `sources`, `servers`, `sightings` tables with time-travel upsert
@@ -69,6 +86,24 @@ The repo uses `memelord` MCP for persistent memory across sessions. Configured i
 - **Normalization**: Must call `normalize(&mut None)` to compute `id` (rapidhash) and validate host+port
 - **ServerName**: Use `host_str()` method to get string representation (not `to_str()` directly)
 
+## Sig/Uid Computation
+
+- **`sig`** (signature): u64 rapidhash v3 of non-credential connection parameters (schema + transport + security + query). Computed in `visit()` function of each `ProtoVisitor` implementation.
+- **`uid`** (unique ID): XOR of `sig` and rapidhash v3 of server credentials (host + port + username + password). For `SlipnetEnc`, `uid == sig` since there are no exposed credentials.
+- **Location**: Each protocol's `visit()` in `src/urlx/proto_vis/*.rs` computes its own sig/uid per protocol-specific rules.
+
+## ProtoVisitor Trait
+
+```rust
+pub trait ProtoVisitor {
+    fn parse(raw: &RawUrlX<'_>) -> Result<UrlX, ParseError>;
+    fn build(url: &UrlX) -> Result<String, ParseError>;
+    fn visit(url: &mut UrlX) -> Result<(), ParseError>;  // computes sig/uid
+}
+```
+
+All 9 protocols implement this: Vmess, Vless, Trojan, Hysteria2, SS, SSR, Slipnet, SlipnetEnc, Tg.
+
 ## Mining Pipeline
 
 ```
@@ -83,5 +118,7 @@ fetch_all_channels()
 
 - `src/utils/urlx.rs` — proxy URL parsing, normalization, fragment handling
 - `src/urlx/` — new URL parsing module (replaces utils/urlx.rs)
+- `src/urlx/proto_vis/mod.rs` — protocol visitor trait, helper functions for sig/uid
+- `src/urlx/proto_vis/*.rs` — protocol-specific implementations with visit() for sig/uid
 - `src/db.rs` — SQLite schema, time-travel upsert logic
 - `src/mining/mod.rs` — DB integration flow
