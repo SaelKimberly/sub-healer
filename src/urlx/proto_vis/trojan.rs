@@ -129,8 +129,36 @@ impl super::ProtoVisitor for TrojanProto {
         ))
     }
 
-    fn visit(_url: &mut UrlX) -> Result<(), super::ParseError> {
-        // TODO: implement sig/uid computation
+    fn visit(url: &mut UrlX) -> Result<(), super::ParseError> {
+        let mut sig_parts = Vec::new();
+        sig_parts.push(url.schema.as_str().as_bytes());
+
+        if let Some(ref security) = url.security {
+            sig_parts.push(security.as_bytes());
+        }
+        if let Some(ref transport) = url.transport {
+            sig_parts.push(transport.as_bytes());
+        }
+        if let Some(ref path) = url.path {
+            sig_parts.push(path.as_bytes());
+        }
+
+        for (key, value) in &url.query {
+            let key_str = key.as_str();
+            if key_str == "sni" || key_str == "alpn" || key_str == "fp" {
+                sig_parts.push(key_str.as_bytes());
+                if let Some(v) = value {
+                    sig_parts.push(v.as_bytes());
+                }
+            }
+        }
+
+        let sig_data = sig_parts.concat();
+        url.sig = rapidhash::v3::rapidhash_v3(&sig_data);
+
+        let (uid, _) = super::_compute_uid(url);
+        url.uid = uid;
+
         Ok(())
     }
 }

@@ -106,8 +106,20 @@ impl super::ProtoVisitor for TgProto {
         Ok(tg_url.to_string())
     }
 
-    fn visit(_url: &mut UrlX) -> Result<(), super::ParseError> {
-        // TODO: implement sig/uid computation
+    fn visit(url: &mut UrlX) -> Result<(), super::ParseError> {
+        let mut sig_parts = Vec::new();
+        sig_parts.push(url.schema.as_str().as_bytes());
+
+        if let Some(ref transport) = url.transport {
+            sig_parts.push(transport.as_bytes());
+        }
+
+        let sig_data = sig_parts.concat();
+        url.sig = rapidhash::v3::rapidhash_v3(&sig_data);
+
+        let (uid, _) = super::_compute_uid(url);
+        url.uid = uid;
+
         Ok(())
     }
 }

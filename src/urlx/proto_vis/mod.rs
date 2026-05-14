@@ -88,6 +88,54 @@ fn _parse_base64(data: &str) -> Result<Vec<u8>, base64::DecodeError> {
     }
 }
 
+fn _host_str(url: &UrlX) -> String {
+    match &url.host {
+        Some(host) => host.to_str().into_owned(),
+        None => String::new(),
+    }
+}
+
+fn _port_str(url: &UrlX) -> String {
+    url.port
+        .as_ref()
+        .map(|p| p.to_string())
+        .unwrap_or_default()
+}
+
+fn _username_str(url: &UrlX) -> String {
+    url.username
+        .as_text()
+        .map(|t| t.to_string())
+        .unwrap_or_default()
+}
+
+fn _password_str(url: &UrlX) -> String {
+    url.password
+        .as_ref()
+        .map(|p| p.to_string())
+        .unwrap_or_default()
+}
+
+fn _compute_credential_hash(url: &UrlX) -> u64 {
+    let host = _host_str(url);
+    let port = _port_str(url);
+    let username = _username_str(url);
+    let password = _password_str(url);
+
+    if host.is_empty() && port.is_empty() && username.is_empty() && password.is_empty() {
+        return 0;
+    }
+
+    let cred_data = format!("{}:{}:{}:{}", host, port, username, password);
+    rapidhash::v3::rapidhash_v3(cred_data.as_bytes())
+}
+
+fn _compute_uid(url: &UrlX) -> (u64, u64) {
+    let cred_hash = _compute_credential_hash(url);
+    let uid = url.sig ^ cred_hash;
+    (uid, url.sig)
+}
+
 // ========================================
 // Dispatcher
 // ========================================

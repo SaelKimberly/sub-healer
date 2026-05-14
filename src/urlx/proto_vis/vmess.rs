@@ -150,8 +150,39 @@ impl super::ProtoVisitor for VmessProto {
         Ok(format!("{}://{}", url.schema.as_str(), username))
     }
 
-    fn visit(_url: &mut UrlX) -> Result<(), super::ParseError> {
-        // TODO: implement sig/uid computation
+    fn visit(url: &mut UrlX) -> Result<(), super::ParseError> {
+        let json = match &url.username {
+            UserInfo::Json(v) => v,
+            _ => return Ok(()),
+        };
+
+        let mut sig_parts: Vec<String> = vec![url.schema.as_str().to_string()];
+
+        if let Some(scy) = json.get("scy").and_then(|v| v.as_str()) {
+            sig_parts.push(scy.to_string());
+        }
+        if let Some(net) = json.get("net").and_then(|v| v.as_str()) {
+            sig_parts.push(net.to_string());
+        }
+        if let Some(aid) = json.get("aid").and_then(|v| v.as_str()) {
+            sig_parts.push(aid.to_string());
+        }
+        if let Some(sni) = json.get("sni").and_then(|v| v.as_str()) {
+            sig_parts.push(sni.to_string());
+        }
+        if let Some(ves) = json.get("ves").and_then(|v| v.as_str()) {
+            sig_parts.push(ves.to_string());
+        }
+        if let Some(seq) = json.get("seq").and_then(|v| v.as_u64()) {
+            sig_parts.push(seq.to_string());
+        }
+
+        let sig_data = sig_parts.join(":");
+        url.sig = rapidhash::v3::rapidhash_v3(sig_data.as_bytes());
+
+        let (uid, _) = super::_compute_uid(url);
+        url.uid = uid;
+
         Ok(())
     }
 }
