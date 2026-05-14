@@ -89,17 +89,13 @@ fn _parse_base64(data: &str) -> Result<Vec<u8>, base64::DecodeError> {
 }
 
 fn _host_str(url: &UrlX) -> String {
-    match &url.host {
-        Some(host) => host.to_str().into_owned(),
-        None => String::new(),
-    }
+    url.host
+        .as_ref()
+        .map_or_else(String::new, |host| host.to_str().into_owned())
 }
 
 fn _port_str(url: &UrlX) -> String {
-    url.port
-        .as_ref()
-        .map(|p| p.to_string())
-        .unwrap_or_default()
+    url.port.as_ref().map(|p| p.to_string()).unwrap_or_default()
 }
 
 fn _username_str(url: &UrlX) -> String {

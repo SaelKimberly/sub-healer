@@ -88,7 +88,9 @@ pub fn init_db(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-fn hash_source_url(url: &str) -> i64 {
+/// Compute deterministic hash for source URL
+/// Used as primary key in sources table
+pub fn hash_source_url(url: &str) -> i64 {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
     let mut hasher = DefaultHasher::new();
@@ -134,7 +136,7 @@ struct UrlXForJson {
 impl From<&UrlX> for UrlXForJson {
     fn from(urlx: &UrlX) -> Self {
         Self {
-            id: urlx.id,
+            id: urlx.uid,
             schema: urlx.schema.as_str().to_string(),
             username: urlx.username.clone(),
             password: urlx.password.as_ref().map(|p| p.to_string()),
@@ -159,7 +161,7 @@ pub fn upsert_server(
     source_id: i64,
     incoming_ts: i64,
 ) -> Result<()> {
-    let server_id = urlx.id as i64;
+    let server_id = urlx.uid as i64;
 
     let existing: Option<ServerRecord> = conn
         .query_row(

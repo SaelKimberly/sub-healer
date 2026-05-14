@@ -1,3 +1,11 @@
+#![allow(
+    dead_code,
+    unused_imports,
+    unused_variables,
+    reason = "For AI agent context reduction"
+)]
+#![warn(clippy::nursery)]
+pub mod db;
 mod error;
 pub mod mining;
 mod utils;
@@ -20,9 +28,10 @@ pub(crate) use utils::{
 
 pub use utils::{
     line::{Line, Lines},
-    port::{PortDecl, PortSpec},
     urlx::{SchemeX, UrlX},
 };
+
+pub(crate) use urlx::{HostSpec, PortDecl, PortSpec};
 
 use mimalloc::MiMalloc;
 
@@ -91,6 +100,20 @@ pub async fn download_sub<W: Write>(
     dest: &mut W,
     unique: &mut Option<FxHashSet<u64>>,
 ) -> std::io::Result<()> {
+    let proxies = download_sub_proxies(url).await?;
+    let entries = unique.get_or_insert_default();
+    let before = entries.len();
+    for urlx in proxies {
+        if entries.insert(urlx.uid) {
+            writeln!(dest, "{urlx}").unwrap();
+        }
+    }
+    let after = entries.len();
+    tracing::info!("New entries: {}", after - before);
+    Ok(())
+}
+
+pub async fn download_sub_proxies(url: url::Url) -> std::io::Result<Vec<UrlX>> {
     let client = reqwest::Client::builder()
         .user_agent("Xray-Rs/0.1.0")
         .build()
@@ -121,58 +144,22 @@ pub async fn download_sub<W: Write>(
 
     let sub = parse_sub(&url, &data);
 
-    let entries = unique.get_or_insert_default();
-
-    let before = entries.len();
-
-    for (row, err) in sub.iter().filter_map(|l| {
+    let mut proxies = Vec::new();
+    for line in sub.iter() {
         if let Line {
-            row,
-            err: Some(err),
+            url: Data::Url(urlx),
+            err: None,
             ..
-        } = l
+        } = line
         {
-            Some((*row, err.as_ref()))
-        } else {
-            if let Line {
-                row,
-                url: Data::Url(url),
-                wrn: lints,
-                err: None,
-            } = l
-            {
-                if entries.insert(url.id) {
-                    for lint in lints.iter().flatten() {
-                        let row_idx = *row;
-                        tracing::warn!(
-                            target: "sub::lint",
-                            source = %sub.source(),
-                            line = row_idx,
-                            preview = sub.preview_line(row_idx).unwrap_or_default(),
-                            "{}", lint
-                        );
-                    }
-                    writeln!(dest, "{url}").unwrap()
-                } else {
-                    tracing::debug!("{}: already in set", row);
-                }
+            let mut urlx = urlx.clone();
+            if urlx.normalize(&mut None).is_ok() {
+                proxies.push(urlx);
             }
-            None
         }
-    }) {
-        tracing::error!(
-            target: "sub::error",
-            source = %sub.source(),
-            line = row,
-            preview = sub.preview_line(row).unwrap_or_default(),
-            "{}", err
-        );
     }
 
-    let after = entries.len();
-    tracing::info!("New entries: {}", after - before);
-
-    Ok(())
+    Ok(proxies)
 }
 
 #[cfg(test)]
