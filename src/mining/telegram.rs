@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 use std::pin::Pin;
 use std::sync::{Arc, LazyLock};
 use std::time::Duration;
@@ -11,7 +10,7 @@ use scraper::{ElementRef, Node};
 use tokio::sync::mpsc::Receiver;
 use tokio::task::JoinSet;
 
-use crate::urlx::TinyText;
+use crate::urlx::{RawUrlX, TinyText, UrlX, try_accept_raw};
 
 /// Selector for outer message container
 static TG_WEB_MESSAGE_SELECTOR: LazyLock<scraper::Selector> =
@@ -27,11 +26,20 @@ static TG_WEB_TEXT_SELECTOR: LazyLock<scraper::Selector> =
     LazyLock::new(|| scraper::Selector::parse("div.tgme_widget_message_text").unwrap());
 
 #[derive(Debug, Clone)]
+pub struct UnparseableRecord {
+    pub raw_url: String,
+    pub scheme: String,
+    pub error: String,
+}
+
+#[derive(Debug, Clone)]
 pub struct TgWebMessage {
     pub user: TinyText,
     pub time: DateTime<Utc>,
     pub msg_id: u32,
-    pub msg_urls: Option<Box<[String]>>,
+    pub source_url: TinyText,
+    pub msg_urls: Option<Box<[UrlX]>>,
+    pub unparseable_urls: Option<Box<[UnparseableRecord]>>,
 }
 
 enum TgEvent {
@@ -81,9 +89,12 @@ impl Stream for TgWebMessageStream {
 
 /// Parse a single message
 #[inline]
-fn parse_message(channel_id: &str, msg_id: u32, msg: ElementRef<'_>) -> TgWebMessage {
-    fn extract_urls(channel_id: &str, msg: ElementRef<'_>) -> Option<Box<[String]>> {
-        let mut msg_text = msg.select(&TG_WEB_TEXT_SELECTOR).next()?.traverse();
+fn parse_message(channel_id: &str, source_url: &str, msg_id: u32, msg: ElementRef<'_>) -> TgWebMessage {
+    fn extract_urls(channel_id: &str, msg: ElementRef<'_>) -> (Option<Box<[UrlX]>>, Option<Box<[UnparseableRecord]>>) {
+        let mut msg_text = match msg.select(&TG_WEB_TEXT_SELECTOR).next() {
+            Some(t) => t.traverse(),
+            None => return (None, None),
+        };
 
         let mut msg_tail = Option::<&str>::None;
 
@@ -133,36 +144,31 @@ fn parse_message(channel_id: &str, msg_id: u32, msg: ElementRef<'_>) -> TgWebMes
                         curr_url.push_str(chunk);
                     }
                 } else if let Some((schema, rest)) = chunk.split_once("://") {
-                    let schema: &'static str =
-                        match schema.trim_start().to_ascii_lowercase().as_str() {
-                            "vless" => "vless",
-                            "vmess" => "vmess",
-                            "trojan" => "trojan",
-                            "warp" => "warp",
-                            "ss" | "shadowsocks" => "ss",
-                            "ssr" | "shadowsocksr" => "ssr",
-                            "anytls" => "anytls",
-                            "slipnet" => "slipnet",
-                            "slipnet-enc" => "slipnet-enc",
-                            "hy" | "hhy" | "hysteria" | "hhysteria" => "hy",
-                            "hy2" | "hhy2" | "hysteria2" | "hhysteria2" => "hy2",
-                            "https"
-                                if rest.starts_with("t.me/socks?")
-                                    | rest.starts_with("t.me/proxy?") =>
-                            {
-                                "https"
-                            }
-                            "tg" => "tg",
-                            "wireguard" => "wireguard",
-                            other => {
-                                tracing::warn!(
-                            target: "mining::tg_channel",
-                            id = channel_id,
-                            "Skip URL: [{other}://{}]",rest.trim_end());
-                                continue;
-                            }
-                        };
-                    curr_url.push_str(schema);
+                    use std::borrow::Cow;
+                    let schema_lower = schema.trim_start().to_ascii_lowercase();
+                    let schema: Cow<'static, str> = match schema_lower.as_str() {
+                        "vless" => Cow::Borrowed("vless"),
+                        "vmess" => Cow::Borrowed("vmess"),
+                        "trojan" => Cow::Borrowed("trojan"),
+                        "warp" => Cow::Borrowed("warp"),
+                        "ss" | "shadowsocks" => Cow::Borrowed("ss"),
+                        "ssr" | "shadowsocksr" => Cow::Borrowed("ssr"),
+                        "anytls" => Cow::Borrowed("anytls"),
+                        "slipnet" => Cow::Borrowed("slipnet"),
+                        "slipnet-enc" => Cow::Borrowed("slipnet-enc"),
+                        "hy" | "hhy" | "hysteria" | "hhysteria" => Cow::Borrowed("hy"),
+                        "hy2" | "hhy2" | "hysteria2" | "hhysteria2" => Cow::Borrowed("hy2"),
+                        "https"
+                            if rest.starts_with("t.me/socks?")
+                                | rest.starts_with("t.me/proxy?") =>
+                        {
+                            Cow::Borrowed("https")
+                        }
+                        "tg" => Cow::Borrowed("tg"),
+                        "wireguard" => Cow::Borrowed("wireguard"),
+                        _ => Cow::Owned(schema_lower),
+                    };
+                    curr_url.push_str(&schema);
                     curr_url.push_str("://");
                     // 2: If we found a schema, we should start a new URL
                     // - Set is_found to true
@@ -190,22 +196,49 @@ fn parse_message(channel_id: &str, msg_id: u32, msg: ElementRef<'_>) -> TgWebMes
             }
         }
 
-        msg_urls.retain_mut(|s| {
-            if s.is_empty() || s.ends_with('…') || s.ends_with("…»") {
-                false
-            } else {
-                if let Some((i, _)) = s.char_indices().rev().take_while(|(_, c)| *c == '`').last() {
-                    s.truncate(i);
-                }
-                true
-            }
-        });
+        let mut parsed: Vec<UrlX> = Vec::new();
+        let mut unparseable: Vec<UnparseableRecord> = Vec::new();
 
-        if msg_urls.is_empty() {
+        for s in msg_urls.into_iter().filter(|s| !s.is_empty() && !s.ends_with('…') && !s.ends_with("…»")) {
+            let clean = if let Some((i, _)) =
+                s.char_indices().rev().take_while(|(_, c)| *c == '`').last()
+            {
+                &s[..i]
+            } else {
+                &s
+            };
+            let raw: RawUrlX = clean.into();
+            let raw_scheme = raw.schema.to_string();
+            match try_accept_raw(raw) {
+                Ok(urlx) => parsed.push(urlx),
+                Err(e) => {
+                    tracing::warn!(
+                        target: "mining::tg_channel",
+                        id = channel_id,
+                        "Failed to parse proxy URL: {} ({})",
+                        clean,
+                        e
+                    );
+                    unparseable.push(UnparseableRecord {
+                        raw_url: clean.to_string(),
+                        scheme: raw_scheme,
+                        error: e.to_string(),
+                    });
+                }
+            }
+        }
+
+        let msg_urls = if parsed.is_empty() {
             None
         } else {
-            Some(Box::from(msg_urls.as_slice()))
-        }
+            Some(parsed.into_boxed_slice())
+        };
+        let unparseable_urls = if unparseable.is_empty() {
+            None
+        } else {
+            Some(unparseable.into_boxed_slice())
+        };
+        (msg_urls, unparseable_urls)
     }
 
     let user = msg
@@ -230,17 +263,22 @@ fn parse_message(channel_id: &str, msg_id: u32, msg: ElementRef<'_>) -> TgWebMes
         Err(e) => panic!("Failed to parse time: {e}"),
     };
 
+    let (msg_urls, unparseable_urls) = extract_urls(channel_id, msg);
+
     TgWebMessage {
         user: user.into(),
         time,
         msg_id,
-        msg_urls: extract_urls(channel_id, msg),
+        source_url: source_url.into(),
+        msg_urls,
+        unparseable_urls,
     }
 }
 
 struct TgChannelFetch {
     client: reqwest::Client,
     channel: TinyText,
+    source_url: TinyText,
     sender: tokio::sync::mpsc::Sender<TgEvent>,
     limit: Arc<tokio::sync::Semaphore>,
     timeout: Duration,
@@ -268,9 +306,11 @@ impl TgChannelFetch {
             // When there is no slash in the url, trim the '@' prefix
             None => channel.trim_start_matches('@').to_owned(),
         };
+        let source_url = channel.clone();
         Some(Self {
             client,
             channel: channel_id.into(),
+            source_url: source_url.into(),
             sender,
             limit,
             timeout,
@@ -287,6 +327,7 @@ impl TgChannelFetch {
             let Self {
                 client,
                 channel: channel_id,
+                source_url,
                 sender,
                 limit,
                 timeout,
@@ -349,6 +390,7 @@ impl TgChannelFetch {
             let sender = sender.clone();
             let limit = limit.clone();
             let channel_id = channel_id.clone();
+            let source_url = source_url.clone();
 
             let timeout = *timeout;
             let backfill = *backfill;
@@ -371,7 +413,7 @@ impl TgChannelFetch {
                     };
                     _ = first_id.get_or_insert(msg_id);
 
-                    let msg = parse_message(&channel_id,msg_id, msg);
+                    let msg = parse_message(&channel_id, source_url.as_str(), msg_id, msg);
 
                     if backfill.is_some_and(|backfill| msg.time < backfill) {
                         has_older = true;
@@ -389,6 +431,7 @@ impl TgChannelFetch {
                     && sender.blocking_send(TgEvent::Backfill(TgChannelFetch {
                         client: client.clone(),
                         channel: channel_id.clone(),
+                        source_url: source_url.clone(),
                         sender: sender.clone(),
                         limit: limit.clone(),
                         timeout,
@@ -446,6 +489,7 @@ where
         let task = Box::pin(TgChannelFetch {
             client: client.clone(),
             channel: channel.as_str().into(),
+            source_url: channel.as_str().into(),
             sender: tx.clone(),
             limit: limit.clone(),
             timeout,
@@ -535,9 +579,8 @@ mod tests {
             per_channel
                 .entry(msg.user)
                 .or_default()
-                .extend(msg_urls.iter().map(|msg_url| {
-                    let (schema, _) = msg_url.split_once("://").expect("Should be a schema");
-                    (msg.time, schema.into(), msg_url.clone())
+                .extend(msg_urls.iter().map(|urlx| {
+                    (msg.time, urlx.schema.as_str().into(), urlx.reconstruct())
                 }));
         }
 

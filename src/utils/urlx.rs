@@ -1,6 +1,7 @@
 use std::{borrow::Cow, convert::Infallible, fmt::Display, ops::Range, str::FromStr};
 
-use crate::{PortSpec, Unescaper};
+use crate::urlx::{PortDecl, PortSpec};
+use crate::Unescaper;
 use base64::Engine;
 use bstr::ByteSlice;
 use rustls::pki_types::{IpAddr, ServerName};
@@ -82,7 +83,10 @@ impl FromStr for SchemeX {
 #[derive(Debug, Clone, PartialEq)]
 pub struct UrlX {
     /// hash of unique connection-defining url components
-    pub(crate) id: u64,
+    pub(crate) uid: u64,
+    /// hash of unique connection-defining url components (without specific host and port)
+    pub(crate) sig: u64,
+
     /// protocol schema
     pub(crate) schema: SchemeX,
     /// username part (always present)
@@ -126,11 +130,10 @@ impl UrlX {
             self.query
                 .iter()
                 .map(|(k, v)| {
-                    if let Some(v) = v {
-                        format!("{}={}", k, urlencoding::encode(v))
-                    } else {
-                        format!("{}=", k)
-                    }
+                    v.as_ref().map_or_else(
+                        || format!("{}=", k),
+                        |v| format!("{}={}", k, urlencoding::encode(v)),
+                    )
                 })
                 .collect::<Vec<_>>()
                 .join("&")
@@ -198,14 +201,24 @@ impl UrlX {
         self.security.replace(security.into());
         self.transport.replace(transport.into());
 
-        if let Some(Value::String(remark)) = json.get("ps") {
-            self.id = rapidhash::v3::rapidhash_v3(remark.as_bytes());
-            self.fragment.replace(remark.clone().into());
+        'block: {
+            let Value::Object(ref mut json) = json else {
+                break 'block;
+            };
+            let Some(Value::String(s)) = json.remove("ps") else {
+                break 'block;
+            };
+        }
+
+        if let Some(Value::String(remark)) = json.get_mut("ps").take() {
+            self.uid = rapidhash::v3::rapidhash_v3(remark.as_bytes());
+            let decoded = urlencoding::decode(remark).unwrap_or(Cow::Borrowed(remark.as_str()));
+            self.fragment.replace(decoded.into());
         }
 
         if let Some(aid) = json.get("aid") {
             match aid {
-                Value::Number(n) if let Some(0) = n.as_u64() => {
+                Value::Number(n) if n.as_u64() == Some(0) => {
                     json["aid"] = Value::String("0".to_owned())
                 }
                 Value::String(s) if s == "0" => {
@@ -248,7 +261,7 @@ impl UrlX {
                 .inspect(|_| {
                     lints
                         .get_or_insert_default()
-                        .push("SSR with SS schema detected".into())
+                        .push("SSR with SS schema detected".into());
                 });
         };
 
@@ -267,7 +280,7 @@ impl UrlX {
         self.security.replace(method.into());
         self.transport.replace("".into());
 
-        Ok((host.to_owned(), spec.clone()))
+        Ok((host.to_owned(), spec))
     }
 
     fn _visit_ssr(
@@ -313,9 +326,9 @@ impl UrlX {
                     break 'block;
                 };
                 let fragment = String::from_utf8_lossy(&decoded);
-
-                self.fragment
-                    .replace(urlencoding::encode(fragment.as_ref()).into());
+                let decoded = urlencoding::decode(fragment.as_ref())
+                    .unwrap_or_else(|_| Cow::Borrowed(fragment.as_ref()));
+                self.fragment.replace(decoded.into());
             }
         }
         Ok((host.to_owned(), PortSpec::new_with(port)))
@@ -423,7 +436,7 @@ impl UrlX {
             }
         }
 
-        if self.id == 0 {
+        if self.uid == 0 {
             let mut hasher =
                 rapidhash::v3::RapidStreamHasherV3::new(&rapidhash::v3::DEFAULT_RAPID_SECRETS);
 
@@ -437,10 +450,10 @@ impl UrlX {
                     hasher.write(b",");
                 }
                 match spec {
-                    crate::PortDecl::Single(p) => {
+                    PortDecl::Single(p) => {
                         hasher.write(&p.to_le_bytes() as &[u8]);
                     }
-                    crate::PortDecl::Range(Range { start, end }) => {
+                    PortDecl::Range(Range { start, end }) => {
                         hasher.write(&start.to_le_bytes() as &[u8]);
                         hasher.write(&end.to_le_bytes() as &[u8]);
                     }
@@ -455,7 +468,7 @@ impl UrlX {
                 hasher.write(q.as_bytes());
             }
 
-            self.id = hasher.finish();
+            self.uid = hasher.finish();
         }
 
         Ok(())
@@ -484,7 +497,8 @@ impl Display for UrlX {
             write!(f, "?{}", q)?;
         }
         if let Some(frag) = &self.fragment {
-            write!(f, "#{}", frag)?;
+            let encoded = urlencoding::encode(frag);
+            write!(f, "#{}", encoded)?;
         }
         Ok(())
     }
@@ -494,12 +508,11 @@ impl FromStr for UrlX {
     type Err = Infallible;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        // ? 1. Extract and detect schema
-        // ==============================
         let (schema, mut rest) = s.split_once("://").expect("Missing schema");
 
         let mut result = UrlX {
-            id: 0,
+            uid: 0,
+            sig: 0,
             schema: match schema {
                 "vless" => SchemeX::Vless,
                 "vmess" => SchemeX::Vmess,
@@ -526,8 +539,6 @@ impl FromStr for UrlX {
 
         let mut result_query = None;
 
-        // ? 2. Extract fragment
-        // ==============================
         if let Some((body, frag)) = rest.split_once('#') {
             rest = body.trim_end();
 
@@ -539,14 +550,11 @@ impl FromStr for UrlX {
                 .unwrap();
             let frag = frag.trim();
             let frag = frag.split_whitespace().collect::<Vec<_>>().join(" ");
-            let frag = urlencoding::encode(frag.as_str());
             if !frag.is_empty() {
                 result.fragment.replace(frag.into());
             }
         }
 
-        // ? 3. Extract query
-        // ==============================
         if let Some((body, query)) = rest.split_once('?') {
             rest = body;
             if !query.is_empty() {
@@ -554,8 +562,6 @@ impl FromStr for UrlX {
             }
         }
 
-        // ? 4. Extract path
-        // ==============================
         if let Some((body, path)) = rest.split_once('/')
             && !body.ends_with('=')
         {
@@ -575,7 +581,6 @@ impl FromStr for UrlX {
             }
         }
 
-        // ? 5. Extract query
         if let Some((body, query)) = rest.split_once('&') {
             rest = body;
             if !query.is_empty() {

@@ -35,6 +35,8 @@ pub enum ParseError {
     Unknown(Box<dyn std::error::Error + Send + Sync + 'static>),
     #[error("invalid structure for {0}")]
     InvalidStructure(SchemeX),
+    #[error("unsupported scheme: {0}")]
+    UnsupportedScheme(SchemeX),
 }
 
 impl ParseError {
@@ -135,7 +137,7 @@ fn _compute_uid(url: &UrlX) -> (u64, u64) {
 // ========================================
 // Dispatcher
 // ========================================
-pub(in crate::urlx) fn try_accept_raw(raw: Input<'_>) -> Result<UrlX, ParseError> {
+pub fn try_accept_raw(raw: Input<'_>) -> Result<UrlX, ParseError> {
     let result = match raw.schema {
         SchemeX::SS => ss::SsProto::parse(&raw),
         SchemeX::SSR => ssr::SsrProto::parse(&raw),
@@ -153,7 +155,7 @@ pub(in crate::urlx) fn try_accept_raw(raw: Input<'_>) -> Result<UrlX, ParseError
             tracing::debug!(target: "visit", "Hysteria not implemented, treating as Hysteria2");
             hysteria2::Hysteria2Proto::parse(&raw)
         }
-        ref other => unimplemented!("{other}"),
+        ref other => Err(ParseError::UnsupportedScheme(other.clone())),
     };
 
     let e = match result {
@@ -172,34 +174,16 @@ pub(in crate::urlx) fn try_accept_raw(raw: Input<'_>) -> Result<UrlX, ParseError
     };
 
     let original_schema = raw.schema.clone();
-    let v = 'block: {
-        if let Ok(v) = ss::SsProto::parse(&raw) {
-            break 'block v;
-        }
-        if let Ok(v) = ssr::SsrProto::parse(&raw) {
-            break 'block v;
-        }
-        if let Ok(v) = vmess::VmessProto::parse(&raw) {
-            break 'block v;
-        }
-        if let Ok(v) = vless::VlessProto::parse(&raw) {
-            break 'block v;
-        }
-        if let Ok(v) = trojan::TrojanProto::parse(&raw) {
-            break 'block v;
-        }
-        if let Ok(v) = hysteria2::Hysteria2Proto::parse(&raw) {
-            break 'block v;
-        }
-        if let Ok(v) = slipnet::SlipnetProto::parse(&raw) {
-            break 'block v;
-        }
-        if let Ok(v) = tg::TgProto::parse(&raw) {
-            break 'block v;
-        }
+    let v = ss::SsProto::parse(&raw)
+        .or_else(|_| ssr::SsrProto::parse(&raw))
+        .or_else(|_| vmess::VmessProto::parse(&raw))
+        .or_else(|_| vless::VlessProto::parse(&raw))
+        .or_else(|_| trojan::TrojanProto::parse(&raw))
+        .or_else(|_| hysteria2::Hysteria2Proto::parse(&raw))
+        .or_else(|_| slipnet::SlipnetProto::parse(&raw))
+        .or_else(|_| tg::TgProto::parse(&raw))
+        .or(Err(e))?;
 
-        return Err(e);
-    };
     tracing::warn!(target: "visit::basic", "Schema fallback success: [{} => {}]", original_schema, v.schema);
     Ok(v)
 }

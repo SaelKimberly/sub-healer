@@ -1,11 +1,12 @@
-use std::{borrow::Cow, str::FromStr, sync::Arc};
+use std::borrow::Cow;
+use std::str::FromStr;
+use std::sync::Arc;
 
 use base64::Engine;
 use rayon::iter::{IntoParallelIterator, ParallelBridge, ParallelIterator};
-use rustls::pki_types::ServerName;
-use serde_json::Value;
 
-use crate::{PortSpec, SchemeX, UrlX};
+use crate::urlx::{RawUrlX, SchemeX, UrlX};
+use crate::urlx::try_accept_raw;
 
 static KNOWN_SCHEMAS: &[&str] = &[
     "vless://",
@@ -21,13 +22,16 @@ static KNOWN_SCHEMAS: &[&str] = &[
     "anytls://",
     "ss://",
     "ssr://",
+    "slipnet://",
+    "tg://",
+    "wireguard://",
 ];
 
 #[derive(Debug, Clone, PartialEq)]
 #[allow(clippy::large_enum_variant)]
 pub enum Data<'a> {
     Raw {
-        scheme: &'static str,
+        scheme: Cow<'static, str>,
         url: Cow<'a, str>,
     },
     Url(UrlX),
@@ -84,13 +88,22 @@ impl<'a> Line<'a> {
             }
         };
 
-        let Ok(scheme) = SchemeX::from_str(scheme);
-        if matches!(scheme, SchemeX::Unknown(_)) {
+        // SchemeX::from_str is Infallible
+        let scheme_enum = SchemeX::from_str(scheme.as_ref()).unwrap();
+        if matches!(scheme_enum, SchemeX::Unknown(_)) {
             wrn.get_or_insert_default()
-                .push(format!("Unknown protocol schema: {scheme}").into());
+                .push(format!("Unknown protocol schema: {scheme_enum}").into());
         }
 
-        let Ok(urlx) = UrlX::from_str(url.as_ref());
+        let raw: RawUrlX = url.as_ref().into();
+        let Ok(urlx) = try_accept_raw(raw) else {
+            return Self {
+                row,
+                url: Data::Raw { scheme, url },
+                wrn,
+                err: Some("no protocol matched".into()),
+            };
+        };
 
         Self {
             row,
@@ -106,28 +119,36 @@ pub struct Lines<'a> {
     source: url::Url,
     basic: Arc<str>,
     inner: Vec<Line<'a>>,
+    raw: Vec<Line<'a>>,
 }
 
 fn _split_at_scheme<'a>(
     (i, s): (usize, &'a str),
     schemas: &[&'static str],
-) -> Vec<(usize, &'static str, &'a str)> {
-    let mut slice = Option::<(&'static str, &'a str)>::None;
-    let mut result = Vec::<(usize, &'static str, &'a str)>::with_capacity(1);
+) -> Vec<(usize, Cow<'static, str>, &'a str)> {
+    let mut slice = Option::<(Cow<'static, str>, &'a str)>::None;
+    let mut result = Vec::<(usize, Cow<'static, str>, &'a str)>::with_capacity(1);
 
-    // 1: Find first schema in line
+    // 1: Find first schema in line (any word://, not just KNOWN_SCHEMAS)
     if let Some(prefix) = s.split_inclusive("://").next() {
-        for schema in KNOWN_SCHEMAS {
-            if let Some(prefix) = prefix.strip_suffix(schema) {
-                let s = if prefix.is_empty() {
-                    s
-                } else {
-                    s.strip_prefix(prefix)
-                        .expect("Prefix is always a part of line")
-                };
-                slice.replace((schema, s));
-                break;
-            }
+        let before = prefix.strip_suffix("://").unwrap_or(prefix);
+        let scheme_word = before
+            .split_whitespace()
+            .last()
+            .filter(|w| !w.is_empty());
+        if let Some(sw) = scheme_word {
+            let rest = if before.trim().is_empty() {
+                s.trim_start()
+            } else {
+                s.strip_prefix(before.trim_end())
+                    .unwrap_or(s)
+            };
+            let cow_scheme = KNOWN_SCHEMAS
+                .iter()
+                .find(|k| **k == format!("{}://", sw))
+                .map(|k| Cow::Borrowed(k.strip_suffix("://").unwrap_or(k)))
+                .unwrap_or_else(|| Cow::Owned(sw.to_string()));
+            slice.replace((cow_scheme, rest));
         }
     }
 
@@ -138,7 +159,7 @@ fn _split_at_scheme<'a>(
         }
 
         // try to find another known schema in the area of current url (longest first)
-        let mut min_schema_pos = Option::<(usize, &'static str)>::None;
+        let mut min_schema_pos = Option::<(usize, Cow<'static, str>)>::None;
 
         for s in schemas {
             let idx = sx.floor_char_boundary(5);
@@ -148,10 +169,10 @@ fn _split_at_scheme<'a>(
             if let Some((current, found)) = min_schema_pos.as_mut() {
                 if pos < *current {
                     *current = pos;
-                    *found = s;
+                    *found = Cow::Borrowed(s);
                 }
             } else {
-                min_schema_pos = Some((pos, *s));
+                min_schema_pos = Some((pos, Cow::Borrowed(s)));
             }
         }
 
@@ -168,9 +189,18 @@ fn _split_at_scheme<'a>(
     result
 }
 
+enum VisitResult {
+    Visited(Line<'static>),
+    Raw(Line<'static>),
+}
+
 impl<'a> Lines<'a> {
     pub fn iter(&self) -> impl Iterator<Item = &Line<'a>> {
         self.inner.iter()
+    }
+
+    pub fn raw_entries(&self) -> &[Line<'a>] {
+        &self.raw
     }
 
     pub fn source(&self) -> &url::Url {
@@ -192,6 +222,7 @@ impl<'a> Lines<'a> {
         let this = Self {
             source: url.clone(),
             basic: Arc::from(content),
+            raw: Vec::new(),
             inner: content
                 .lines()
                 .enumerate()
@@ -214,215 +245,62 @@ impl<'a> Lines<'a> {
     }
 
     pub(crate) fn processed(self) -> Lines<'static> {
-        let mut visited_lines: Vec<Line<'static>> = self
+        let results: Vec<VisitResult> = self
             .inner
             .into_par_iter()
             .map(Line::parse_raw)
-            .flat_map(Self::_visit_line)
+            .map(Self::_visit_line)
             .collect();
 
-        visited_lines.sort_by_key(|u| u.row);
+        let mut visited_lines = Vec::new();
+        let mut raw_lines = Vec::new();
+        for r in results {
+            match r {
+                VisitResult::Visited(l) => visited_lines.push(l),
+                VisitResult::Raw(l) => raw_lines.push(l),
+            }
+        }
 
-        tracing::info!("Processed {} lines", visited_lines.len());
+        visited_lines.sort_by_key(|u| u.row);
+        raw_lines.sort_by_key(|u| u.row);
+
+        tracing::info!(
+            "Processed {} lines ({} raw)",
+            visited_lines.len(),
+            raw_lines.len()
+        );
         Lines {
             source: self.source,
             basic: self.basic,
             inner: visited_lines,
+            raw: raw_lines,
         }
     }
 
-    fn _visit_vmess(
-        u: &mut UrlX,
-        lints: &mut Option<Vec<Cow<'static, str>>>,
-        decoded_username: &[u8],
-    ) -> Result<(ServerName<'static>, PortSpec), Cow<'static, str>> {
-        let (_, mut json) = crate::permissive_json(decoded_username.into())
-            .map_err(|_| "VMESS area should be JSON")?;
-
-        let host = {
-            let Some(host) = json.get("add").and_then(Value::as_str) else {
-                return Err(format!("Missing 'add' field in VMESS JSON {}", json).into());
-            };
-            ServerName::try_from(host.trim_start_matches('[').trim_end_matches(']'))
-                .map_err(|e| format!("Invalid host in VMESS JSON: {} {}", host, e))?
-                .to_owned()
-        };
-
-        let port = match json
-            .get("port")
-            .ok_or_else(|| format!("Missing 'port' field in VMESS JSON {}", json))?
-        {
-            Value::String(s) => <u16 as FromStr>::from_str(s.trim())
-                .map_err(|_| format!("Invalid port number in VMESS JSON: {}", s))?,
-            Value::Number(n) => n
-                .as_u64()
-                .ok_or_else(|| format!("Invalid port number in VMESS JSON: {}", n))?
-                .try_into()
-                .map_err(|_| format!("Invalid port number in VMESS JSON: {}", n))?,
-            other => {
-                return Err(format!("Invalid port number in VMESS JSON: {}", other).into());
-            }
-        };
-
-        let security = match json.get("scy").and_then(Value::as_str) {
-            Some(s) if !s.is_empty() => s,
-            _ => "auto",
-        };
-        let transport = match json.get("net").and_then(Value::as_str) {
-            Some(s) if !s.is_empty() => s,
-            _ => "tcp",
-        };
-
-        u.security.replace(security.into());
-        u.transport.replace(transport.into());
-
-        if let Some(Value::String(remark)) = json.get("ps") {
-            u.id = rapidhash::v3::rapidhash_v3(remark.as_bytes());
-            u.fragment.replace(remark.clone().into());
-        }
-
-        if let Some(aid) = json.get("aid") {
-            match aid {
-                Value::Number(n) if let Some(0) = n.as_u64() => {
-                    json["aid"] = Value::String("0".to_owned())
-                }
-                Value::String(s) if s == "0" => {
-                    //
-                }
-                _ => {
-                    lints
-                        .get_or_insert_default()
-                        .push(format!("Deprecated or invalid aid in VMESS JSON: {}", aid).into());
-                }
-            }
-        } else {
-            json["aid"] = Value::String("0".to_owned());
-        }
-
-        let username = json.to_string();
-        let username = base64::prelude::BASE64_URL_SAFE.encode(username);
-
-        u.username.clear();
-        u.username.push_str(username.as_str());
-
-        Ok((host.to_owned(), PortSpec::new_with(port)))
-    }
-    fn _visit_ss(
-        u: &mut UrlX,
-        lints: &mut Option<Vec<Cow<'static, str>>>,
-        decoded_username: &[u8],
-    ) -> Result<(ServerName<'static>, PortSpec), Cow<'static, str>> {
-        let area = str::from_utf8(decoded_username)
-            .map_err(|e| format!("Invalid {} URL (non utf8): {e}", u.schema))?;
-
-        if matches!(u.schema, SchemeX::SSR) {
-            return Self::_visit_ssr(u, lints, area);
-        }
-
-        let Some((userinfo, hostport)) = area.rsplit_once('@') else {
-            return Self::_visit_ssr(u, lints, area)
-                .map_err(|e| format!("Either missing '@' in SS URL, or {}", e).into())
-                .inspect(|_| {
-                    lints
-                        .get_or_insert_default()
-                        .push("SSR with SS schema detected".into())
-                });
-        };
-
-        let (_, (host, spec)) = super::host_port::host_port_spec(hostport.as_bytes().into())
-            .map_err(|_| format!("Invalid SS URL {}", area))?;
-        let (method, password) = userinfo.split_once(':').unwrap_or((userinfo, ""));
-
-        let userinfo =
-            base64::prelude::BASE64_URL_SAFE_NO_PAD.encode(format!("{method}:{password}"));
-
-        u.username.clear();
-        u.username.push_str(userinfo.as_str());
-
-        u.schema = SchemeX::SS;
-
-        u.security.replace(method.into());
-        u.transport.replace("".into());
-
-        Ok((host.to_owned(), spec.clone()))
-    }
-    fn _visit_ssr(
-        u: &mut UrlX,
-        lints: &mut Option<Vec<Cow<'static, str>>>,
-        decoded_username: &str,
-    ) -> Result<(ServerName<'static>, PortSpec), Cow<'static, str>> {
-        let parts: Vec<&str> = decoded_username.splitn(6, ':').collect();
-
-        let &[raw_host, raw_port, _protocol, method, _obfs, raw_password] = parts.as_slice() else {
-            return Err(format!("Invalid SSR URL {}", decoded_username).into());
-        };
-
-        let host = ServerName::try_from(raw_host).map_err(|e| {
-            format!(
-                "Invalid host in SSR URL: {} {} ({e})",
-                raw_host, decoded_username
-            )
-        })?;
-        let port = parts[1]
-            .parse::<u16>()
-            .map_err(|_| format!("Invalid port in SSR URL: {} {}", raw_port, decoded_username))?;
-
-        u.security.replace(method.into());
-        u.transport.replace("tcp".into());
-
-        u.schema = SchemeX::SSR;
-
-        if let Some((_, path)) = raw_password.split_once('/')
-            && let Some((_, query)) = path.split_once('?')
-            && let Some(remarks) = query
-                .split('&')
-                .flat_map(|s| s.split_once('='))
-                .find_map(|(k, v)| (k == "remarks").then_some(v))
-        {
-            'block: {
-                let Ok(decoded) =
-                    base64::prelude::BASE64_URL_SAFE_NO_PAD.decode(remarks.trim_end_matches('='))
-                else {
-                    lints.get_or_insert_default().push(
-                        format!("Unable to decode remarks in SSR URL: {}", decoded_username).into(),
-                    );
-                    break 'block;
-                };
-                let fragment = String::from_utf8_lossy(&decoded);
-
-                u.fragment
-                    .replace(urlencoding::encode(fragment.as_ref()).into());
-            }
-        }
-        Ok((host.to_owned(), PortSpec::new_with(port)))
-    }
-
-    fn _visit_line(line: Line<'a>) -> Option<Line<'static>> {
-        // first deconstruct
+    fn _visit_line(line: Line<'a>) -> VisitResult {
         let Line {
             row,
-            url: Data::Url(mut url),
-            mut wrn,
-            ..
-        } = line
-        else {
-            return None;
-        };
-
-        if let Err(e) = url.normalize(&mut wrn) {
-            return Some(Line {
-                row,
-                url: Data::Url(url),
-                wrn,
-                err: Some(e),
-            });
-        }
-
-        Some(Line {
-            row,
-            url: Data::Url(url),
+            url,
             wrn,
-            err: None,
-        })
+            err,
+        } = line;
+
+        match url {
+            Data::Url(urlx) => VisitResult::Visited(Line {
+                row,
+                url: Data::Url(urlx),
+                wrn,
+                err: None,
+            }),
+            Data::Raw { scheme, url } => VisitResult::Raw(Line {
+                row,
+                url: Data::Raw {
+                    scheme,
+                    url: Cow::Owned(url.into_owned()),
+                },
+                wrn,
+                err,
+            }),
+        }
     }
 }

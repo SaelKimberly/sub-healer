@@ -52,28 +52,22 @@ impl super::ProtoVisitor for SlipnetProto {
             .copied()
             .filter(|s| !s.is_empty())
             .map(TinyText::from);
-        let local_port = fields.get(8).and_then(|s| s.parse::<u16>().ok());
 
         let host = domain
             .as_ref()
-            .and_then(|d| rustls::pki_types::ServerName::try_from(d.as_str()).ok())
-            .map(|s| s.to_owned());
-
-        let query: Vec<(TinyText, Option<TinyText>)> = std::iter::empty()
-            .chain(
-                public_key
-                    .as_ref()
-                    .map(|pk| (TinyText::from("pk"), Some(pk.clone()))),
-            )
-            .chain(
-                tunnel_type
-                    .as_ref()
-                    .map(|tt| (TinyText::from("type"), Some(tt.clone()))),
-            )
-            .collect();
-
-        let port = local_port.map(PortSpec::new_with);
-
+            .map(|d| rustls::pki_types::ServerName::try_from(d.as_str()))
+            .transpose()
+            .map_err(|e| super::ParseError::InvalidHost(e.to_string().into()))?
+            .ok_or(super::ParseError::MissingHost)?
+            .to_owned();
+        let port = PortSpec::new_with(
+            fields
+                .get(8)
+                .map(|s| s.parse::<u16>())
+                .transpose()
+                .map_err(|e| super::ParseError::InvalidPort(e.to_string().into()))?
+                .ok_or(super::ParseError::MissingPort)?,
+        );
         let remarks = raw
             .fragment
             .map(urlencoding::decode)
@@ -86,11 +80,11 @@ impl super::ProtoVisitor for SlipnetProto {
             sig: 0,
             schema: SchemeX::Slipnet,
             username: config_data,
-            password: None,
-            host,
-            port,
+            password: public_key,
+            host: Some(host),
+            port: Some(port),
             path: None,
-            query,
+            query: vec![],
             transport: tunnel_type,
             security: None,
             fragment: remarks,

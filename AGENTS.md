@@ -1,98 +1,110 @@
 # v2ray-heal Agent Instructions
 
-## Project Purpose
+## Project
 
-**v2ray-heal** is a Rust-based proxy subscription miner and aggregator that:
-- Scrapes Telegram channels for V2Ray proxy URLs (VLESS, VMess, Trojan, Shadowsocks, Hysteria2, etc.)
-- Downloads and parses v2ray subscription files from URLs
-- Parses, normalizes, and deduplicates proxy configurations
-- Validates connectivity and outputs curated subscription lists
-- Persists data to SQLite with time-travel upsert semantics to track origin and lifetime of every parsed config URL
+Rust proxy subscription miner/aggregator: scrapes Telegram channels + downloads subscription files → normalizes, deduplicates, validates → persists to SQLite with time-travel upsert.
 
 ## Quick Commands
 
 ```bash
-# Task runner (wraps cargo with config)
-rtk cargo check
-rtk cargo test
-rtk cargo build
-
-# Run specific test (filter by name)
-rtk cargo test test_vless
-rtk cargo test test_trojan
-rtk cargo test test_hysteria2
-rtk cargo test test_tg
-
-# Run mining pipeline
-cargo run --bin v2ray-heal -- mine
-
-# CPU flamegraph (requires: cargo install flamegraph && sudo apt install linux-tools-common linux-tools-$(uname -r))
-cargo flamegraph --bin v2ray-heal -- mine
-
-# With custom frequency or duration
-cargo flamegraph -c "freq=100" --bin v2ray-heal -- mine
-
-# Memory flamegraph
-cargo flamegraph -m --bin v2ray-heal -- mine
+rtk cargo check          # lint
+rtk cargo test           # all tests
+rtk cargo test registry  # SourceRegistry tests
+cargo run -- mine        # run full pipeline (needs config.yaml)
 ```
 
 ## Memory System
 
-The repo uses `memelord` MCP for persistent memory across sessions. Configured in `opencode.json`.
+`memelord` MCP configured in `opencode.json`. Call `memory_start_task()` at session start, `memory_end_task()` at end, `memory_report()` to persist insights.
 
-**At session start**: ALWAYS call `memelord_memory_start_task()` with your task description first to retrieve relevant past memories.
+## CLI
 
-**At session end**: Call `memelord_memory_end_task()` to report outcome metrics.
+Only `mine` subcommand implemented. Others (`stdin`, `config`, `remote`, `local`) are `todo!()`.
 
-**During work**: Use `memelord_memory_report()` to store insights, corrections, or user-provided knowledge that should persist across sessions.
+**config.yaml** must have `tgchannel:` (list). Optional `subscriptions:` list — supports `https://` (HTTP download, GITHUB_TOKEN env for github.com) and `file://` (filesystem). Unsupported schemes → `tracing::error!` + skip.
 
-## CLI Entrypoint
-
-`v2ray-heal mine` — runs the full mining pipeline:
-1. Telegram channel scraping (fetch → extract → validate)
-2. v2ray subscription file downloading and parsing
-3. Output to SQLite database with origin tracking and lifetime analysis
-
-**Note**: Only `mine` subcommand is implemented. Other subcommands (`remote`, `local`, `config`, `stdin`) are `todo!()`.
+**Unparseable URL log**: Set `V2RAY_HEAL_UNPARSEABLE_LOG` env var to path (default `unparseable.ndjson`). Captures all parse failures (unknown schemes + structurally-invalid known schemes) as NDJSON via tracing layer.
 
 ## Project Structure
 
-- **`src/lib.rs`** — core library: subscription parsing, `UrlX` deduplication, download pipeline
-- **`src/urlx/`** — new URL parsing module (in development): `parse_url.rs`, `split_url.rs`, `user_info.rs`, `schemex.rs`, `port_spec.rs`
-  - **`src/urlx/mod.rs`** — `UrlX` struct (new, distinct from legacy in utils/urlx.rs), `ProtoVisitor` trait
-  - **`src/urlx/proto_vis/`** — protocol implementations: `vmess.rs`, `vless.rs`, `trojan.rs`, `ss.rs`, `ssr.rs`, `hysteria2.rs`, `slipnet.rs`, `tg.rs`
-- **`src/utils/`** — `urlx.rs` (legacy URL parse/normalize), `line.rs` (batch processing), `port.rs`, `host_port.rs`, `permissive_json.rs`
-- **`src/mining/`** — Telegram channel scraper: `telegram.rs`, `extractor.rs`, `validator.rs`, `output.rs`, `config.rs`
-- **`src/db.rs`** — SQLite persistence: `sources`, `servers`, `sightings` tables with time-travel upsert
-- **`src/main.rs`** — CLI with `mine`, `remote`, `local`, `config` subcommands
+- **`src/lib.rs`** — public API: `parse_sub()`, `UrlX`, `Lines`, subscription decoding
+- **`src/urlx/`** — `UrlX` struct, `RawUrlX` parser, `SchemeX`, protocol visitors, `try_accept_raw()` dispatcher
+  - **`src/urlx/proto_vis/`** — 9 protocol implementations: Vmess, Vless, Trojan, SS, SSR, Hysteria2, Slipnet, SlipnetEnc, Tg
+- **`src/db.rs`** — SQLite persistence: `sources`, `servers`, `sightings` tables. `upsert_server()` serializes `UrlX` directly to JSON (no wrapper struct). Time-travel upsert: if incoming timestamp is earlier than `first_seen_ts`, archives current record to `sightings` and replaces.
+- **`src/mining/`** — pipeline modules:
+  - `config.rs` — load `tgchannel:` + `subscriptions:` from config.yaml
+  - `registry.rs` — `SourceRegistry` (pre-populate, upsert_all, lookup), `SourceMetadata`, `TimestampedProxy`
+  - `telegram.rs` — Telegram web scraper: `TgWebMessage` carries both `msg_urls: Option<Box<[UrlX]>>` and `unparseable_urls: Option<Box<[UnparseableRecord]>>`
+  - `sub.rs` — subscription fetcher: `fetch_timestamped_subs(client, registry, config_path)`
+  - `unparseable_log.rs` — `UnparseableLayer` (tracing_subscriber::Layer, filters `target == "mining::unparseable"`)
+  - `mod.rs` — `run()` orchestrator, shared reqwest::Client, consumer loop, re-exports key types
+  - `fetcher.rs`, `extractor.rs`, `validator.rs`, `output.rs`, `error.rs` — old pipeline code (unchanged, some unused)
+
+## Mining Pipeline
+
+```
+run():
+  1. Open DB → init_db
+  2. Load config (channels + subscriptions from config.yaml)
+  3. Create reqwest::Client (shared, proxy via PROXY_URL, 30s timeout)
+  4. Pre-populate SourceRegistry from channels + subscriptions
+  5. registry.upsert_all(&conn) — batch upsert sources
+  6. Telegram phase: consume fetch_tg_channels() stream
+       → per message: registry.lookup(source_url) → emit unparseable events → db::upsert_server (fatal on failure)
+  7. Subscription phase: fetch_timestamped_subs()
+       → per parsed line: emit unparseable events → db::upsert_server (fatal on failure)
+```
+
+**DB failures are fatal** — `upsert_server` uses `.context("... (aborting)")?`.
+
+No in-memory dedup — `servers.id` (= `urlx.uid`) PRIMARY KEY handles uniqueness at DB level.
+
+## Telegram Stream
+
+- `TgWebMessage.msg_urls`: already-parsed `UrlX` values (parse failures captured as `UnparseableRecord`)
+- URL strings parsed via `try_accept_raw()`
+- Parse failures: `tracing::warn!` at detection, `tracing::warn!(target: "mining::unparseable")` at emission
+- Schema whitelist removed — all `*://` patterns flow to `try_accept_raw`
+
+## Subscriptions
+
+- `parse_sub()` (lib.rs) → base64 decode → `Lines::new_raw().processed()`
+- `Lines.raw_entries()` — `Data::Raw` entries preserved (not silently dropped by `_visit_line`)
+- `file://` paths via `url.to_file_path()`, `https://` via shared client with optional `GITHUB_TOKEN` bearer auth
+
+## Unparseable URL Capture
+
+NDJSON log via tracing layer (`target: "mining::unparseable"`). Fields: `raw_url`, `scheme`, `error`, `source_id` (DB pk), `source_type` ("telegram"|"subscription"), `timestamp`. Emission happens at consumer level (where `source_id` from registry is available), not in parsing layer.
 
 ## Database Schema
 
 - **`sources`** — `id` (INTEGER PRIMARY KEY, hash of URL), `url` (TEXT)
-- **`servers`** — `id` (u64 rapidhash), schema, host, port, transport, security, remarks (plain UTF-8), raw_config (JSON), first_seen_ts, first_seen_source_id
-- **`sightings`** — server_id, source_id, seen_ts, remarks (plain UTF-8)
+- **`servers`** — `id` (u64 rapidhash as i64), schema, host, port, transport, security, remarks, `raw_config` (UrlX JSON), `first_seen_ts`, `first_seen_source_id` → FK sources(id)
+- **`sightings`** — server_id, source_id, seen_ts, remarks
 
 ## Key Technical Details
 
-- **Rust**: Edition 2024, requires Rust 1.95.0+
+- **Rust**: Edition 2024, requires 1.95.0+
 - **Global Allocator**: `mimalloc`
-- **Concurrency**: `tokio` (async I/O) + `rayon` (parallel CPU)
-- **Database**: `rusqlite` with `bundled` feature
-- **Time**: `chrono` for RFC3339 timestamp parsing
+- **Concurrency**: `tokio` (async I/O) + `rayon` (parallel CPU for line processing)
+- **Database**: `rusqlite` bundled
+- **Proxy**: HTTP proxy at `http://127.0.0.1:20172` (PROXY_URL constant)
+- **User-Agent**: `"clash-verge/v2.0.2"`
 
-## UrlX Important Notes
+## UrlX Notes
 
-- **Fragment storage**: Stored as plain UTF-8 in `UrlX` and DB. Percent-encoded only in `Display` impl.
-- **Normalization**: Must call `normalize(&mut None)` to compute `id` (rapidhash) and validate host+port
-- **ServerName**: Use `host_str()` method to get string representation (not `to_str()` directly)
+- Fragment stored as plain UTF-8; percent-encoded only in `Display`
+- Call `normalize(&mut None)` to compute `id` (rapidhash) and validate host+port
+- Use `host_str()` for string representation (not `to_str()` directly)
+- `Data::Raw.scheme` is `Cow<'static, str>` (not `&'static str`) — allows dynamic unknown schemes
 
-## Sig/Uid Computation
+## Sig/Uid
 
-- **`sig`** (signature): u64 rapidhash v3 of non-credential connection parameters (schema + transport + security + query). Computed in `visit()` function of each `ProtoVisitor` implementation.
-- **`uid`** (unique ID): XOR of `sig` and rapidhash v3 of server credentials (host + port + username + password). For `SlipnetEnc`, `uid == sig` since there are no exposed credentials.
-- **Location**: Each protocol's `visit()` in `src/urlx/proto_vis/*.rs` computes its own sig/uid per protocol-specific rules.
+- **`sig`**: rapidhash v3 of non-credential params (schema + transport + security + query)
+- **`uid`**: `sig ^ rapidhash_v3(host:port:username:password)`. For SlipnetEnc, `uid == sig`.
+- Each protocol's `visit()` in `proto_vis/*.rs` computes own sig/uid.
 
-## ProtoVisitor Trait
+## ProtoVisitor
 
 ```rust
 pub trait ProtoVisitor {
@@ -102,23 +114,13 @@ pub trait ProtoVisitor {
 }
 ```
 
-All 9 protocols implement this: Vmess, Vless, Trojan, Hysteria2, SS, SSR, Slipnet, SlipnetEnc, Tg.
+9 implementations: Vmess, Vless, Trojan, SS, SSR, Hysteria2, Slipnet, SlipnetEnc, Tg. WireGuard and Hysteria are recognized by `SchemeX` but have no working parser (fall back to other visitors or return `UnsupportedScheme`).
 
-## Mining Pipeline
+## Pre-existing Test Failures (8 tests)
 
-```
-fetch_all_channels() 
-    → scraper iterates .js-widget_message_wrap
-    → TimestampedProxy { urlx, timestamp, source_url }
-    → upsert_source() per channel (cache to HashMap)
-    → upsert_server() with correct source_id from HashMap
-```
-
-## Reference Sources
-
-- `src/utils/urlx.rs` — proxy URL parsing, normalization, fragment handling
-- `src/urlx/` — new URL parsing module (replaces utils/urlx.rs)
-- `src/urlx/proto_vis/mod.rs` — protocol visitor trait, helper functions for sig/uid
-- `src/urlx/proto_vis/*.rs` — protocol-specific implementations with visit() for sig/uid
-- `src/db.rs` — SQLite schema, time-travel upsert logic
-- `src/mining/mod.rs` — DB integration flow
+Known failures not related to pipeline changes:
+- VMess→SS fallback mismatch
+- SSR InvalidStructure
+- SlipnetEnc InvalidUserInfo
+- WireGuard stub (`UnsupportedScheme`)
+- Warp not implemented (affects `test_download_sub`)

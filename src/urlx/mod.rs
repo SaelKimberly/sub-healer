@@ -6,6 +6,8 @@ mod split_url;
 mod user_info;
 mod valid_url;
 
+use std::borrow::Cow;
+
 use base64::Engine;
 use rustls::pki_types::{IpAddr, ServerName};
 use serde_util::{host_serde, port_serde};
@@ -17,13 +19,13 @@ pub(crate) type HostSpec = rustls::pki_types::ServerName<'static>;
 use crate::Unescaper;
 pub(crate) use port_spec::{PortDecl, PortSpec};
 
-use proto_vis::try_accept_raw;
+pub use proto_vis::try_accept_raw;
 pub(crate) use proto_vis::{
     Hysteria2Proto, ParseError, ProtoVisitor, SlipnetProto, SsProto, SsrProto, TgProto,
     TrojanProto, VlessProto, VmessProto, WireguardProto,
 };
 
-pub(crate) use schemex::SchemeX;
+pub use schemex::SchemeX;
 pub use split_url::RawUrlX;
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -64,6 +66,14 @@ pub struct UrlX {
 }
 
 impl UrlX {
+    pub fn host_str(&self) -> Cow<'_, str> {
+        if let Some(ref host) = self.host {
+            host.to_str()
+        } else {
+            Cow::Borrowed("")
+        }
+    }
+
     pub fn try_accept<V: ProtoVisitor>(url: &str) -> Result<Self, ParseError> {
         let url = url.into();
         let mut parsed = V::parse(&url)?;
@@ -224,5 +234,36 @@ impl UrlX {
             })
             .collect::<Vec<_>>()
             .join("&")
+    }
+}
+
+impl std::fmt::Display for UrlX {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.reconstruct())
+    }
+}
+
+impl std::str::FromStr for UrlX {
+    type Err = std::convert::Infallible;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let raw: RawUrlX = s.into();
+        let schema = raw.schema.clone();
+        try_accept_raw(raw).or_else(|_| {
+            Ok(UrlX {
+                uid: 0,
+                sig: 0,
+                schema,
+                host: None,
+                port: None,
+                username: UserInfo::Text(Default::default(), Default::default()),
+                password: None,
+                path: None,
+                query: Vec::new(),
+                fragment: None,
+                transport: None,
+                security: None,
+            })
+        })
     }
 }

@@ -159,6 +159,14 @@ impl SourceRegistry {
     pub fn sources(&self) -> Vec<Arc<SourceMetadata>> {
         self.sources.values().map(Arc::clone).collect()
     }
+
+    /// Upsert all registered sources to the database
+    pub fn upsert_all(&self, conn: &rusqlite::Connection) -> rusqlite::Result<()> {
+        for source in self.sources() {
+            crate::db::upsert_source(conn, &source.url)?;
+        }
+        Ok(())
+    }
 }
 
 /// Proxy configuration with timestamp and source information

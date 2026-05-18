@@ -26,10 +26,8 @@ pub(crate) use utils::{
 };
 // exported
 
-pub use utils::{
-    line::{Line, Lines},
-    urlx::{SchemeX, UrlX},
-};
+pub use urlx::{SchemeX, UrlX};
+pub use utils::line::{Line, Lines};
 
 pub(crate) use urlx::{HostSpec, PortDecl, PortSpec};
 
@@ -152,10 +150,9 @@ pub async fn download_sub_proxies(url: url::Url) -> std::io::Result<Vec<UrlX>> {
             ..
         } = line
         {
-            let mut urlx = urlx.clone();
-            if urlx.normalize(&mut None).is_ok() {
-                proxies.push(urlx);
-            }
+            // Normalization (uid/sig computation + validation) is now done
+            // during parsing via the visitor pattern. Only collect valid results.
+            proxies.push(urlx.clone());
         }
     }
 
@@ -181,7 +178,6 @@ mod tests {
         let subs = [
             "https://raw.githubusercontent.com/ALIILAPRO/v2rayNG-Config/main/sub.txt",
             // "https://raw.githubusercontent.com/soroushmirzaei/telegram-configs-collector/main/protocols/reality",
-            // "https://raw.githubusercontent.com/soroushmirzaei/telegram-configs-collector/main/protocols/vless",
             // "https://raw.githubusercontent.com/soroushmirzaei/telegram-configs-collector/main/protocols/vmess",
             // "https://raw.githubusercontent.com/soroushmirzaei/telegram-configs-collector/main/protocols/trojan",
             // "https://raw.githubusercontent.com/soroushmirzaei/telegram-configs-collector/main/protocols/shadowsocks",
@@ -303,36 +299,4 @@ mod tests {
 
         dest.flush().unwrap()
     }
-
-    // #[test]
-    // fn test_parse_sub() {
-    //     use std::io::Write;
-
-    //     let sub = parse_sub(include_bytes!("/home/user/oss/xray-rs-sub-vibe/asis.txt"));
-    //     let mut out = BufWriter::new(
-    //         OpenOptions::new()
-    //             .create(true)
-    //             .write(true)
-    //             .truncate(true)
-    //             .open("cleaned.txt")
-    //             .unwrap(),
-    //     );
-
-    //     let mut entries = HashSet::<u64>::new();
-
-    //     for (row, err) in sub.iter().filter_map(|l| {
-    //         if let Line::Err { row, err } = l {
-    //             Some((*row, err.as_ref()))
-    //         } else {
-    //             if let Line::Url { row, url, .. } = l
-    //                 && entries.insert(url.id)
-    //             {
-    //                 writeln!(&mut out, "{row:<5} | {url}").unwrap()
-    //             }
-    //             None
-    //         }
-    //     }) {
-    //         eprintln!("{row:<10}| {err}");
-    //     }
-    // }
 }

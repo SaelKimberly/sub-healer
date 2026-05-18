@@ -1,7 +1,7 @@
 use rusqlite::{Connection, Result, params};
 use serde::{Deserialize, Serialize};
 
-use crate::UrlX;
+use crate::urlx::UrlX;
 
 pub const SCHEMA_SOURCES: &str = r#"
 CREATE TABLE IF NOT EXISTS sources (
@@ -118,43 +118,6 @@ pub fn upsert_source(conn: &Connection, url: &str) -> Result<i64> {
     Ok(url_id)
 }
 
-#[derive(Serialize, Deserialize)]
-struct UrlXForJson {
-    id: u64,
-    schema: String,
-    username: String,
-    password: Option<String>,
-    host: Option<String>,
-    port: Option<String>,
-    path: Option<String>,
-    query: Vec<(String, Option<String>)>,
-    fragment: Option<String>,
-    transport: Option<String>,
-    security: Option<String>,
-}
-
-impl From<&UrlX> for UrlXForJson {
-    fn from(urlx: &UrlX) -> Self {
-        Self {
-            id: urlx.uid,
-            schema: urlx.schema.as_str().to_string(),
-            username: urlx.username.clone(),
-            password: urlx.password.as_ref().map(|p| p.to_string()),
-            host: Some(urlx.host_str()),
-            port: urlx.port.as_ref().map(|p| p.to_string()),
-            path: urlx.path.clone(),
-            query: urlx
-                .query
-                .iter()
-                .map(|(k, v)| (k.to_string(), v.as_ref().map(|s| s.to_string())))
-                .collect(),
-            fragment: urlx.fragment.as_ref().map(|f| f.to_string()),
-            transport: urlx.transport.as_ref().map(|t| t.to_string()),
-            security: urlx.security.as_ref().map(|s| s.to_string()),
-        }
-    }
-}
-
 pub fn upsert_server(
     conn: &Connection,
     urlx: &UrlX,
@@ -197,7 +160,7 @@ pub fn upsert_server(
             let security = urlx.security.as_ref().map(|s| s.to_string());
             let remarks = urlx.fragment.as_ref().map(|f| f.to_string());
             let raw_config =
-                serde_json::to_string(&UrlXForJson::from(urlx)).expect("Failed to serialize UrlX");
+                serde_json::to_string(urlx).expect("Failed to serialize UrlX");
 
             conn.execute(
                 "INSERT INTO servers (id, schema, host, port, transport, security, remarks, raw_config, first_seen_ts, first_seen_source_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
