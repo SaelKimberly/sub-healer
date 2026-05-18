@@ -32,6 +32,7 @@ pub struct UnparseableRecord {
     pub error: String,
 }
 
+#[allow(dead_code, reason = "")]
 #[derive(Debug, Clone)]
 pub struct TgWebMessage {
     pub user: TinyText,
@@ -69,16 +70,13 @@ impl Stream for TgWebMessageStream {
                 }
                 std::task::Poll::Ready(Some(TgEvent::Timeout(t))) => {
                     tracing::info!(target: "mining::tg_channel", id=t.as_str(), "Timeout");
-                    continue;
                 }
                 std::task::Poll::Ready(Some(TgEvent::Failure(t, e))) => {
                     tracing::info!(target: "mining::tg_channel", id=t.as_str(), "Failure ({e})");
-                    continue;
                 }
                 std::task::Poll::Ready(Some(TgEvent::Backfill(task))) => {
                     tracing::info!(target: "mining::tg_channel", id=task.channel.as_str(), "Backfill (up to {} id)", task.before.unwrap());
                     this.join_set.spawn(TgChannelFetch::spawn(Box::pin(task)));
-                    continue;
                 }
                 std::task::Poll::Ready(None) => return std::task::Poll::Ready(None),
                 std::task::Poll::Pending => return std::task::Poll::Pending,
@@ -89,8 +87,18 @@ impl Stream for TgWebMessageStream {
 
 /// Parse a single message
 #[inline]
-fn parse_message(channel_id: &str, source_url: &str, msg_id: u32, msg: ElementRef<'_>) -> TgWebMessage {
-    fn extract_urls(channel_id: &str, msg: ElementRef<'_>) -> (Option<Box<[UrlX]>>, Option<Box<[UnparseableRecord]>>) {
+#[allow(clippy::too_many_lines, reason = "TODO")]
+fn parse_message(
+    channel_id: &str,
+    source_url: &str,
+    msg_id: u32,
+    msg: ElementRef<'_>,
+) -> TgWebMessage {
+    #[allow(clippy::type_complexity)]
+    fn extract_urls(
+        channel_id: &str,
+        msg: ElementRef<'_>,
+    ) -> (Option<Box<[UrlX]>>, Option<Box<[UnparseableRecord]>>) {
         let mut msg_text = match msg.select(&TG_WEB_TEXT_SELECTOR).next() {
             Some(t) => t.traverse(),
             None => return (None, None),
@@ -199,7 +207,10 @@ fn parse_message(channel_id: &str, source_url: &str, msg_id: u32, msg: ElementRe
         let mut parsed: Vec<UrlX> = Vec::new();
         let mut unparseable: Vec<UnparseableRecord> = Vec::new();
 
-        for s in msg_urls.into_iter().filter(|s| !s.is_empty() && !s.ends_with('…') && !s.ends_with("…»")) {
+        for s in msg_urls
+            .into_iter()
+            .filter(|s| !s.is_empty() && !s.ends_with('…') && !s.ends_with("…»"))
+        {
             let clean = if let Some((i, _)) =
                 s.char_indices().rev().take_while(|(_, c)| *c == '`').last()
             {
@@ -209,7 +220,7 @@ fn parse_message(channel_id: &str, source_url: &str, msg_id: u32, msg: ElementRe
             };
             let raw: RawUrlX = clean.into();
             let raw_scheme = raw.schema.to_string();
-            match try_accept_raw(raw) {
+            match try_accept_raw(&raw) {
                 Ok(urlx) => parsed.push(urlx),
                 Err(e) => {
                     tracing::warn!(
@@ -287,38 +298,39 @@ struct TgChannelFetch {
 }
 
 impl TgChannelFetch {
-    fn new(
-        client: reqwest::Client,
-        channel: TinyText,
-        sender: tokio::sync::mpsc::Sender<TgEvent>,
-        limit: Arc<tokio::sync::Semaphore>,
-        timeout: Duration,
-        backfill: Option<DateTime<Utc>>,
-    ) -> Option<Self> {
-        let channel_id = match channel.rsplit_once('/') {
-            // Accept both webview link, and raw telegram link
-            Some(("https://t.me/s" | "https://t.me", channel_id)) => channel_id.to_owned(),
-            // Another prefixes are not supported
-            Some((_, _)) => {
-                tracing::warn!("Unexpected url: {channel} (should be https://t.me/s/[channel_id])");
-                return None;
-            }
-            // When there is no slash in the url, trim the '@' prefix
-            None => channel.trim_start_matches('@').to_owned(),
-        };
-        let source_url = channel.clone();
-        Some(Self {
-            client,
-            channel: channel_id.into(),
-            source_url: source_url.into(),
-            sender,
-            limit,
-            timeout,
-            before: None,
-            backfill,
-        })
-    }
+    // fn new(
+    //     client: reqwest::Client,
+    //     channel: &TinyText,
+    //     sender: tokio::sync::mpsc::Sender<TgEvent>,
+    //     limit: Arc<tokio::sync::Semaphore>,
+    //     timeout: Duration,
+    //     backfill: Option<DateTime<Utc>>,
+    // ) -> Option<Self> {
+    //     let channel_id = match channel.rsplit_once('/') {
+    //         // Accept both webview link, and raw telegram link
+    //         Some(("https://t.me/s" | "https://t.me", channel_id)) => channel_id.to_owned(),
+    //         // Another prefixes are not supported
+    //         Some((_, _)) => {
+    //             tracing::warn!("Unexpected url: {channel} (should be https://t.me/s/[channel_id])");
+    //             return None;
+    //         }
+    //         // When there is no slash in the url, trim the '@' prefix
+    //         None => channel.trim_start_matches('@').to_owned(),
+    //     };
+    //     let source_url = channel.clone();
+    //     Some(Self {
+    //         client,
+    //         channel: channel_id.into(),
+    //         source_url,
+    //         sender,
+    //         limit,
+    //         timeout,
+    //         before: None,
+    //         backfill,
+    //     })
+    // }
 
+    #[allow(clippy::too_many_lines)]
     fn spawn(
         mut self: Pin<Box<Self>>,
     ) -> Pin<Box<dyn Future<Output = ()> + Send + Sync + 'static>> {
@@ -428,7 +440,7 @@ impl TgChannelFetch {
                 }
 
                 if !has_older && let Some(backfill) = backfill && let Some(first_id @ 2..) = first_id
-                    && sender.blocking_send(TgEvent::Backfill(TgChannelFetch {
+                    && sender.blocking_send(TgEvent::Backfill(Self {
                         client: client.clone(),
                         channel: channel_id.clone(),
                         source_url: source_url.clone(),
@@ -441,7 +453,7 @@ impl TgChannelFetch {
                         tracing::warn!(target: "mining::tg_channel", id=channel_id.as_str(), "Failed to send backfill event");
                     }
 
-                (channel_id.clone(), counter)
+                (channel_id, counter)
             }).await else {return;};
 
             if counter == 0 {
@@ -453,6 +465,7 @@ impl TgChannelFetch {
     }
 }
 
+#[allow(dead_code)]
 pub enum Backfill {
     Upto(DateTime<Utc>),
     Last(TimeDelta),
@@ -461,12 +474,13 @@ pub enum Backfill {
 impl Backfill {
     pub fn to_min_datetime(&self) -> DateTime<Utc> {
         match self {
-            Backfill::Upto(datetime) => *datetime,
-            Backfill::Last(time) => Utc::now() - *time,
+            Self::Upto(datetime) => *datetime,
+            Self::Last(time) => Utc::now() - *time,
         }
     }
 }
 
+#[allow(clippy::needless_pass_by_value, reason = "Should be owned by task")]
 pub fn fetch_tg_channels<I, S>(
     client: reqwest::Client,
     parallel: usize,
@@ -494,7 +508,7 @@ where
             limit: limit.clone(),
             timeout,
             before: None,
-            backfill: backfill.as_ref().map(|b| b.to_min_datetime()),
+            backfill: backfill.as_ref().map(Backfill::to_min_datetime),
         });
 
         task_group.spawn(task.spawn());
@@ -576,19 +590,18 @@ mod tests {
             let Some(msg_urls) = msg.msg_urls.as_deref() else {
                 continue;
             };
-            per_channel
-                .entry(msg.user)
-                .or_default()
-                .extend(msg_urls.iter().map(|urlx| {
-                    (msg.time, urlx.schema.as_str().into(), urlx.reconstruct())
-                }));
+            per_channel.entry(msg.user).or_default().extend(
+                msg_urls
+                    .iter()
+                    .map(|urlx| (msg.time, urlx.schema.as_str().into(), urlx.reconstruct())),
+            );
         }
 
-        let total = per_channel.values().map(|v| v.len()).sum::<usize>();
+        let total = per_channel.values().map(std::vec::Vec::len).sum::<usize>();
 
-        per_channel
-            .values_mut()
-            .for_each(|v| v.sort_by_key(|t| t.0));
+        for v in per_channel.values_mut() {
+            v.sort_by_key(|t| t.0);
+        }
 
         eprintln!(
             "+{:=^100}\n| Alive channels ({} total):\n+{:=^100}",
@@ -597,7 +610,7 @@ mod tests {
         for (c, lines) in &per_channel {
             eprintln!("{:=^100}\n{}: {}\n{:-^100}", "", c, lines.len(), "");
             for (time, schema, line) in lines {
-                eprintln!("- [{}] <{}> {}", time, schema, line);
+                eprintln!("- [{time}] <{schema}> {line}");
             }
         }
         eprintln!(

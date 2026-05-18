@@ -1,4 +1,4 @@
-use crate::urlx::{HostSpec, PortSpec, RawUrlX, SchemeX, TinyText, UrlX, UserInfo};
+use crate::urlx::{SchemeX, TinyText, UrlX, UserInfo};
 
 pub struct Hysteria2Proto;
 
@@ -9,7 +9,7 @@ impl super::ProtoVisitor for Hysteria2Proto {
         } else {
             let userinfo = raw.userinfo;
             let (username, hostport) = userinfo.split_once('@').ok_or_else(|| {
-                super::ParseError::InvalidUserInfo(format!("{}: missing hostport", userinfo).into())
+                super::ParseError::InvalidUserInfo(format!("{userinfo}: missing hostport").into())
             })?;
             (username, hostport)
         };
@@ -76,7 +76,9 @@ impl super::ProtoVisitor for Hysteria2Proto {
 
         let hostport = url._safe_hostport(None)?;
 
-        let query_string = if !url.query.is_empty() {
+        let query_string = if url.query.is_empty() {
+            String::new()
+        } else {
             let filtered: Vec<_> = url
                 .query
                 .iter()
@@ -90,27 +92,26 @@ impl super::ProtoVisitor for Hysteria2Proto {
                 let parts: Vec<String> = filtered
                     .iter()
                     .map(|(k, v)| {
-                        v.as_ref().map_or_else(
-                            || format!("{}=", k),
-                            |v| format!("{}={}", k, urlencoding::encode(v)),
-                        )
+                        v.as_ref()
+                            .map(TinyText::as_str)
+                            .map(urlencoding::encode)
+                            .map_or_else(|| format!("{k}="), |v| format!("{k}={v}"))
                     })
                     .collect();
                 format!("?{}", parts.join("&"))
             }
-        } else {
-            String::new()
         };
 
         let fragment = url
             .fragment
             .as_ref()
-            .map(|f| format!("#{}", urlencoding::encode(f)))
+            .map(TinyText::as_str)
+            .map(urlencoding::encode)
+            .map(|f| format!("#{f}"))
             .unwrap_or_default();
 
         Ok(format!(
-            "hysteria2://{}@{}{}{}",
-            username, hostport, query_string, fragment
+            "hysteria2://{username}@{hostport}{query_string}{fragment}"
         ))
     }
 
@@ -124,7 +125,10 @@ impl super::ProtoVisitor for Hysteria2Proto {
 
         for (key, value) in &url.query {
             let key_str = key.as_str();
-            if matches!(key_str, "obfs" | "obfs-password" | "insecure" | "sni" | "up" | "down") {
+            if matches!(
+                key_str,
+                "obfs" | "obfs-password" | "insecure" | "sni" | "up" | "down"
+            ) {
                 sig_parts.push(key_str.as_bytes());
                 if let Some(v) = value {
                     sig_parts.push(v.as_bytes());
@@ -154,7 +158,7 @@ mod tests {
         let url = "hysteria2://b4bd0613-ff7c-4f2f-954d-185915e6ddad@206.71.158.41:35000?security=tls&obfs=salamander&obfs-password=password123&insecure=1&sni=jnir.pichondan.com";
 
         let raw = crate::urlx::RawUrlX::from(url);
-        let url = visit_basic(raw).expect("failed");
+        let url = visit_basic(&raw).expect("failed");
 
         assert_eq!(url.schema, SchemeX::Hysteria2);
     }
@@ -165,7 +169,7 @@ mod tests {
             "hy2://linux.do@[2a01:4f9:4b:f378::1]:13599?security=tls&insecure=1&sni=www.bing.com";
 
         let raw = crate::urlx::RawUrlX::from(url);
-        let url = visit_basic(raw).expect("failed");
+        let url = visit_basic(&raw).expect("failed");
 
         assert_eq!(url.schema, SchemeX::Hysteria2);
     }
@@ -175,11 +179,11 @@ mod tests {
         let input = "hysteria2://b4bd0613-ff7c-4f2f-954d-185915e6ddad@206.71.158.41:35000?security=tls&obfs=salamander&obfs-password=password123&insecure=1&sni=jnir.pichondan.com";
 
         let raw = crate::urlx::RawUrlX::from(input);
-        let parsed = visit_basic(raw).expect("failed to parse");
+        let parsed = visit_basic(&raw).expect("failed to parse");
         let reconstructed = parsed.reconstruct();
 
         let raw2 = crate::urlx::RawUrlX::from(reconstructed.as_str());
-        let reparsed = visit_basic(raw2).expect("failed to re-parse");
+        let reparsed = visit_basic(&raw2).expect("failed to re-parse");
 
         assert_eq!(parsed.host, reparsed.host, "host mismatch");
         assert_eq!(parsed.port, reparsed.port, "port mismatch");

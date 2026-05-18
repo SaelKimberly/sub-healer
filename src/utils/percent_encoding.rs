@@ -6,9 +6,9 @@ use nom::{
     error::{Error, ErrorKind},
 };
 
-use crate::{CutResult, NomError, Span};
+use super::{CutResult, NomError, Span};
 
-pub(crate) struct PercentDecode<'a> {
+pub struct PercentDecode<'a> {
     pub(super) span: Span<'a>,
     iter: bstr::CharIndices<'a>,
     decode: bool,
@@ -27,7 +27,7 @@ impl<'a> PercentDecode<'a> {
         nom::Err::Error(Error::new(self.span, kind))
     }
 
-    pub(super) fn with_decoding(mut self, decoding: bool) -> Self {
+    pub(super) const fn with_decoding(mut self, decoding: bool) -> Self {
         self.decode = decoding;
         self
     }
@@ -62,6 +62,7 @@ impl<'a> PercentDecode<'a> {
                         nom::error::ErrorKind::HexDigit,
                     )));
                 };
+                #[allow(clippy::cast_possible_truncation)]
                 Ok(Some((c_s, c_e, ((h << 4 | l) as u8) as char)))
             }
             Some((c_s, c_e, c)) => Ok(Some((c_s, c_e, c))),

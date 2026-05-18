@@ -33,12 +33,12 @@ impl super::ProtoVisitor for VmessProto {
                 .ok_or(super::ParseError::MissingHost)
                 .and_then(|v| {
                     v.as_str().ok_or_else(|| {
-                        super::ParseError::InvalidHost(format!("cannot parse: {}", v).into())
+                        super::ParseError::InvalidHost(format!("cannot parse: {v}").into())
                     })
                 })?;
             let host = if let Some(new_host) = host.strip_prefix('[') {
                 new_host.strip_suffix(']').ok_or_else(|| {
-                    super::ParseError::InvalidHost(format!("cannot parse: {}", host).into())
+                    super::ParseError::InvalidHost(format!("cannot parse: {host}").into())
                 })?
             } else {
                 return Err(super::ParseError::InvalidStructure(SchemeX::Vmess));
@@ -46,7 +46,7 @@ impl super::ProtoVisitor for VmessProto {
 
             rustls::pki_types::ServerName::try_from(host)
                 .map_err(|e| {
-                    super::ParseError::InvalidHost(format!("cannot parse: {} {}", host, e).into())
+                    super::ParseError::InvalidHost(format!("cannot parse: {host} {e}").into())
                 })?
                 .to_owned()
         };
@@ -60,13 +60,13 @@ impl super::ProtoVisitor for VmessProto {
                     v.as_u64()
                         .or_else(|| v.as_str().and_then(|s| s.parse::<u64>().ok()))
                         .ok_or_else(|| {
-                            super::ParseError::InvalidPort(format!("cannot parse: {}", v).into())
+                            super::ParseError::InvalidPort(format!("cannot parse: {v}").into())
                         })
                 })?;
 
             u16::try_from(port)
                 .map_err(|e| {
-                    super::ParseError::InvalidPort(format!("cannot parse: {} {}", port, e).into())
+                    super::ParseError::InvalidPort(format!("cannot parse: {port} {e}").into())
                 })
                 .map(PortSpec::new_with)?
         };
@@ -151,9 +151,8 @@ impl super::ProtoVisitor for VmessProto {
     }
 
     fn visit(url: &mut UrlX) -> Result<(), super::ParseError> {
-        let json = match &url.username {
-            UserInfo::Json(v) => v,
-            _ => return Ok(()),
+        let UserInfo::Json(json) = &url.username else {
+            return Ok(());
         };
 
         let mut sig_parts: Vec<String> = vec![url.schema.as_str().to_string()];
@@ -173,7 +172,7 @@ impl super::ProtoVisitor for VmessProto {
         if let Some(ves) = json.get("ves").and_then(|v| v.as_str()) {
             sig_parts.push(ves.to_string());
         }
-        if let Some(seq) = json.get("seq").and_then(|v| v.as_u64()) {
+        if let Some(seq) = json.get("seq").and_then(serde_json::Value::as_u64) {
             sig_parts.push(seq.to_string());
         }
 
@@ -197,7 +196,7 @@ mod tests {
         let url = "vmess://Y2hhY2hhMjAtaWV0Zi1wb2x5MTMwNTozMTM0NzA1Ny03YWY1LTQ1NjItYjkxMi1mMWMyMTdjNGMxNjA@hnt.cndns.shop:27761#%F0%9F%87%A8%F0%9F%87%B3_CN_%E4%B8%AD%E5%9B%BD-%3E%F0%9F%87%B7%F0%9F%87%BA_RU_%E4%BF%84%E7%BD%97%E6%96%AF%E8%81%94%E9%82%A6";
 
         let raw = crate::urlx::RawUrlX::from(url);
-        let url = visit_basic(raw).expect("failed");
+        let url = visit_basic(&raw).expect("failed");
 
         assert_eq!(url.schema, SchemeX::Vmess);
     }
@@ -207,7 +206,7 @@ mod tests {
         let input = "vmess://eyJhZGQiOiIxOTIuMjAwLjE2MC4xNiIsImFpZCI6IjAiLCJhbHBuIjoiIiwiZnAiOiIiLCJob3N0IjoiIiwiaWQiOiI5YjRjMmVkYS0zNDFlLTQ4OGYtYTNiMi0xZGM3MTZiOWYzNmEiLCJpbnNlY3VyZSI6IjEiLCJuZXQiOiJ3cyIsInBhdGgiOiIvIiwicG9ydCI6Ijg0NDMiLCJwcyI6IkBDbG91ZENpdHl5Iiwic2N5IjoiYXV0byIsInNuaSI6InN0ZWFtLmF2YWFhYWwuaXIiLCJ0bHMiOiJ0bHMiLCJ0eXBlIjoiLS0tIiwidiI6IjIifQ==";
 
         let raw = crate::urlx::RawUrlX::from(input);
-        let parsed = visit_basic(raw).expect("failed to parse");
+        let parsed = visit_basic(&raw).expect("failed to parse");
 
         assert_eq!(parsed.schema, SchemeX::Vmess, "schema should be Vmess");
 
@@ -219,7 +218,7 @@ mod tests {
         );
 
         let raw2 = crate::urlx::RawUrlX::from(reconstructed.as_str());
-        let reparsed = visit_basic(raw2).expect("failed to re-parse");
+        let reparsed = visit_basic(&raw2).expect("failed to re-parse");
 
         assert_eq!(
             parsed.schema, reparsed.schema,

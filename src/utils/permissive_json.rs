@@ -2,7 +2,7 @@
 
 use super::percent_encoding::PercentDecode;
 use super::unescaper::Unescaper;
-use crate::{CutResult, RawResult, Span};
+use super::{CutResult, RawResult, Span};
 use bstr::ByteSlice;
 use nom::{
     Input,
@@ -36,7 +36,7 @@ struct Cursor<'a> {
 }
 
 impl<'a> Cursor<'a> {
-    fn new(span: Span<'a>) -> Self {
+    const fn new(span: Span<'a>) -> Self {
         Self {
             span,
             base: None,
@@ -45,7 +45,7 @@ impl<'a> Cursor<'a> {
     }
 
     /// Traverse current JSON object, based on path, to the map.
-    /// Returns [nom::error::ErrorKind::Tag] error, if traversed destination is not a map
+    /// Returns [`nom::error::ErrorKind::Tag`] error, if traversed destination is not a map
     fn traverse_map<'b>(
         &'b mut self,
     ) -> CutResult<'a, &'b mut serde_json::Map<String, serde_json::Value>> {
@@ -53,25 +53,23 @@ impl<'a> Cursor<'a> {
             .base
             .get_or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
 
-        for elem in self.path.iter() {
-            match elem {
+        for elem in &self.path {
+            container_ref = match elem {
                 Path::Key(k) => {
                     let serde_json::Value::Object(o) = container_ref else {
                         return Err(nom::Err::Error(Error::new(self.span, ErrorKind::Tag)));
                     };
-                    container_ref = o
-                        .get_mut(k)
-                        .ok_or(nom::Err::Error(Error::new(self.span, ErrorKind::Tag)))?
+                    o.get_mut(k)
+                        .ok_or_else(|| nom::Err::Error(Error::new(self.span, ErrorKind::Tag)))?
                 }
                 Path::Index(i) => {
                     let serde_json::Value::Array(a) = container_ref else {
                         return Err(nom::Err::Error(Error::new(self.span, ErrorKind::Tag)));
                     };
-                    container_ref = a
-                        .get_mut(*i)
-                        .ok_or(nom::Err::Error(Error::new(self.span, ErrorKind::Tag)))?
+                    a.get_mut(*i)
+                        .ok_or_else(|| nom::Err::Error(Error::new(self.span, ErrorKind::Tag)))?
                 }
-            }
+            };
         }
 
         let serde_json::Value::Object(o) = container_ref else {
@@ -82,31 +80,29 @@ impl<'a> Cursor<'a> {
     }
 
     /// Traverse current JSON object, based on path, to the array.
-    /// Returns [nom::error::ErrorKind::Tag] error, if traversed destination is not an array
+    /// Returns [`nom::error::ErrorKind::Tag`] error, if traversed destination is not an array
     fn traverse_arr<'b>(&'b mut self) -> CutResult<'a, &'b mut Vec<serde_json::Value>> {
         let mut container_ref: &'b mut _ = self
             .base
             .get_or_insert_with(|| serde_json::Value::Array(vec![]));
 
-        for elem in self.path.iter() {
-            match elem {
+        for elem in &self.path {
+            container_ref = match elem {
                 Path::Key(k) => {
                     let serde_json::Value::Object(o) = container_ref else {
                         return Err(nom::Err::Error(Error::new(self.span, ErrorKind::Tag)));
                     };
-                    container_ref = o
-                        .get_mut(k)
-                        .ok_or(nom::Err::Error(Error::new(self.span, ErrorKind::Tag)))?
+                    o.get_mut(k)
+                        .ok_or_else(|| nom::Err::Error(Error::new(self.span, ErrorKind::Tag)))?
                 }
                 Path::Index(i) => {
                     let serde_json::Value::Array(a) = container_ref else {
                         return Err(nom::Err::Error(Error::new(self.span, ErrorKind::Tag)));
                     };
-                    container_ref = a
-                        .get_mut(*i)
-                        .ok_or(nom::Err::Error(Error::new(self.span, ErrorKind::Tag)))?
+                    a.get_mut(*i)
+                        .ok_or_else(|| nom::Err::Error(Error::new(self.span, ErrorKind::Tag)))?
                 }
-            }
+            };
         }
 
         let serde_json::Value::Array(o) = container_ref else {
@@ -119,7 +115,7 @@ impl<'a> Cursor<'a> {
     /// Add new container to current JSON object, based on path
     /// If there is no root container, set to an empty array or object, based on `is_array` parameter.
     /// If a key is provided, upstream container must be a map. Otherwise, it must be array.
-    fn add_new_container(&mut self, key: Option<String>, is_array: bool) -> CutResult<'a, ()> {
+    fn add_new_container(&mut self, key: Option<&str>, is_array: bool) -> CutResult<'a, ()> {
         if self.base.is_none() {
             if is_array {
                 self.base = Some(serde_json::Value::Array(Vec::new()));
@@ -129,7 +125,7 @@ impl<'a> Cursor<'a> {
             return Ok(());
         }
 
-        if let Some(k) = key.as_deref() {
+        if let Some(k) = key {
             let o = self.traverse_map()?;
             o.insert(
                 k.to_owned(),
@@ -177,7 +173,7 @@ impl<'a> Cursor<'a> {
         Ok(())
     }
 
-    /// Get final JSON value. When no root container is set, return [nom::error::ErrorKind::NonEmpty]
+    /// Get final JSON value. When no root container is set, return [`nom::error::ErrorKind::NonEmpty`]
     fn finalize(self) -> CutResult<'a, serde_json::Value> {
         self.base
             .ok_or_else(|| nom::Err::Error(Error::new(self.span, ErrorKind::NonEmpty)))
@@ -200,13 +196,13 @@ fn tokens_to_new_json<'a>(
                 };
             }
             JsonToken::ArrStart => {
-                cursor.add_new_container(key.take(), true)?;
+                cursor.add_new_container(key.take().as_deref(), true)?;
             }
             JsonToken::ArrClose | JsonToken::ObjClose => {
                 cursor.move_up();
             }
             JsonToken::ObjStart => {
-                cursor.add_new_container(key.take(), false)?;
+                cursor.add_new_container(key.take().as_deref(), false)?;
             }
 
             JsonToken::Colon | JsonToken::Comma => {}
@@ -258,7 +254,7 @@ impl<'a> Tokenizer<'a> {
     }
 
     /// Get the next character (returns a Eof error if there are no more characters)
-    fn _next_char(&mut self) -> CutResult<'a, char> {
+    fn next_char(&mut self) -> CutResult<'a, char> {
         if let Some((_, c_e, c)) = self.iter.next().transpose()? {
             self.last_e = c_e;
             self.last_c = c;
@@ -269,17 +265,17 @@ impl<'a> Tokenizer<'a> {
     }
 
     /// Skip whitespace (free '+' sign is considered whitespace too)
-    fn _skip_ws(&mut self) -> CutResult<'a, bool> {
+    fn skip_ws(&mut self) -> CutResult<'a, bool> {
         let mut skipped = false;
         while self.last_c.is_whitespace() || self.last_c == '+' {
-            self._next_char()?;
+            self.next_char()?;
             skipped = true;
         }
         Ok(skipped)
     }
 
     /// Test for a control character (returns a Tag error if it's not a control character)
-    fn _test_ctrl(&mut self) -> CutResult<'a, JsonToken> {
+    fn test_ctrl(&self) -> CutResult<'a, JsonToken> {
         let ctrl = match self.last_c {
             '{' => JsonToken::ObjStart,
             '}' => JsonToken::ObjClose,
@@ -292,8 +288,8 @@ impl<'a> Tokenizer<'a> {
         Ok(ctrl)
     }
 
-    /// Test for a text (perform encoding detection if is_value is true. keys should be ascii)
-    fn _test_text(&mut self, is_value: bool) -> CutResult<'a, Option<String>> {
+    /// Test for a text (perform encoding detection if `is_value` is true. keys should be ascii)
+    fn test_text(&mut self, is_value: bool) -> CutResult<'a, Option<String>> {
         // eof char must be the same as beginning
         if let eof @ ('"' | '\'') = self.last_c {
             let bos = self.last_e;
@@ -303,15 +299,14 @@ impl<'a> Tokenizer<'a> {
             let mut txt = String::new();
 
             let txt: String = loop {
-                let Ok(c) = self._next_char() else {
+                let Ok(c) = self.next_char() else {
                     // If we reached eof immediately after opening quote, return error
                     if self.last_e == bos {
                         return Err(self.iter.error(ErrorKind::Eof));
-                    } else {
-                        // If we reached eof before closing quote,
-                        //  return available data
-                        break txt;
                     }
+                    // If we reached eof before closing quote,
+                    //  return available data
+                    break txt;
                 };
                 if esc {
                     esc = false;
@@ -323,7 +318,7 @@ impl<'a> Tokenizer<'a> {
                     // ignore eof error if no next character is available
                     // for handling unclosed JSON string
                     // If we reached closing quote
-                    _ = self._next_char();
+                    _ = self.next_char();
                     break txt;
                 }
                 txt.push(c);
@@ -348,13 +343,13 @@ impl<'a> Tokenizer<'a> {
     /// - only colon control character is allowed after key
     /// - whitespace characters will be considered as end of key
     /// - quote character will be considered as end of key (as if we just missed the opening quote)
-    fn _test_ukey(&mut self) -> CutResult<'a, String> {
-        self._skip_ws()?;
+    fn test_ukey(&mut self) -> CutResult<'a, String> {
+        self.skip_ws()?;
 
         let mut key = String::new();
 
         loop {
-            match self._test_ctrl() {
+            match self.test_ctrl() {
                 Ok(JsonToken::Colon) => break,
                 Ok(_) => return Err(self.iter.error(ErrorKind::Tag)),
                 Err(nom::Err::Error(Error {
@@ -375,7 +370,7 @@ impl<'a> Tokenizer<'a> {
                 return Err(self.iter.error(ErrorKind::Tag));
             }
 
-            self._next_char()?;
+            self.next_char()?;
 
             if self.last_c.is_whitespace() {
                 break;
@@ -391,10 +386,10 @@ impl<'a> Tokenizer<'a> {
     /// - only comma or closing brackets control characters are allowed after value
     /// - whitespace characters will be considered as end of value
     /// - quote character will be considered as end of value (as if we just missed the opening quote)
-    fn _test_uval(&mut self, in_object: bool) -> CutResult<'a, serde_json::Value> {
+    fn test_uval(&mut self, in_object: bool) -> CutResult<'a, serde_json::Value> {
         // If value starts with a dash, it may represent a negative number
         let positive = if self.last_c == '-' {
-            self._next_char()?;
+            self.next_char()?;
             false
         } else {
             true
@@ -422,7 +417,7 @@ impl<'a> Tokenizer<'a> {
             // Otherwise, when we are not found any control character, we should proceed.
             // If we found a not supported control characters (opening brackets, quotes, etc), this is an error
             // Also, EOF should be provided to upstream as an error
-            match self._test_ctrl() {
+            match self.test_ctrl() {
                 Ok(JsonToken::Comma) => break,
                 Ok(JsonToken::ObjClose) if in_object => break,
                 Ok(JsonToken::ArrClose) if !in_object => break,
@@ -441,9 +436,9 @@ impl<'a> Tokenizer<'a> {
                 'e' | 'E' => {
                     if maybe_num && e_appeared {
                         // number cannot have two 'e'/'E' in scientific notation
-                        maybe_num = false
+                        maybe_num = false;
                     } else {
-                        e_appeared = true
+                        e_appeared = true;
                     }
                     value_repr.push('e');
                 }
@@ -451,53 +446,43 @@ impl<'a> Tokenizer<'a> {
                     if maybe_num && (p_appeared || e_appeared) {
                         // number cannot have two '.' in decimal notation
                         // number cannot have '.' after 'e'/'E'
-                        maybe_num = false
+                        maybe_num = false;
                     } else {
-                        p_appeared = true
+                        p_appeared = true;
                     }
-                    value_repr.push(self.last_c)
+                    value_repr.push(self.last_c);
                 }
                 _ => {
                     maybe_num = false;
-                    value_repr.push(self.last_c)
+                    value_repr.push(self.last_c);
                 }
             }
 
-            self._next_char()?;
+            self.next_char()?;
         }
 
         let v = if maybe_num {
             if p_appeared || e_appeared {
-                if let Ok(v) = value_repr.parse::<f64>() {
-                    let Some(v) = serde_json::Number::from_f64(if positive { v } else { -v })
-                    else {
-                        unreachable!()
-                    };
-                    serde_json::Value::Number(v)
-                } else {
-                    serde_json::Value::String(value_repr)
-                }
+                value_repr
+                    .parse::<f64>()
+                    .map_or(serde_json::Value::String(value_repr), |v| {
+                        let Some(v) = serde_json::Number::from_f64(if positive { v } else { -v })
+                        else {
+                            unreachable!()
+                        };
+                        serde_json::Value::Number(v)
+                    })
+            } else if let Ok(v) = value_repr.parse::<i64>() {
+                serde_json::Value::Number(serde_json::Number::from(if positive { v } else { -v }))
             } else {
-                if let Ok(v) = value_repr.parse::<i64>() {
-                    serde_json::Value::Number(serde_json::Number::from(if positive {
-                        v
-                    } else {
-                        -v
-                    }))
-                } else {
-                    serde_json::Value::String(value_repr)
-                }
+                serde_json::Value::String(value_repr)
             }
         } else {
             match value_repr.as_str().trim() {
-                // python literals
-                "None" => serde_json::Value::Null,
-                "True" => serde_json::Value::Bool(true),
-                "False" => serde_json::Value::Bool(false),
-                // json literals
-                "null" => serde_json::Value::Null,
-                "true" => serde_json::Value::Bool(true),
-                "false" => serde_json::Value::Bool(false),
+                // python | json literals
+                "None" | "null" => serde_json::Value::Null,
+                "True" | "true" => serde_json::Value::Bool(true),
+                "False" | "false" => serde_json::Value::Bool(false),
                 _ => serde_json::Value::String(value_repr),
             }
         };
@@ -505,25 +490,18 @@ impl<'a> Tokenizer<'a> {
     }
 
     /// Returns key or an error
-    fn _expect_key(&mut self) -> CutResult<'a, String> {
+    fn expect_key(&mut self) -> CutResult<'a, String> {
         // first try to get valid JSON key (single quotes allowed)
-        if let Some(k) = self._test_text(false)? {
-            Ok(k)
-        } else {
-            // if failed, there may be unquoted key
-            self._test_ukey()
-        }
+        self.test_text(false)?.map_or_else(|| self.test_ukey(), Ok)
     }
 
     /// Returns value or an error
-    fn _expect_val(&mut self, in_object: bool) -> CutResult<'a, serde_json::Value> {
+    fn expect_val(&mut self, in_object: bool) -> CutResult<'a, serde_json::Value> {
         // first try to get valid JSON value
-        if let Some(v) = self._test_text(true)? {
-            Ok(serde_json::Value::String(v))
-        } else {
-            // if failed, there may be unquoted text value, numeric, boolean, null values
-            self._test_uval(in_object)
-        }
+        self.test_text(true)?.map_or_else(
+            || self.test_uval(in_object),
+            |v| Ok(serde_json::Value::String(v)),
+        )
     }
 
     pub fn tokenize(&mut self) -> RawResult<'a, serde_json::Value> {
@@ -533,17 +511,17 @@ impl<'a> Tokenizer<'a> {
         if let Err(nom::Err::Error(Error {
             code: ErrorKind::Tag,
             ..
-        })) = self._test_ctrl()
+        })) = self.test_ctrl()
         {
             // When no control character is found, it means that the input is not a valid JSON
             // or the input contains 'None' or 'null' value
             return if 'n'.eq_ignore_ascii_case(&self.last_c)
-                && ('o'.eq_ignore_ascii_case(&self._next_char()?)
-                    && 'n'.eq_ignore_ascii_case(&self._next_char()?)
-                    && 'e'.eq_ignore_ascii_case(&self._next_char()?))
+                && ('o'.eq_ignore_ascii_case(&self.next_char()?)
+                    && 'n'.eq_ignore_ascii_case(&self.next_char()?)
+                    && 'e'.eq_ignore_ascii_case(&self.next_char()?))
                 || ('u'.eq_ignore_ascii_case(&self.last_c)
-                    && 'l'.eq_ignore_ascii_case(&self._next_char()?)
-                    && 'l'.eq_ignore_ascii_case(&self._next_char()?))
+                    && 'l'.eq_ignore_ascii_case(&self.next_char()?)
+                    && 'l'.eq_ignore_ascii_case(&self.next_char()?))
             {
                 let tail = self.iter.span.take_from(self.last_e);
                 Ok((tail, serde_json::Value::Null))
@@ -564,10 +542,10 @@ impl<'a> Tokenizer<'a> {
 
             'ctrl: loop {
                 // Skip whitespace characters before control character
-                self._skip_ws()?;
+                self.skip_ws()?;
 
                 // When there are no more control characters, break.
-                let Ok(t) = self._test_ctrl() else {
+                let Ok(t) = self.test_ctrl() else {
                     break 'ctrl;
                 };
 
@@ -607,7 +585,7 @@ impl<'a> Tokenizer<'a> {
 
                 // remove trailing comma before closing brackets
                 if let JsonToken::ArrClose | JsonToken::ObjClose = t
-                    && let Some(JsonToken::Comma) = self.tokens.last()
+                    && matches!(self.tokens.last(), Some(JsonToken::Comma))
                 {
                     _ = self.tokens.pop();
                 }
@@ -621,16 +599,16 @@ impl<'a> Tokenizer<'a> {
                 in_object = *is_in_object;
 
                 // Move to the next character
-                self._next_char()?;
+                self.next_char()?;
             }
 
             // Skip whitespaces after control characters
-            self._skip_ws()?;
+            self.skip_ws()?;
 
             if in_object {
                 // when in an object, after a comma or opening bracket, expect key
                 if let Some(JsonToken::ObjStart | JsonToken::Comma) = self.tokens.last() {
-                    let key = self._expect_key()?;
+                    let key = self.expect_key()?;
                     self.tokens.push(JsonToken::Key(key));
 
                     // colons are allowed after key
@@ -639,8 +617,8 @@ impl<'a> Tokenizer<'a> {
                     allow_comma = false;
                 } else
                 // after a colon, expect value
-                if let Some(JsonToken::Colon) = self.tokens.last() {
-                    let val = self._expect_val(true)?;
+                if matches!(self.tokens.last(), Some(JsonToken::Colon)) {
+                    let val = self.expect_val(true)?;
                     self.tokens.push(JsonToken::Val(val));
 
                     // colons are not allowed after value
@@ -653,7 +631,7 @@ impl<'a> Tokenizer<'a> {
             } else {
                 // when in an array, after a comma or opening bracket, expect value
                 if let Some(JsonToken::ArrStart | JsonToken::Comma) = self.tokens.last() {
-                    let val = self._expect_val(false)?;
+                    let val = self.expect_val(false)?;
                     self.tokens.push(JsonToken::Val(val));
 
                     // colons are not allowed in array
@@ -675,7 +653,7 @@ impl<'a> Tokenizer<'a> {
     }
 }
 
-pub(crate) fn permissive_json<'a>(span: Span<'a>) -> RawResult<'a, serde_json::Value> {
+pub fn permissive_json(span: Span<'_>) -> RawResult<'_, serde_json::Value> {
     Tokenizer::new(span)
         .ok_or_else(|| nom::Err::Error(Error::new(span, ErrorKind::Eof)))?
         .tokenize()
@@ -683,8 +661,7 @@ pub(crate) fn permissive_json<'a>(span: Span<'a>) -> RawResult<'a, serde_json::V
 
 #[cfg(test)]
 mod tests {
-    use super::Tokenizer;
-    use crate::Span;
+    use super::{Span, Tokenizer};
 
     #[test]
     fn test_tokenizer() {

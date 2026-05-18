@@ -1,4 +1,4 @@
-use crate::urlx::{HostSpec, PortSpec, RawUrlX, SchemeX, TinyText, UrlX, UserInfo};
+use crate::urlx::{SchemeX, TinyText, UrlX, UserInfo};
 
 pub struct TrojanProto;
 
@@ -9,7 +9,7 @@ impl super::ProtoVisitor for TrojanProto {
         } else {
             let userinfo = raw.userinfo;
             let (username, hostport) = userinfo.split_once('@').ok_or_else(|| {
-                super::ParseError::InvalidUserInfo(format!("{}: missing hostport", userinfo).into())
+                super::ParseError::InvalidUserInfo(format!("{userinfo}: missing hostport").into())
             })?;
             (username, hostport)
         };
@@ -86,7 +86,9 @@ impl super::ProtoVisitor for TrojanProto {
     fn build(url: &UrlX) -> Result<String, super::ParseError> {
         let hostport = url._safe_hostport(None)?;
 
-        let query_string = if !url.query.is_empty() {
+        let query_string = if url.query.is_empty() {
+            String::new()
+        } else {
             let filtered: Vec<_> = url
                 .query
                 .iter()
@@ -100,16 +102,14 @@ impl super::ProtoVisitor for TrojanProto {
                 let parts: Vec<String> = filtered
                     .iter()
                     .map(|(k, v)| {
-                        v.as_ref().map_or_else(
-                            || format!("{}=", k),
-                            |v| format!("{}={}", k, urlencoding::encode(v)),
-                        )
+                        v.as_ref()
+                            .map(TinyText::as_str)
+                            .map(urlencoding::encode)
+                            .map_or_else(|| format!("{k}="), |v| format!("{k}={v}"))
                     })
                     .collect();
                 format!("?{}", parts.join("&"))
             }
-        } else {
-            String::new()
         };
 
         let fragment = url
@@ -124,8 +124,7 @@ impl super::ProtoVisitor for TrojanProto {
             .map_err(|e| super::ParseError::InvalidUserInfo(e.to_string().into()))?;
 
         Ok(format!(
-            "trojan://{}@{}{}{}",
-            username, hostport, query_string, fragment
+            "trojan://{username}@{hostport}{query_string}{fragment}",
         ))
     }
 
@@ -175,7 +174,7 @@ mod tests {
         let url = "trojan://humanity@172.64.152.23:443?security=tls&type=ws&path=/assignment&sni=www.creationlong.org";
 
         let raw = crate::urlx::RawUrlX::from(url);
-        let url = visit_basic(raw).expect("failed");
+        let url = visit_basic(&raw).expect("failed");
 
         assert_eq!(url.schema, SchemeX::Trojan);
     }
@@ -185,11 +184,11 @@ mod tests {
         let input = "trojan://humanity@172.64.152.23:443?security=tls&type=ws&path=/assignment&sni=www.creationlong.org";
 
         let raw = crate::urlx::RawUrlX::from(input);
-        let parsed = visit_basic(raw).expect("failed to parse");
+        let parsed = visit_basic(&raw).expect("failed to parse");
         let reconstructed = parsed.reconstruct();
 
         let raw2 = crate::urlx::RawUrlX::from(reconstructed.as_str());
-        let reparsed = visit_basic(raw2).expect("failed to re-parse");
+        let reparsed = visit_basic(&raw2).expect("failed to re-parse");
 
         assert_eq!(parsed.host, reparsed.host, "host mismatch");
         assert_eq!(parsed.port, reparsed.port, "port mismatch");

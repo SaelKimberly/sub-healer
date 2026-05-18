@@ -1,3 +1,11 @@
+#![allow(
+    clippy::used_underscore_items,
+    reason = "Ensure, that they will be used only here"
+)]
+#![allow(
+    clippy::too_many_lines,
+    reason = "Due to trait implementation restriction"
+)]
 mod hysteria2;
 mod slipnet;
 mod ss;
@@ -9,7 +17,6 @@ mod vmess;
 
 use std::borrow::Cow;
 
-use crate::Unescaper;
 use crate::urlx::{HostSpec, PortSpec, RawUrlX, SchemeX, UrlX};
 
 #[derive(Debug, thiserror::Error)]
@@ -96,20 +103,23 @@ fn _host_str(url: &UrlX) -> String {
 }
 
 fn _port_str(url: &UrlX) -> String {
-    url.port.as_ref().map(|p| p.to_string()).unwrap_or_default()
+    url.port
+        .as_ref()
+        .map(std::string::ToString::to_string)
+        .unwrap_or_default()
 }
 
 fn _username_str(url: &UrlX) -> String {
     url.username
         .as_text()
-        .map(|t| t.to_string())
+        .map(std::string::ToString::to_string)
         .unwrap_or_default()
 }
 
 fn _password_str(url: &UrlX) -> String {
     url.password
         .as_ref()
-        .map(|p| p.to_string())
+        .map(std::string::ToString::to_string)
         .unwrap_or_default()
 }
 
@@ -123,7 +133,7 @@ fn _compute_credential_hash(url: &UrlX) -> u64 {
         return 0;
     }
 
-    let cred_data = format!("{}:{}:{}:{}", host, port, username, password);
+    let cred_data = format!("{host}:{port}:{username}:{password}");
     rapidhash::v3::rapidhash_v3(cred_data.as_bytes())
 }
 
@@ -136,23 +146,26 @@ fn _compute_uid(url: &UrlX) -> (u64, u64) {
 // ========================================
 // Dispatcher
 // ========================================
-pub fn try_accept_raw(raw: Input<'_>) -> Result<UrlX, ParseError> {
+/// # Errors
+///
+/// Will return `Err` if the input is not a valid URL.
+pub fn try_accept_raw(raw: &Input<'_>) -> Result<UrlX, ParseError> {
     let result = match raw.schema {
-        SchemeX::SS => ss::SsProto::parse(&raw),
-        SchemeX::SSR => ssr::SsrProto::parse(&raw),
-        SchemeX::Vmess => vmess::VmessProto::parse(&raw),
-        SchemeX::Vless => vless::VlessProto::parse(&raw),
-        SchemeX::Trojan => trojan::TrojanProto::parse(&raw),
-        SchemeX::Hysteria2 => hysteria2::Hysteria2Proto::parse(&raw),
-        SchemeX::Tg | SchemeX::Https => tg::TgProto::parse(&raw),
+        SchemeX::SS => ss::SsProto::parse(raw),
+        SchemeX::SSR => ssr::SsrProto::parse(raw),
+        SchemeX::Vmess => vmess::VmessProto::parse(raw),
+        SchemeX::Vless => vless::VlessProto::parse(raw),
+        SchemeX::Trojan => trojan::TrojanProto::parse(raw),
+        SchemeX::Hysteria2 => hysteria2::Hysteria2Proto::parse(raw),
+        SchemeX::Tg | SchemeX::Https => tg::TgProto::parse(raw),
 
         ref _other @ (SchemeX::Slipnet | SchemeX::SlipnetEnc) => {
             tracing::debug!(target: "visit", "SlipNet - trying to parse as slipnet");
-            slipnet::SlipnetProto::parse(&raw)
+            slipnet::SlipnetProto::parse(raw)
         }
         ref _other @ SchemeX::Hysteria => {
             tracing::debug!(target: "visit", "Hysteria not implemented, treating as Hysteria2");
-            hysteria2::Hysteria2Proto::parse(&raw)
+            hysteria2::Hysteria2Proto::parse(raw)
         }
         ref other => Err(ParseError::UnsupportedScheme(other.clone())),
     };
@@ -173,14 +186,14 @@ pub fn try_accept_raw(raw: Input<'_>) -> Result<UrlX, ParseError> {
     };
 
     let original_schema = raw.schema.clone();
-    let v = ss::SsProto::parse(&raw)
-        .or_else(|_| ssr::SsrProto::parse(&raw))
-        .or_else(|_| vmess::VmessProto::parse(&raw))
-        .or_else(|_| vless::VlessProto::parse(&raw))
-        .or_else(|_| trojan::TrojanProto::parse(&raw))
-        .or_else(|_| hysteria2::Hysteria2Proto::parse(&raw))
-        .or_else(|_| slipnet::SlipnetProto::parse(&raw))
-        .or_else(|_| tg::TgProto::parse(&raw))
+    let v = ss::SsProto::parse(raw)
+        .or_else(|_| ssr::SsrProto::parse(raw))
+        .or_else(|_| vmess::VmessProto::parse(raw))
+        .or_else(|_| vless::VlessProto::parse(raw))
+        .or_else(|_| trojan::TrojanProto::parse(raw))
+        .or_else(|_| hysteria2::Hysteria2Proto::parse(raw))
+        .or_else(|_| slipnet::SlipnetProto::parse(raw))
+        .or_else(|_| tg::TgProto::parse(raw))
         .or(Err(e))?;
 
     tracing::warn!(target: "visit::basic", "Schema fallback success: [{} => {}]", original_schema, v.schema);
@@ -195,7 +208,6 @@ use bstr::ByteSlice;
 pub use hysteria2::Hysteria2Proto;
 pub use slipnet::SlipnetProto;
 pub use ss::SsProto;
-pub use ssr::SsrProto;
 pub use tg::TgProto;
 pub use trojan::TrojanProto;
 pub use vless::VlessProto;

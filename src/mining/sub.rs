@@ -39,12 +39,9 @@ pub async fn fetch_timestamped_subs(
                 }
             },
             "file" => {
-                let path = match url.to_file_path() {
-                    Ok(p) => p,
-                    Err(_) => {
-                        tracing::error!(url = %sub_url_str, "Invalid file URL: not an absolute path");
-                        continue;
-                    }
+                let Ok(path) = url.to_file_path() else {
+                    tracing::error!(url = %sub_url_str, "Invalid file URL: not an absolute path");
+                    continue;
                 };
                 match std::fs::read(&path) {
                     Ok(d) => d,
@@ -62,12 +59,9 @@ pub async fn fetch_timestamped_subs(
 
         let lines = crate::parse_sub(&url, &data);
 
-        let source = match registry.lookup(sub_url_str) {
-            Some(s) => s,
-            None => {
-                tracing::warn!(url = %sub_url_str, "Source not found in registry (should not happen)");
-                continue;
-            }
+        let Some(source) = registry.lookup(sub_url_str) else {
+            tracing::warn!(url = %sub_url_str, "Source not found in registry (should not happen)");
+            continue;
         };
 
         // Emit unparseable URL events from this subscription
@@ -124,5 +118,9 @@ async fn download_sub_data(client: &reqwest::Client, url: &url::Url) -> Result<V
         .error_for_status()
         .context("Subscription HTTP error status")?;
 
-    Ok(resp.bytes().await.context("Failed to read subscription response body")?.to_vec())
+    Ok(resp
+        .bytes()
+        .await
+        .context("Failed to read subscription response body")?
+        .to_vec())
 }

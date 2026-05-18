@@ -10,7 +10,7 @@ use super::{HostSpec, PortSpec, SchemeX, TinyText};
 ///
 /// [schema]://userinfo[@channel]@[host:port]/[path]?[query]#[fragment]
 ///
-/// Only 'userinfo' parameter is required (opposite to url::Url behaviour, where hostport is required)
+/// Only 'userinfo' parameter is required (opposite to [`url::Url`] behaviour, where hostport is required)
 #[cfg_attr(test, derive(Debug))]
 pub struct RawUrlX<'a> {
     /// `[schema]`
@@ -53,6 +53,10 @@ impl<'a> RawUrlX<'a> {
     /// };
     /// assert_eq!(userinfo, b"userinfo");
     /// ```
+    ///
+    /// # Errors
+    ///
+    /// If `expect_b64` is `true`, but the userinfo is not base64 encoded, this function will return an error.
     pub fn userinfo_only(
         &self,
         expect_b64: bool,
@@ -90,10 +94,17 @@ impl<'a> RawUrlX<'a> {
     /// };
     /// assert_eq!(userinfo, b"userinfo");
     /// ```
+    ///
+    /// # Errors
+    ///
+    /// If `expect_b64` is true, but the userinfo is not base64 encoded, this function will return an error.
     pub fn userinfo(&self, expect_b64: bool) -> Result<Cow<'a, [u8]>, base64::DecodeError> {
         Self::userinfo_smart(self, |_| expect_b64)
     }
 
+    /// # Errors
+    ///
+    /// If `b64_if` returns true, but the userinfo is not base64 encoded, this function will return an error.
     pub fn userinfo_smart(
         &self,
         b64_if: impl Fn(&[u8]) -> bool,
@@ -129,6 +140,10 @@ impl<'a> RawUrlX<'a> {
     /// assert_eq!(host.to_str(), "host.com");
     /// assert_eq!(port.first(), Some(1234));
     /// ```
+    ///
+    /// # Errors
+    ///
+    /// If hostport is present but invalid, return error.
     pub fn hostport(&self) -> Result<Option<(HostSpec, PortSpec)>, Cow<'static, str>> {
         let Some(hostport) = self.hostport else {
             return Ok(None);
@@ -146,6 +161,9 @@ impl<'a> RawUrlX<'a> {
         }
     }
 
+    /// # Errors
+    ///
+    /// If path is present but invalid, return error.
     pub fn path(&self) -> Result<Option<TinyText>, std::string::FromUtf8Error> {
         Ok(self
             .path
@@ -153,6 +171,10 @@ impl<'a> RawUrlX<'a> {
             .transpose()?
             .map(Into::into))
     }
+
+    /// # Errors
+    ///
+    /// If query is present but invalid, return error.
     pub fn query(&self) -> Result<Vec<(TinyText, Option<TinyText>)>, std::string::FromUtf8Error> {
         self.query
             .iter()
@@ -173,6 +195,11 @@ impl<'a> RawUrlX<'a> {
             .collect::<Result<_, _>>()
     }
 
+    /// Returns the fragment part of the URL, if any.
+    ///
+    /// # Errors
+    ///
+    /// If the fragment is not valid UTF-8, an error is returned.
     pub fn fragment(&self) -> Result<Option<TinyText>, core::str::Utf8Error> {
         if let Some(fragment) = self.fragment {
             let fragment = urlencoding::decode_binary(fragment.as_bytes());
@@ -194,9 +221,8 @@ impl<'a> RawUrlX<'a> {
                 let (s, _enc, err) = enc.decode(&fragment);
                 if err {
                     return Err(e);
-                } else {
-                    break 'block s;
                 }
+                break 'block s;
             };
             Ok(Some(TinyText::from(s.as_ref())))
         } else {

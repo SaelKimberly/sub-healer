@@ -20,22 +20,22 @@ pub struct Unescaper {
 
 impl Unescaper {
     #[inline]
-    pub fn enc_pct(mut self) -> Self {
+    pub const fn enc_pct(mut self) -> Self {
         self.enc_pct = true;
         self
     }
     #[inline]
-    pub fn enc8259(mut self, bypass: bool) -> Self {
+    pub const fn enc8259(mut self, bypass: bool) -> Self {
         self.enc8259 = Some(bypass);
         self
     }
     #[inline]
-    pub fn enc_uni(mut self, bypass: bool) -> Self {
+    pub const fn enc_uni(mut self, bypass: bool) -> Self {
         self.enc_uni = Some(bypass);
         self
     }
     #[inline]
-    pub fn chardet(mut self, enable: bool, bypass: bool) -> Self {
+    pub const fn chardet(mut self, enable: bool, bypass: bool) -> Self {
         self.chardet = (enable, bypass);
         self
     }
@@ -59,9 +59,8 @@ impl Unescaper {
                 let (s, e, replaced) = enc.decode(s.as_ref());
                 if replaced && !bypass {
                     return Err(UnescapeError::EncodingFlaw(e.name()));
-                } else {
-                    s.into_owned()
                 }
+                s.into_owned()
             }
             (false, bypass) => {
                 if bypass {
@@ -83,7 +82,7 @@ impl Unescaper {
                     }
                 }
             }
-        };
+        }
 
         if let Some(bypass) = self.enc_uni {
             match unescaper::unescape(s.as_str()) {
@@ -96,7 +95,7 @@ impl Unescaper {
                     }
                 }
             }
-        };
+        }
 
         Ok(s)
     }

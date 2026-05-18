@@ -195,14 +195,14 @@ mod tests {
     #[test]
     fn test_ssr() {
         let raw = crate::urlx::RawUrlX::from(SSR_URL);
-        let url = visit_basic(raw).expect("failed");
+        let url = visit_basic(&raw).expect("failed");
         assert_eq!(url.schema, SchemeX::SSR);
     }
 
     #[test]
     fn test_reconstruct_ssr_roundtrip() {
         let raw = crate::urlx::RawUrlX::from(SSR_URL);
-        let parsed = visit_basic(raw).expect("failed to parse");
+        let parsed = visit_basic(&raw).expect("failed to parse");
         let reconstructed = parsed.reconstruct();
 
         assert!(
@@ -211,7 +211,7 @@ mod tests {
         );
 
         let raw2 = crate::urlx::RawUrlX::from(reconstructed.as_str());
-        let reparsed = visit_basic(raw2).expect("failed to re-parse");
+        let reparsed = visit_basic(&raw2).expect("failed to re-parse");
 
         assert_eq!(parsed.schema, reparsed.schema, "schema mismatch");
         assert_eq!(parsed.host, reparsed.host, "host mismatch");

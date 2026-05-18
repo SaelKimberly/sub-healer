@@ -1,6 +1,4 @@
-use base64::Engine;
-
-use crate::urlx::{HostSpec, ParseError, PortSpec, RawUrlX, SchemeX, TinyText, UrlX, UserInfo};
+use crate::urlx::{ParseError, SchemeX, TinyText, UrlX, UserInfo};
 
 pub struct SsProto;
 
@@ -72,7 +70,7 @@ impl super::ProtoVisitor for SsProto {
             .as_url_safe()
             .map_err(|e| ParseError::InvalidUserInfo(format!("{}: {}", url.username, e).into()))?;
         let hostport = url._safe_hostport(None)?;
-        Ok(format!("ss://{}@{}", encoded, hostport))
+        Ok(format!("ss://{encoded}@{hostport}"))
     }
 
     fn visit(url: &mut UrlX) -> Result<(), super::ParseError> {
@@ -105,7 +103,7 @@ mod tests {
     fn test_ss() {
         let url = "ss://Y2xlb2Y6cGFzc3dvcmRAMTwzMC4wLjE2MDo4MDgw@127.0.0.1:8080";
         let raw = crate::urlx::RawUrlX::from(url);
-        let url = visit_basic(raw).expect("failed");
+        let url = visit_basic(&raw).expect("failed");
         assert_eq!(url.schema, SchemeX::SS);
     }
 
@@ -113,13 +111,13 @@ mod tests {
     fn test_reconstruct_ss_roundtrip() {
         let input = "ss://Y2xlb2Y6cGFzc3dvcmRAMTwzMC4wLjE2MDo4MDgw@127.0.0.1:8080";
         let raw = crate::urlx::RawUrlX::from(input);
-        let parsed = visit_basic(raw).expect("failed to parse");
+        let parsed = visit_basic(&raw).expect("failed to parse");
         let reconstructed = parsed.reconstruct();
-        eprintln!("input:        {}", input);
-        eprintln!("reconstructed: {}", reconstructed);
+        eprintln!("input:        {input}");
+        eprintln!("reconstructed: {reconstructed}");
 
         let raw2 = crate::urlx::RawUrlX::from(reconstructed.as_str());
-        let reparsed = visit_basic(raw2).expect("failed to re-parse");
+        let reparsed = visit_basic(&raw2).expect("failed to re-parse");
 
         assert_eq!(parsed.host, reparsed.host, "host mismatch");
         assert_eq!(parsed.port, reparsed.port, "port mismatch");

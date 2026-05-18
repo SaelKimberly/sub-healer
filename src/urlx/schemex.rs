@@ -25,6 +25,7 @@ pub enum SchemeX {
     Unknown(TinyText),
 }
 impl SchemeX {
+    #[must_use]
     pub fn as_str(&self) -> &str {
         match self {
             Self::Vless => "vless",
@@ -46,6 +47,7 @@ impl SchemeX {
         }
     }
 
+    #[allow(clippy::missing_panics_doc, reason = "no panic expected")]
     pub fn slice_input(s: &str) -> Vec<(Self, &str)> {
         static SCHEMA_AC: LazyLock<AhoCorasick> = LazyLock::new(|| {
             AhoCorasick::builder()

@@ -1,4 +1,4 @@
-use crate::urlx::{HostSpec, PortSpec, RawUrlX, SchemeX, TinyText, UrlX, UserInfo};
+use crate::urlx::{SchemeX, TinyText, UrlX, UserInfo};
 
 pub struct VlessProto;
 
@@ -10,7 +10,7 @@ impl super::ProtoVisitor for VlessProto {
         } else {
             let userinfo = raw.userinfo;
             let (userinfo, hostport) = userinfo.split_once('@').ok_or_else(|| {
-                super::ParseError::InvalidUserInfo(format!("{}: missing hostport", userinfo).into())
+                super::ParseError::InvalidUserInfo(format!("{userinfo}: missing hostport").into())
             })?;
             (userinfo, hostport)
         };
@@ -18,7 +18,7 @@ impl super::ProtoVisitor for VlessProto {
         let (host, port) = super::_parse_hostport(hostport)?;
 
         let uuid = uuid::Uuid::parse_str(username).map_err(|_| {
-            super::ParseError::InvalidUserInfo(format!("invalid UUID: {}", username).into())
+            super::ParseError::InvalidUserInfo(format!("invalid UUID: {username}").into())
         })?;
 
         let query_string = raw.query.unwrap_or("");
@@ -47,14 +47,12 @@ impl super::ProtoVisitor for VlessProto {
             .iter()
             .find(|(k, _)| k.as_str() == "security")
             .and_then(|(_, v)| v.as_ref())
-            .map(|v| TinyText::from(v.as_str()))
-            .unwrap_or_else(|| "none".into());
+            .map_or_else(|| "none".into(), |v| TinyText::from(v.as_str()));
         let transport = query_pairs
             .iter()
             .find(|(k, _)| k.as_str() == "type")
             .and_then(|(_, v)| v.as_ref())
-            .map(|v| TinyText::from(v.as_str()))
-            .unwrap_or_else(|| "tcp".into());
+            .map_or_else(|| "tcp".into(), |v| TinyText::from(v.as_str()));
         let path = query_pairs
             .iter()
             .find(|(k, _)| k.as_str() == "path")
@@ -109,7 +107,7 @@ impl super::ProtoVisitor for VlessProto {
                         (k.as_str(), v.as_deref()),
                         (
                             "security" | "type" | "encryption",
-                            Some("none") | Some("tcp") | None
+                            Some("none" | "tcp") | None
                         )
                     )
                 })
@@ -203,7 +201,7 @@ mod tests {
         let url = "vless://6202b230-417c-4d8e-b624-0f71afa9c75d@159.223.24.65:443?path=/?ed=2560&security=tls&encryption=none&sni=test.ir&type=ws";
 
         let raw = crate::urlx::RawUrlX::from(url);
-        let url = visit_basic(raw).expect("failed");
+        let url = visit_basic(&raw).expect("failed");
 
         assert_eq!(url.schema, SchemeX::Vless);
     }
@@ -213,7 +211,7 @@ mod tests {
         let url = "vless://6202b230-417c-4d8e-b624-0f71afa9c75d@159.223.24.65:443?security=reality&encryption=none&type=tcp&flow=xtls-rprx-vision&pbk=abc123";
 
         let raw = crate::urlx::RawUrlX::from(url);
-        let url = visit_basic(raw).expect("failed");
+        let url = visit_basic(&raw).expect("failed");
 
         assert_eq!(url.schema, SchemeX::Vless);
     }
@@ -223,12 +221,12 @@ mod tests {
         let input = "vless://6202b230-417c-4d8e-b624-0f71afa9c75d@159.223.24.65:443?path=/?ed=2560&security=tls&encryption=none&sni=test.ir&type=ws";
 
         let raw = crate::urlx::RawUrlX::from(input);
-        let parsed = visit_basic(raw).expect("failed to parse");
+        let parsed = visit_basic(&raw).expect("failed to parse");
 
         let reconstructed = parsed.reconstruct();
 
         let raw2 = crate::urlx::RawUrlX::from(reconstructed.as_str());
-        let reparsed = visit_basic(raw2).expect("failed to re-parse");
+        let reparsed = visit_basic(&raw2).expect("failed to re-parse");
 
         assert_eq!(parsed.host, reparsed.host, "host mismatch");
         assert_eq!(parsed.port, reparsed.port, "port mismatch");

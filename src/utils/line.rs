@@ -2,11 +2,10 @@ use std::borrow::Cow;
 use std::str::FromStr;
 use std::sync::Arc;
 
-use base64::Engine;
 use rayon::iter::{IntoParallelIterator, ParallelBridge, ParallelIterator};
 
-use crate::urlx::{RawUrlX, SchemeX, UrlX};
 use crate::urlx::try_accept_raw;
+use crate::urlx::{RawUrlX, SchemeX, UrlX};
 
 static KNOWN_SCHEMAS: &[&str] = &[
     "vless://",
@@ -27,7 +26,7 @@ static KNOWN_SCHEMAS: &[&str] = &[
     "wireguard://",
 ];
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[allow(clippy::large_enum_variant)]
 pub enum Data<'a> {
     Raw {
@@ -74,17 +73,17 @@ impl<'a> Line<'a> {
             let norm = norm.replace("security=", "&security=");
 
             let norm = norm
-                .split("&")
+                .split('&')
                 .filter(|chunk| !chunk.is_empty())
                 .collect::<Vec<_>>()
                 .join("&");
 
-            if norm != url {
+            if norm == url {
+                url
+            } else {
                 wrn.get_or_insert_default()
                     .push("Detected HTML entities".into());
                 Cow::Owned(norm)
-            } else {
-                url
             }
         };
 
@@ -96,7 +95,7 @@ impl<'a> Line<'a> {
         }
 
         let raw: RawUrlX = url.as_ref().into();
-        let Ok(urlx) = try_accept_raw(raw) else {
+        let Ok(urlx) = try_accept_raw(&raw) else {
             return Self {
                 row,
                 url: Data::Raw { scheme, url },
@@ -122,7 +121,7 @@ pub struct Lines<'a> {
     raw: Vec<Line<'a>>,
 }
 
-fn _split_at_scheme<'a>(
+fn split_at_scheme<'a>(
     (i, s): (usize, &'a str),
     schemas: &[&'static str],
 ) -> Vec<(usize, Cow<'static, str>, &'a str)> {
@@ -132,22 +131,20 @@ fn _split_at_scheme<'a>(
     // 1: Find first schema in line (any word://, not just KNOWN_SCHEMAS)
     if let Some(prefix) = s.split_inclusive("://").next() {
         let before = prefix.strip_suffix("://").unwrap_or(prefix);
-        let scheme_word = before
-            .split_whitespace()
-            .last()
-            .filter(|w| !w.is_empty());
+        let scheme_word = before.split_whitespace().last().filter(|w| !w.is_empty());
         if let Some(sw) = scheme_word {
             let rest = if before.trim().is_empty() {
                 s.trim_start()
             } else {
-                s.strip_prefix(before.trim_end())
-                    .unwrap_or(s)
+                s.strip_prefix(before.trim_end()).unwrap_or(s)
             };
             let cow_scheme = KNOWN_SCHEMAS
                 .iter()
-                .find(|k| **k == format!("{}://", sw))
-                .map(|k| Cow::Borrowed(k.strip_suffix("://").unwrap_or(k)))
-                .unwrap_or_else(|| Cow::Owned(sw.to_string()));
+                .find(|k| **k == format!("{sw}://"))
+                .map_or_else(
+                    || Cow::Owned(sw.to_string()),
+                    |k| Cow::Borrowed(k.strip_suffix("://").unwrap_or(k)),
+                );
             slice.replace((cow_scheme, rest));
         }
     }
@@ -199,14 +196,17 @@ impl<'a> Lines<'a> {
         self.inner.iter()
     }
 
+    #[must_use]
     pub fn raw_entries(&self) -> &[Line<'a>] {
         &self.raw
     }
 
-    pub fn source(&self) -> &url::Url {
+    #[must_use]
+    pub const fn source(&self) -> &url::Url {
         &self.source
     }
 
+    #[must_use]
     pub fn preview_line(&self, row: usize) -> Option<&str> {
         self.basic.lines().nth(row).map(|l| {
             if l.len() > 200 {
@@ -228,7 +228,7 @@ impl<'a> Lines<'a> {
                 .enumerate()
                 .par_bridge()
                 .flat_map(|(idx, line)| line.split("<br/>").map(move |s| (idx, s)).par_bridge())
-                .flat_map(|s| _split_at_scheme(s, KNOWN_SCHEMAS))
+                .flat_map(|s| split_at_scheme(s, KNOWN_SCHEMAS))
                 .map(|(i, s, sx)| Line {
                     row: i,
                     url: Data::Raw {
@@ -278,12 +278,7 @@ impl<'a> Lines<'a> {
     }
 
     fn _visit_line(line: Line<'a>) -> VisitResult {
-        let Line {
-            row,
-            url,
-            wrn,
-            err,
-        } = line;
+        let Line { row, url, wrn, err } = line;
 
         match url {
             Data::Url(urlx) => VisitResult::Visited(Line {

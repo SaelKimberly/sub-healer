@@ -4,7 +4,7 @@ use std::string::FromUtf8Error;
 use base64::Engine;
 use serde_json::Value;
 
-use crate::{NomError, permissive_json, urlx::TinyText};
+use crate::{permissive_json, urlx::TinyText};
 
 #[derive(Debug, thiserror::Error)]
 pub enum UserInfoError {
@@ -18,8 +18,8 @@ pub enum UserInfoError {
     BrokenJson,
 }
 
-impl From<NomError<'_>> for UserInfoError {
-    fn from(_e: NomError) -> Self {
+impl From<crate::utils::NomError<'_>> for UserInfoError {
+    fn from(_e: crate::utils::NomError) -> Self {
         Self::BrokenJson
     }
 }
@@ -44,7 +44,7 @@ pub enum UserInfo {
     Json(Value),
 }
 
-fn _decode_from_b64(data: &[u8]) -> Result<String, UserInfoError> {
+fn decode_from_b64(data: &[u8]) -> Result<String, UserInfoError> {
     let data = 'block: {
         let e = match base64::prelude::BASE64_URL_SAFE_NO_PAD.decode(data) {
             Ok(r) => break 'block r,
@@ -73,7 +73,7 @@ impl UserInfo {
         // 2: Trim optional '=' at the end
         let data = data.trim_end_matches(|c: char| c == '=' || c.is_whitespace());
         // 3: Then base64 decoding
-        let data = _decode_from_b64(data.as_bytes())?;
+        let data = decode_from_b64(data.as_bytes())?;
         Ok(Self::Text(data.into(), UserInfoEncoding::B64))
     }
 
@@ -86,13 +86,13 @@ impl UserInfo {
     /// Change encoding to base64
     pub const fn with_b64_encoding(&mut self) {
         if let Self::Text(_, e @ UserInfoEncoding::URL) = self {
-            *e = UserInfoEncoding::B64
+            *e = UserInfoEncoding::B64;
         }
     }
     /// Change encoding to percent
     pub const fn with_pct_encoding(&mut self) {
         if let Self::Text(_, e @ UserInfoEncoding::B64) = self {
-            *e = UserInfoEncoding::URL
+            *e = UserInfoEncoding::URL;
         }
     }
 
@@ -143,8 +143,8 @@ impl UserInfo {
     /// Change the encoding label (if not already), to Base64 (urlsafe)
     pub fn as_base64_decoded(&mut self) -> Result<&mut Self, UserInfoError> {
         if let Self::Text(t, e @ UserInfoEncoding::URL) = self {
-            *t = _decode_from_b64(t.as_bytes())?.into();
-            *e = UserInfoEncoding::B64
+            *t = decode_from_b64(t.as_bytes())?.into();
+            *e = UserInfoEncoding::B64;
         }
 
         Ok(self)
@@ -175,7 +175,7 @@ impl UserInfo {
         *self = Self::Json(value);
         match self {
             Self::Json(v) => Ok(v),
-            _ => unreachable!(),
+            Self::Text(_, _) => unreachable!(),
         }
     }
 }
@@ -210,7 +210,7 @@ mod tests {
         let userinfo = urlencoding::encode(expected);
         let userinfo = UserInfo::new_from(userinfo).unwrap();
 
-        if userinfo.as_text().map(|t| t.as_str()) == Some("some useful text") {
+        if userinfo.as_text().map(TinyText::as_str) == Some("some useful text") {
         } else {
             panic!()
         }

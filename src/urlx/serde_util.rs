@@ -19,6 +19,7 @@ pub(super) mod host_serde {
         Ok(Some(s.to_owned()))
     }
 
+    #[allow(clippy::ref_option, reason = "serde requires this")]
     pub fn serialize<S>(v: &Option<super::HostSpec>, s: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
@@ -44,10 +45,13 @@ pub(super) mod port_serde {
         Ok(Some(s))
     }
 
+    #[allow(clippy::ref_option, reason = "serde requires this")]
     pub fn serialize<S>(v: &Option<super::PortSpec>, s: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
     {
-        v.as_ref().map(|v| v.to_string()).serialize(s)
+        v.as_ref()
+            .map(std::string::ToString::to_string)
+            .serialize(s)
     }
 }

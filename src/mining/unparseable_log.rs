@@ -3,15 +3,16 @@ use std::io::{BufWriter, Write};
 use std::sync::Mutex;
 
 use serde_json::json;
+use tracing_subscriber::Layer;
 use tracing_subscriber::layer::Context;
 use tracing_subscriber::registry::LookupSpan;
-use tracing_subscriber::Layer;
 
 pub struct UnparseableLayer {
     writer: Mutex<Option<BufWriter<std::fs::File>>>,
 }
 
 impl UnparseableLayer {
+    #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
         let path = std::env::var("V2RAY_HEAL_UNPARSEABLE_LOG")
             .unwrap_or_else(|_| "unparseable.ndjson".to_string());
@@ -30,23 +31,15 @@ impl<S> Layer<S> for UnparseableLayer
 where
     S: tracing::Subscriber + for<'a> LookupSpan<'a>,
 {
-    fn on_event(
-        &self,
-        event: &tracing::Event<'_>,
-        _ctx: Context<'_, S>,
-    ) {
+    fn on_event(&self, event: &tracing::Event<'_>, _ctx: Context<'_, S>) {
         if event.metadata().target() != "mining::unparseable" {
             return;
         }
 
-        let mut guard = match self.writer.lock() {
-            Ok(g) => g,
-            Err(_) => return,
+        let Ok(mut guard) = self.writer.lock() else {
+            return;
         };
-        let writer = match guard.as_mut() {
-            Some(w) => w,
-            None => return,
-        };
+        let Some(writer) = guard.as_mut() else { return };
 
         let mut visitor = UnparseableVisitor::default();
         event.record(&mut visitor);
@@ -98,10 +91,7 @@ impl tracing::field::Visit for UnparseableVisitor {
 
     fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
         let name = field.name();
-        if matches!(
-            name,
-            "raw_url" | "scheme" | "error" | "source_type"
-        ) {
+        if matches!(name, "raw_url" | "scheme" | "error" | "source_type") {
             let s = format!("{value:?}");
             match name {
                 "raw_url" => self.raw_url = Some(s),
@@ -121,6 +111,7 @@ mod tests {
     use tracing_subscriber::prelude::*;
 
     #[test]
+    #[allow(clippy::unreadable_literal)]
     fn test_unparseable_layer_filters_by_target() {
         let ts = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -160,7 +151,11 @@ mod tests {
 
         let content = std::fs::read_to_string(&tmp).unwrap();
         let lines: Vec<&str> = content.lines().filter(|l| !l.is_empty()).collect();
-        assert_eq!(lines.len(), 1, "only matching-target events should be written");
+        assert_eq!(
+            lines.len(),
+            1,
+            "only matching-target events should be written"
+        );
 
         let parsed: Value = serde_json::from_str(lines[0]).unwrap();
         assert_eq!(parsed["raw_url"], "vless://bad@example.com:invalid");

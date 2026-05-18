@@ -7,7 +7,6 @@ mod user_info;
 
 use std::borrow::Cow;
 
-use base64::Engine;
 use rustls::pki_types::{IpAddr, ServerName};
 use serde_util::{host_serde, port_serde};
 
@@ -15,14 +14,11 @@ pub(crate) use user_info::UserInfo;
 pub(crate) type TinyText = smartstring::SmartString<smartstring::LazyCompact>;
 pub(crate) type HostSpec = rustls::pki_types::ServerName<'static>;
 
-use crate::Unescaper;
-pub(crate) use port_spec::{PortDecl, PortSpec};
+pub(crate) use port_spec::PortSpec;
 
 pub use proto_vis::try_accept_raw;
-pub(crate) use proto_vis::{
-    Hysteria2Proto, ParseError, ProtoVisitor, SlipnetProto, SsProto, SsrProto, TgProto,
-    TrojanProto, VlessProto, VmessProto,
-};
+
+pub(crate) use proto_vis::{ParseError, ProtoVisitor};
 
 pub use schemex::SchemeX;
 pub use split_url::RawUrlX;
@@ -65,14 +61,16 @@ pub struct UrlX {
 }
 
 impl UrlX {
+    #[must_use]
     pub fn host_str(&self) -> Cow<'_, str> {
-        if let Some(ref host) = self.host {
-            host.to_str()
-        } else {
-            Cow::Borrowed("")
-        }
+        self.host
+            .as_ref()
+            .map_or(Cow::Borrowed(""), |host| host.to_str())
     }
 
+    /// # Errors
+    ///
+    /// Will return `Err` if `url` is not a valid URL.
     pub fn try_accept<V: ProtoVisitor>(url: &str) -> Result<Self, ParseError> {
         let url = url.into();
         let mut parsed = V::parse(&url)?;
@@ -80,6 +78,9 @@ impl UrlX {
         Ok(parsed)
     }
 
+    /// # Errors
+    ///
+    /// Will return `Err` if `self` is not a valid URL.
     #[inline]
     pub fn try_build<V: ProtoVisitor>(&self) -> Result<String, ParseError> {
         V::build(self)
@@ -87,6 +88,7 @@ impl UrlX {
 }
 
 impl UrlX {
+    #[must_use]
     pub fn get_query_param<'a>(&'a self, key: &str) -> Option<&'a TinyText> {
         self.query
             .iter()
@@ -106,7 +108,7 @@ impl UrlX {
             .as_ref()
             .map_or_else(
                 || Err(ParseError::MissingPort),
-                |spec| Ok(format!("{}:{}", addr, spec)),
+                |spec| Ok(format!("{addr}:{spec}")),
             )
     }
     pub(crate) fn _safe_userinfo(&self) -> Result<String, ParseError> {
@@ -118,13 +120,16 @@ impl UrlX {
             .to_string())
     }
 
+    #[must_use]
     pub fn reconstruct(&self) -> String {
-        use proto_vis::*;
+        use proto_vis::{
+            Hysteria2Proto, ProtoVisitor, SlipnetProto, SsProto, TgProto, TrojanProto, VlessProto,
+            VmessProto,
+        };
         let reconstructed = match self.schema {
             SchemeX::Vless => VlessProto::build(self),
             SchemeX::Tg | SchemeX::Https => TgProto::build(self),
-            SchemeX::Slipnet => SlipnetProto::build(self),
-            SchemeX::SlipnetEnc => SlipnetProto::build(self),
+            SchemeX::Slipnet | SchemeX::SlipnetEnc => SlipnetProto::build(self),
             SchemeX::Vmess | SchemeX::SSR => VmessProto::build(self),
             SchemeX::SS => SsProto::build(self),
             SchemeX::Trojan => TrojanProto::build(self),
@@ -143,35 +148,40 @@ impl UrlX {
         let username_str = this.username.as_url_safe().unwrap_or_else(|_| {
             this.username
                 .as_text()
-                .map(|t| t.as_str())
+                .map(TinyText::as_str)
                 .unwrap_or_default()
                 .to_string()
         });
-        write!(out, "{}", username_str).unwrap();
+        write!(out, "{username_str}").unwrap();
 
         if let Some(ref p) = this.password {
-            write!(out, ":{}", p).unwrap();
+            write!(out, ":{p}").unwrap();
         }
 
-        if let Some(ref h) = this.host {
-            write!(out, "@{}", h.to_str()).unwrap();
+        if let Some(h) = this.host.as_ref().map(HostSpec::to_str) {
+            write!(out, "@{h}").unwrap();
         }
 
         if let Some(ref p) = this.port {
-            write!(out, ":{}", p).unwrap();
+            write!(out, ":{p}").unwrap();
         }
 
         if let Some(ref path) = this.path {
-            write!(out, "/{}", path).unwrap();
+            write!(out, "/{path}").unwrap();
         }
 
         let query_sorted = this.build_query();
         if !query_sorted.is_empty() {
-            write!(out, "?{}", query_sorted).unwrap();
+            write!(out, "?{query_sorted}").unwrap();
         }
 
-        if let Some(ref frag) = this.fragment {
-            write!(out, "#{}", urlencoding::encode(frag)).unwrap();
+        if let Some(frag) = this
+            .fragment
+            .as_ref()
+            .map(TinyText::as_str)
+            .map(urlencoding::encode)
+        {
+            write!(out, "#{frag}").unwrap();
         }
 
         out
@@ -191,7 +201,7 @@ impl UrlX {
                 let def = match self.schema {
                     SchemeX::Vless => {
                         matches!(k.as_str(), "security" | "type" | "encryption")
-                            && matches!(v.as_deref(), Some("none") | Some("tcp") | None)
+                            && matches!(v.as_deref(), Some("none" | "tcp") | None)
                     }
                     SchemeX::Trojan | SchemeX::Hysteria | SchemeX::Hysteria2 => {
                         k.as_str() == "security" && matches!(v.as_deref(), Some("tls") | None)
@@ -210,7 +220,7 @@ impl UrlX {
         if is_mtproto {
             let mut core = Vec::new();
             let mut rest = Vec::new();
-            for (k, v) in filtered.into_iter() {
+            for (k, v) in filtered {
                 match k.as_str() {
                     "server" | "port" | "secret" => core.push((k, v)),
                     _ => rest.push((k, v)),
@@ -226,10 +236,10 @@ impl UrlX {
         filtered
             .iter()
             .map(|(k, v)| {
-                v.as_ref().map_or_else(
-                    || format!("{}=", k),
-                    |v| format!("{}={}", k, urlencoding::encode(v)),
-                )
+                v.as_ref()
+                    .map(TinyText::as_str)
+                    .map(urlencoding::encode)
+                    .map_or_else(|| format!("{k}="), |v| format!("{k}={v}"))
             })
             .collect::<Vec<_>>()
             .join("&")
@@ -248,14 +258,14 @@ impl std::str::FromStr for UrlX {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let raw: RawUrlX = s.into();
         let schema = raw.schema.clone();
-        try_accept_raw(raw).or_else(|_| {
-            Ok(UrlX {
+        try_accept_raw(&raw).or_else(|_| {
+            Ok(Self {
                 uid: 0,
                 sig: 0,
                 schema,
                 host: None,
                 port: None,
-                username: UserInfo::Text(Default::default(), Default::default()),
+                username: UserInfo::Text(TinyText::new_const(), user_info::UserInfoEncoding::URL),
                 password: None,
                 path: None,
                 query: Vec::new(),

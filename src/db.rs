@@ -3,14 +3,14 @@ use serde::{Deserialize, Serialize};
 
 use crate::urlx::UrlX;
 
-pub const SCHEMA_SOURCES: &str = r#"
+pub const SCHEMA_SOURCES: &str = r"
 CREATE TABLE IF NOT EXISTS sources (
     id INTEGER PRIMARY KEY,
     url TEXT NOT NULL
 );
-"#;
+";
 
-pub const SCHEMA_SERVERS: &str = r#"
+pub const SCHEMA_SERVERS: &str = r"
 CREATE TABLE IF NOT EXISTS servers (
     id INTEGER PRIMARY KEY,
     schema TEXT NOT NULL,
@@ -24,9 +24,9 @@ CREATE TABLE IF NOT EXISTS servers (
     first_seen_source_id INTEGER NOT NULL,
     FOREIGN KEY (first_seen_source_id) REFERENCES sources(id)
 );
-"#;
+";
 
-pub const SCHEMA_SIGHTINGS: &str = r#"
+pub const SCHEMA_SIGHTINGS: &str = r"
 CREATE TABLE IF NOT EXISTS sightings (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     server_id INTEGER NOT NULL,
@@ -36,7 +36,7 @@ CREATE TABLE IF NOT EXISTS sightings (
     FOREIGN KEY (server_id) REFERENCES servers(id),
     FOREIGN KEY (source_id) REFERENCES sources(id)
 );
-"#;
+";
 
 pub const SCHEMA_INDEX_SIGHTINGS: &str =
     "CREATE INDEX IF NOT EXISTS idx_sightings_server_ts ON sightings(server_id, seen_ts);";
@@ -74,6 +74,9 @@ pub struct SightingRecord {
     pub remarks: Option<String>,
 }
 
+/// # Errors
+///
+/// Will return `Err` if the database operation fails.
 pub fn init_db(conn: &Connection) -> Result<()> {
     conn.execute_batch(
         &[
@@ -90,14 +93,18 @@ pub fn init_db(conn: &Connection) -> Result<()> {
 
 /// Compute deterministic hash for source URL
 /// Used as primary key in sources table
+#[must_use]
 pub fn hash_source_url(url: &str) -> i64 {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
     let mut hasher = DefaultHasher::new();
     url.hash(&mut hasher);
-    hasher.finish() as i64
+    hasher.finish().cast_signed()
 }
 
+/// # Errors
+///
+/// Will return `Err` if the database operation fails.
 pub fn upsert_source(conn: &Connection, url: &str) -> Result<i64> {
     let url_id = hash_source_url(url);
 
@@ -118,13 +125,20 @@ pub fn upsert_source(conn: &Connection, url: &str) -> Result<i64> {
     Ok(url_id)
 }
 
+/// # Errors
+///
+/// Will return `Err` if the database operation fails.
+///
+/// # Panics
+///
+/// Will panic if the `urlx` is not a server URL.
 pub fn upsert_server(
     conn: &Connection,
     urlx: &UrlX,
     source_id: i64,
     incoming_ts: i64,
 ) -> Result<()> {
-    let server_id = urlx.uid as i64;
+    let server_id = urlx.uid.cast_signed();
 
     let existing: Option<ServerRecord> = conn
         .query_row(
@@ -154,13 +168,15 @@ pub fn upsert_server(
             let port = urlx
                 .port
                 .as_ref()
-                .map(|p| p.to_string())
+                .map(std::string::ToString::to_string)
                 .unwrap_or_default();
-            let transport = urlx.transport.as_ref().map(|s| s.to_string());
-            let security = urlx.security.as_ref().map(|s| s.to_string());
-            let remarks = urlx.fragment.as_ref().map(|f| f.to_string());
-            let raw_config =
-                serde_json::to_string(urlx).expect("Failed to serialize UrlX");
+            let transport = urlx
+                .transport
+                .as_ref()
+                .map(std::string::ToString::to_string);
+            let security = urlx.security.as_ref().map(std::string::ToString::to_string);
+            let remarks = urlx.fragment.as_ref().map(std::string::ToString::to_string);
+            let raw_config = serde_json::to_string(urlx).expect("Failed to serialize UrlX");
 
             conn.execute(
                 "INSERT INTO servers (id, schema, host, port, transport, security, remarks, raw_config, first_seen_ts, first_seen_source_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
@@ -173,7 +189,7 @@ pub fn upsert_server(
             )?;
         }
         Some(existing) => {
-            let incoming_remarks = urlx.fragment.as_ref().map(|f| f.to_string());
+            let incoming_remarks = urlx.fragment.as_ref().map(std::string::ToString::to_string);
 
             if incoming_ts < existing.first_seen_ts {
                 conn.execute(
@@ -207,6 +223,9 @@ pub fn upsert_server(
     Ok(())
 }
 
+/// # Errors
+///
+/// Will return `Err` if the database query fails.
 pub fn get_server(conn: &Connection, id: i64) -> Result<Option<ServerRecord>> {
     let result = conn.query_row(
         "SELECT id, schema, host, port, transport, security, remarks, raw_config, first_seen_ts, first_seen_source_id FROM servers WHERE id = ?1",
@@ -234,6 +253,9 @@ pub fn get_server(conn: &Connection, id: i64) -> Result<Option<ServerRecord>> {
     }
 }
 
+/// # Errors
+///
+/// Will return `Err` if the query fails.
 pub fn get_sightings(conn: &Connection, server_id: i64) -> Result<Vec<SightingRecord>> {
     let mut stmt = conn.prepare(
         "SELECT id, server_id, source_id, seen_ts, remarks FROM sightings WHERE server_id = ?1 ORDER BY seen_ts ASC",

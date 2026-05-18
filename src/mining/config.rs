@@ -46,7 +46,7 @@ pub fn load_subscriptions(path: &Path) -> Result<Vec<String>> {
         .unwrap_or(&Vec::new())
         .iter()
         .filter_map(|v| match v {
-            Yaml::String(s) => Some(s.to_string()),
+            Yaml::String(s) => Some(s.clone()),
             _ => None,
         })
         .collect();

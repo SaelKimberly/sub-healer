@@ -16,14 +16,14 @@ impl std::fmt::Display for PortSpec {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         for (i, p) in self.ports.iter().enumerate() {
             if i > 0 {
-                f.write_str(",")?
+                f.write_str(",")?;
             }
             match p {
                 PortDecl::Single(p) => f.write_str(p.to_string().as_ref())?,
                 PortDecl::Range(Range { start, end }) => {
                     f.write_str(start.to_string().as_ref())?;
                     f.write_str("-")?;
-                    f.write_str(end.to_string().as_ref())?
+                    f.write_str(end.to_string().as_ref())?;
                 }
             }
         }
@@ -47,7 +47,7 @@ impl PortSpec {
     }
 
     pub fn add(&mut self, port: u16) -> bool {
-        for decl in self.ports.iter() {
+        for decl in &self.ports {
             match decl {
                 &PortDecl::Single(p) if p == port => return false,
                 PortDecl::Range(r) if r.contains(&port) => return false,

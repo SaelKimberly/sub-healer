@@ -12,7 +12,8 @@ use nom::{
 };
 use rustls::pki_types::{DnsName, IpAddr, Ipv4Addr, Ipv6Addr, ServerName};
 
-use crate::{PortSpec, RawResult, Span};
+use super::{RawResult, Span};
+use crate::PortSpec;
 
 trait XNom<'a>: Sized {
     fn xnom<T>(
@@ -24,7 +25,7 @@ trait XNom<'a>: Sized {
 impl<'a> XNom<'a> for Span<'a> {
     fn xnom<T>(
         self,
-        mut p: impl Parser<Span<'a>, Output = T, Error = nom::error::Error<Span<'a>>>,
+        mut p: impl Parser<Self, Output = T, Error = nom::error::Error<Self>>,
     ) -> RawResult<'a, T> {
         p.parse(self)
     }
@@ -49,11 +50,11 @@ impl<'a> XNom<'a> for &'a str {
 }
 
 #[inline]
-fn _unchecked_str<'a>(s: Span<'a>) -> &'a str {
+fn _unchecked_str(s: Span<'_>) -> &str {
     unsafe { str::from_utf8_unchecked(&s) }
 }
 
-pub fn dns_name<'a>(span: Span<'a>) -> RawResult<'a, DnsName<'a>> {
+pub fn dns_name(span: Span<'_>) -> RawResult<'_, DnsName<'_>> {
     recognize(preceded(
         alphanumeric1,
         separated_list1(alt((char('.'), char('-'), char('_'))), alphanumeric0),
@@ -67,7 +68,7 @@ pub fn dns_name<'a>(span: Span<'a>) -> RawResult<'a, DnsName<'a>> {
     .parse(span)
 }
 
-pub fn ipv4<'a>(span: Span<'a>) -> RawResult<'a, Ipv4Addr> {
+pub fn ipv4(span: Span<'_>) -> RawResult<'_, Ipv4Addr> {
     let (tail, raw_ip) = recognize((
         digit1,
         char('.'),
@@ -89,7 +90,7 @@ pub fn ipv4<'a>(span: Span<'a>) -> RawResult<'a, Ipv4Addr> {
     Ok((tail, ip.into()))
 }
 
-pub fn ipv6<'a>(span: Span<'a>) -> RawResult<'a, Ipv6Addr> {
+pub fn ipv6(span: Span<'_>) -> RawResult<'_, Ipv6Addr> {
     let (tail, raw_ip) = alt((
         recognize(preceded(tag("::ffff:"), ipv4)),
         recognize(separated_list1(tag(":"), hex_digit0)),
@@ -106,7 +107,7 @@ pub fn ipv6<'a>(span: Span<'a>) -> RawResult<'a, Ipv6Addr> {
     Ok((tail, ip.into()))
 }
 
-pub fn host<'a>(span: Span<'a>) -> RawResult<'a, ServerName<'a>> {
+pub fn host(span: Span<'_>) -> RawResult<'_, ServerName<'_>> {
     alt((
         ipv4.map(IpAddr::V4).map(ServerName::IpAddress),
         delimited(tag("["), ipv6, tag("]"))
@@ -119,7 +120,7 @@ pub fn host<'a>(span: Span<'a>) -> RawResult<'a, ServerName<'a>> {
 }
 
 /// Hysteria2 port hopping feature parser (single port or range of ports collection)
-pub fn port_specs<'a>(span: Span<'a>) -> RawResult<'a, PortSpec> {
+pub fn port_specs(span: Span<'_>) -> RawResult<'_, PortSpec> {
     let mut spec = PortSpec::new();
     let mut base = span;
     loop {
@@ -139,7 +140,7 @@ pub fn port_specs<'a>(span: Span<'a>) -> RawResult<'a, PortSpec> {
 }
 
 /// Designed specifically for Hysteria2 port hopping feature
-pub fn host_port_spec<'a>(span: Span<'a>) -> RawResult<'a, (ServerName<'a>, PortSpec)> {
+pub fn host_port_spec(span: Span<'_>) -> RawResult<'_, (ServerName<'_>, PortSpec)> {
     if let Ok((tail, host_port)) = separated_pair(host, tag(":"), port_specs).parse(span) {
         Ok((tail, host_port))
     } else if let Ok((_, mut parts)) =
@@ -166,7 +167,7 @@ pub fn host_port_spec<'a>(span: Span<'a>) -> RawResult<'a, (ServerName<'a>, Port
 
 #[cfg(test)]
 mod tests {
-    use crate::Span;
+    use super::Span;
 
     #[test]
     fn test_port_spec() {

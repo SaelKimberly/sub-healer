@@ -62,7 +62,7 @@ mod tests {
         let n = super::normalize_extras(s.as_bytes());
         let x = unsafe { str::from_utf8_unchecked(n.as_ref()) };
         // -> valid json, urlencoded: extra={"a":"b"}
-        assert_eq!(x, "extra=%7B%22a%22%3A%22b%22%7D")
+        assert_eq!(x, "extra=%7B%22a%22%3A%22b%22%7D");
     }
 
     #[test]
@@ -72,7 +72,7 @@ mod tests {
         let n = super::normalize_extras(s.as_bytes());
         let x = unsafe { str::from_utf8_unchecked(n.as_ref()) };
         // -> valid json, urlencoded: extra={"a":"b"}
-        assert_eq!(x, "extra=%7B%22a%22%3A%22b%22%7D")
+        assert_eq!(x, "extra=%7B%22a%22%3A%22b%22%7D");
     }
 
     #[test]
@@ -84,6 +84,6 @@ mod tests {
         let n = super::normalize_extras(s.as_bytes());
         let x = unsafe { str::from_utf8_unchecked(n.as_ref()) };
         // -> valid json, urlencoded: extra={"a":true}
-        assert_eq!(x, "extra=%7B%22a%22%3Atrue%7D")
+        assert_eq!(x, "extra=%7B%22a%22%3Atrue%7D");
     }
 }

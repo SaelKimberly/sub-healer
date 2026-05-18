@@ -1,12 +1,5 @@
-#![allow(
-    dead_code,
-    unused_imports,
-    unused_variables,
-    reason = "For AI agent context reduction"
-)]
-#![warn(clippy::nursery)]
+#![warn(clippy::nursery, clippy::pedantic)]
 pub mod db;
-mod error;
 pub mod mining;
 mod utils;
 
@@ -16,8 +9,6 @@ use std::borrow::Cow;
 
 use base64::Engine;
 use bstr::ByteSlice;
-// restrict to crate internal usage
-pub(crate) use error::{CutResult, NomError, RawResult, Span};
 
 pub(crate) use utils::{
     norm_extras::normalize_extras, permissive_json::permissive_json, unescaper::Unescaper,
@@ -27,7 +18,7 @@ pub(crate) use utils::{
 pub use urlx::{SchemeX, UrlX};
 pub use utils::line::{Line, Lines};
 
-pub(crate) use urlx::{HostSpec, PortDecl, PortSpec};
+pub(crate) use urlx::PortSpec;
 
 use mimalloc::MiMalloc;
 
@@ -63,29 +54,27 @@ mod macros {
 
 pub(crate) use macros::nom_bail;
 
-use crate::utils::line::Data;
-
 pub fn parse_sub(url: &url::Url, sub: &[u8]) -> Lines<'static> {
     let sub = sub.trim_end_with(|c| c.is_whitespace() || c == '=');
     let sub = base64::prelude::BASE64_STANDARD_NO_PAD
         .decode(sub)
         .map_err(|_| tracing::info!("Not a Standard Base64"))
-        .or_else(|_| {
+        .or_else(|()| {
             base64::prelude::BASE64_URL_SAFE_NO_PAD
                 .decode(sub)
                 .map_err(|_| tracing::info!("Not a URL Safe Base64"))
         })
-        .map_or_else(|_| Cow::Borrowed(sub), Cow::Owned);
+        .map_or_else(|()| Cow::Borrowed(sub), Cow::Owned);
 
     tracing::info!("Total length of incoming data: {}", sub.len());
 
     let sub = normalize_extras(sub.as_ref());
     if let Cow::Owned(_) = sub {
-        tracing::info!("Some extras was fixed")
+        tracing::info!("Some extras was fixed");
     }
     let sub = String::from_utf8_lossy(sub.as_ref());
     if let Cow::Owned(_) = sub {
-        tracing::info!("Some characters was replaced")
+        tracing::info!("Some characters was replaced");
     }
 
     Lines::new_raw(url, sub.as_ref()).processed()

@@ -1,6 +1,4 @@
-use base64::Engine;
-
-use crate::urlx::{HostSpec, ParseError, PortSpec, RawUrlX, SchemeX, TinyText, UrlX, UserInfo};
+use crate::urlx::{ParseError, PortSpec, SchemeX, TinyText, UrlX, UserInfo};
 
 pub struct SlipnetProto;
 
@@ -97,7 +95,7 @@ impl super::ProtoVisitor for SlipnetProto {
             .as_url_safe()
             .map_err(|e| ParseError::InvalidUserInfo(e.to_string().into()))?;
         let schema_str = url.schema.as_str();
-        Ok(format!("{}://{}", schema_str, config_data))
+        Ok(format!("{schema_str}://{config_data}"))
     }
 
     fn visit(url: &mut UrlX) -> Result<(), super::ParseError> {
@@ -131,8 +129,6 @@ impl super::ProtoVisitor for SlipnetProto {
     }
 }
 
-use crate::urlx::user_info::UserInfoEncoding;
-
 #[cfg(test)]
 mod tests {
     use super::super::super::try_accept_raw as visit_basic;
@@ -143,14 +139,14 @@ mod tests {
     #[test]
     fn test_slipnet() {
         let raw = crate::urlx::RawUrlX::from(SLIPNET_URL);
-        let url = visit_basic(raw).expect("failed");
+        let url = visit_basic(&raw).expect("failed");
         assert_eq!(url.schema, SchemeX::Slipnet);
     }
 
     #[test]
     fn test_reconstruct_slipnet_roundtrip() {
         let raw = crate::urlx::RawUrlX::from(SLIPNET_URL);
-        let parsed = visit_basic(raw).expect("failed to parse");
+        let parsed = visit_basic(&raw).expect("failed to parse");
         let reconstructed = parsed.reconstruct();
 
         assert_eq!(
@@ -159,7 +155,7 @@ mod tests {
         );
 
         let raw2 = crate::urlx::RawUrlX::from(reconstructed.as_str());
-        let reparsed = visit_basic(raw2).expect("failed to re-parse");
+        let reparsed = visit_basic(&raw2).expect("failed to re-parse");
 
         assert_eq!(parsed.schema, reparsed.schema, "schema mismatch");
         assert_eq!(parsed.host, reparsed.host, "host mismatch");
@@ -171,7 +167,7 @@ mod tests {
         let input = "slipnet-enc://Ac3GD6rpCy53w/nMNSrt/pGttnE/aagWaQyqTM+rr1LJgl5T8xRs+5IWD/pe+tKPpz2eUHYXEza8roniezFp25RM6iHo902gfJYZFg5lGVaQMjwQPu6BlBBFSCjVehs70Kgf1Fx56ha566VkTPsJDu37in+EKjaHxijwEJydn4o8n6YgSoyOsxd9OzQufIXRkPM3K5FGFUG9nYSV4oBe2hUmtJVRT+q8CONfij91e9dn3FnbQfvkst08zfah4WaAHkJEIPw28CwzExsPOjRexMTmrRsZZZuliTRmncnM0gI6WmGGKe2jdizCZN6TnDM2efkWLjfWk3+d26O+xTgJZ+lUqI/h7swa11p2OzsAdNpNnNSCMECvM8TbTuwfFeY6X668AebOi8SVHTLe5S31+ZXObdlQYQFC57aU1XXmYjI6pPFbfWjPgvtmO9mR+GQ0yp0Gg+yM6ufxra4qDhmIQWbcTfqHCc1bxCMjyYdC9d+9TGapCM41IJwnoDl7zer2G+3NkEZ0E2edw4/lXxS3D95GN0PEudoi+ic/hnFeeMPUWFoAyApi9F/KwBItcjkSKqvkluNgQdzL0UmcLWkyVuhBJ8rWSdMU5ZKUqccpeiNKlKRhQ6a2b9Buiz4YxfQ4LRbVUVllZaX84hxJgMeaMg9Jp+CJmSyUD0QkN+si6pd6+31yRIZpFHGk0UnYJ9hZQuqeczecc88d0oRDMGf/rDBt198/caUJpKo=";
 
         let raw = crate::urlx::RawUrlX::from(input);
-        let parsed = visit_basic(raw).expect("failed");
+        let parsed = visit_basic(&raw).expect("failed");
         let reconstructed = parsed.reconstruct();
 
         assert_eq!(

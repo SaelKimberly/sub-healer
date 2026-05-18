@@ -1,4 +1,4 @@
-use crate::urlx::{HostSpec, PortSpec, RawUrlX, SchemeX, TinyText, UrlX, UserInfo};
+use crate::urlx::{HostSpec, PortSpec, SchemeX, TinyText, UrlX, UserInfo};
 
 pub struct TgProto;
 
@@ -92,14 +92,14 @@ impl super::ProtoVisitor for TgProto {
             .map(|h| h.to_str().into_owned())
             .unwrap_or_default();
 
-        let port_str = url.port.as_ref().map(|p| p.to_string()).unwrap_or_default();
+        let port_str = url
+            .port
+            .as_ref()
+            .map(std::string::ToString::to_string)
+            .unwrap_or_default();
 
         let tg_url = url::Url::parse(
-            format!(
-                "tg://{}?server={}&port={}&secret={}",
-                userinfo, host_str, port_str, secret
-            )
-            .as_str(),
+            format!("tg://{userinfo}?server={host_str}&port={port_str}&secret={secret}").as_str(),
         )
         .map_err(|e| super::ParseError::Unknown(e.into()))?;
 
@@ -136,7 +136,7 @@ mod tests {
         let url = "https://t.me/proxy?server=146.185.211.126&port=443&secret=ee1e36377253a29133d290f3d14ae0163873756e342d32302e757365726170692e636f6d";
 
         let raw = crate::urlx::RawUrlX::from(url);
-        let url = visit_basic(raw).expect("failed");
+        let url = visit_basic(&raw).expect("failed");
 
         assert_eq!(url.schema, SchemeX::Tg);
     }
@@ -146,7 +146,7 @@ mod tests {
         let url = "https://t.me/proxy?server=proxium.rest&port=888&secret=a669r5a45920422f9d417e4867efdc4fb8jllllloo9w88220wpwoow9";
 
         let raw = crate::urlx::RawUrlX::from(url);
-        let url = visit_basic(raw).expect("failed");
+        let url = visit_basic(&raw).expect("failed");
 
         assert_eq!(url.schema, SchemeX::Tg);
     }
@@ -156,7 +156,7 @@ mod tests {
         let input = "https://t.me/proxy?server=146.185.211.126&port=443&secret=ee1e36377253a29133d290f3d14ae0163873756e342d32302e757365726170692e636f6d";
 
         let raw = crate::urlx::RawUrlX::from(input);
-        let parsed = visit_basic(raw).expect("failed to parse");
+        let parsed = visit_basic(&raw).expect("failed to parse");
         let reconstructed = parsed.reconstruct();
 
         assert!(
