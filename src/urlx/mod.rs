@@ -4,7 +4,6 @@ mod schemex;
 mod serde_util;
 mod split_url;
 mod user_info;
-mod valid_url;
 
 use std::borrow::Cow;
 
@@ -22,7 +21,7 @@ pub(crate) use port_spec::{PortDecl, PortSpec};
 pub use proto_vis::try_accept_raw;
 pub(crate) use proto_vis::{
     Hysteria2Proto, ParseError, ProtoVisitor, SlipnetProto, SsProto, SsrProto, TgProto,
-    TrojanProto, VlessProto, VmessProto, WireguardProto,
+    TrojanProto, VlessProto, VmessProto,
 };
 
 pub use schemex::SchemeX;

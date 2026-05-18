@@ -1,13 +1,8 @@
 mod config;
-mod error;
-mod fetcher;
 mod registry;
-mod extractor;
-mod output;
 mod sub;
 mod telegram;
 mod unparseable_log;
-mod validator;
 
 use std::path::Path;
 use std::time::Duration;
@@ -22,8 +17,6 @@ pub const MIN_REMAINING_BYTES: u64 = 1073741824;
 pub const USER_AGENT: &str = "clash-verge/v2.0.2";
 
 /// Re-export key types for convenience
-pub use error::FetchError;
-pub use fetcher::ProxyStream;
 pub use registry::{SourceMetadata, SourceRegistry, SourceType, TimestampedProxy};
 pub use unparseable_log::UnparseableLayer;
 

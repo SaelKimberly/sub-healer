@@ -6,7 +6,6 @@ mod tg;
 mod trojan;
 mod vless;
 mod vmess;
-mod wireguard;
 
 use std::borrow::Cow;
 
@@ -201,4 +200,3 @@ pub use tg::TgProto;
 pub use trojan::TrojanProto;
 pub use vless::VlessProto;
 pub use vmess::VmessProto;
-pub use wireguard::WireguardProto;
