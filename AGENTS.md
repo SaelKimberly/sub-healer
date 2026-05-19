@@ -8,9 +8,16 @@ Rust proxy subscription miner/aggregator: scrapes Telegram channels + downloads 
 
 ```bash
 rtk cargo check          # lint
-rtk cargo test           # all tests
+rtk cargo test           # all tests (30 pass, 5 pre-existing fail)
 rtk cargo test registry  # SourceRegistry tests
-cargo run -- mine        # run full pipeline (needs config.yaml)
+cargo run -- config              # full pipeline from config.yaml
+cargo run -- config path.yaml    # full pipeline from custom config
+v2ray-heal --db custom.db config # specify DB path
+cargo run -- remote https://example.com/sub.txt  # download subscription URL
+cargo run -- remote https://t.me/s/channel       # scrape telegram channel
+v2ray-heal remote https://a.com/sub https://b.com/sub # multiple URLs
+cargo run -- local ./file.txt    # parse local subscription file
+cat sub.txt | cargo run -- stdin # parse from pipe
 ```
 
 ## Memory System
@@ -19,9 +26,17 @@ cargo run -- mine        # run full pipeline (needs config.yaml)
 
 ## CLI
 
-Only `mine` subcommand implemented. Others (`stdin`, `config`, `remote`, `local`) are `todo!()`.
+All subcommands implemented. `Mine` variant removed — `config` covers it.
 
-**config.yaml** must have `tgchannel:` (list). Optional `subscriptions:` list — supports `https://` (HTTP download, GITHUB_TOKEN env for github.com) and `file://` (filesystem). Unsupported schemes → `tracing::error!` + skip.
+- **`config`**: Full pipeline from YAML (Telegram scraper + subscription download).
+  `config.yaml` must have `tgchannel:` (list). Optional `subscriptions:` list — supports `https://` (HTTP download, GITHUB_TOKEN env for github.com) and `file://` (filesystem). Unsupported schemes → `tracing::error!` + skip. Defaults to `config.yaml` if no path given, errors if missing.
+- **`stdin`**: Read subscription data from pipe → `parse_sub()` → DB upsert.
+  Source type: `Other`. Registry key: `stdin://local`.
+- **`remote`**: Download subscription file(s) from web URLs, or scrape Telegram channels (t.me URLs auto-detected via host check). Mixed Telegram + subscription URLs processed together.
+- **`local`**: Read local subscription file(s) from filesystem → `parse_sub()` → DB upsert.
+  Paths canonicalized, source URL = `file://` absolute path.
+
+Global `--db` flag (default `v2ray-heal.db`) controls output database path.
 
 **Unparseable URL log**: Set `V2RAY_HEAL_UNPARSEABLE_LOG` env var to path (default `unparseable.ndjson`). Captures all parse failures (unknown schemes + structurally-invalid known schemes) as NDJSON via tracing layer.
 
@@ -35,16 +50,16 @@ Only `mine` subcommand implemented. Others (`stdin`, `config`, `remote`, `local`
   - `config.rs` — load `tgchannel:` + `subscriptions:` from config.yaml
   - `registry.rs` — `SourceRegistry` (pre-populate, upsert_all, lookup), `SourceMetadata`, `TimestampedProxy`
   - `telegram.rs` — Telegram web scraper: `TgWebMessage` carries both `msg_urls: Option<Box<[UrlX]>>` and `unparseable_urls: Option<Box<[UnparseableRecord]>>`
-  - `sub.rs` — subscription fetcher: `fetch_timestamped_subs(client, registry, config_path)`
-  - `unparseable_log.rs` — `UnparseableLayer` (tracing_subscriber::Layer, filters `target == "mining::unparseable"`)
-  - `mod.rs` — `run()` orchestrator, shared reqwest::Client, consumer loop, re-exports key types
-  - `fetcher.rs`, `extractor.rs`, `validator.rs`, `output.rs`, `error.rs` — old pipeline code (unchanged, some unused)
+   - `sub.rs` — subscription fetcher: `fetch_timestamped_subs(client, registry, config_path, conn)`, shared `process_sub_lines()` helper
+   - `unparseable_log.rs` — `UnparseableLayer` (tracing_subscriber::Layer, filters `target == "mining::unparseable"`)
+   - `mod.rs` — `run_with_config()` orchestrator, `open_db()`, `build_client()`, shared reqwest::Client, consumer loop, re-exports key types
+   - `fetcher.rs`, `extractor.rs`, `validator.rs`, `output.rs`, `error.rs` — old pipeline code (unchanged, some unused)
 
 ## Mining Pipeline
 
 ```
-run():
-  1. Open DB → init_db
+run_with_config(config_path, db_path):
+  1. Open DB → init_db (via open_db())
   2. Load config (channels + subscriptions from config.yaml)
   3. Create reqwest::Client (shared, proxy via PROXY_URL, 30s timeout)
   4. Pre-populate SourceRegistry from channels + subscriptions
@@ -116,7 +131,7 @@ pub trait ProtoVisitor {
 
 9 implementations: Vmess, Vless, Trojan, SS, SSR, Hysteria2, Slipnet, SlipnetEnc, Tg. WireGuard and Hysteria are recognized by `SchemeX` but have no working parser (fall back to other visitors or return `UnsupportedScheme`).
 
-## Pre-existing Test Failures (8 tests)
+## Pre-existing Test Failures (5 tests)
 
 Known failures not related to pipeline changes:
 - VMess→SS fallback mismatch
@@ -124,3 +139,15 @@ Known failures not related to pipeline changes:
 - SlipnetEnc InvalidUserInfo
 - WireGuard stub (`UnsupportedScheme`)
 - Warp not implemented (affects `test_download_sub`)
+
+## graphify
+
+This project has a knowledge graph at graphify-out/ with god nodes, community structure, and cross-file relationships.
+
+When the user types `/graphify`, invoke the `skill` tool with `skill: "graphify"` before doing anything else.
+
+Rules:
+- For codebase questions, first run `graphify query "<question>"` when graphify-out/graph.json exists. Use `graphify path "<A>" "<B>"` for relationships and `graphify explain "<concept>"` for focused concepts. These return a scoped subgraph, usually much smaller than GRAPH_REPORT.md or raw grep output.
+- If graphify-out/wiki/index.md exists, use it for broad navigation instead of raw source browsing.
+- Read graphify-out/GRAPH_REPORT.md only for broad architecture review or when query/path/explain do not surface enough context.
+- After modifying code, run `graphify update .` to keep the graph current (AST-only, no API cost).

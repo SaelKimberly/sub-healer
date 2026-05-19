@@ -1,7 +1,7 @@
 mod config;
 mod registry;
 mod sub;
-mod telegram;
+pub mod telegram;
 mod unparseable_log;
 
 use std::path::Path;
@@ -15,11 +15,12 @@ pub const PROXY_URL: &str = "http://127.0.0.1:20172";
 pub const SEMAPHORE_PERMITS: usize = 64;
 pub const USER_AGENT: &str = "clash-verge/v2.0.2";
 
-/// Re-export key types for convenience
+pub use config::{load_config, load_subscriptions};
 pub use registry::{SourceMetadata, SourceRegistry, SourceType, TimestampedProxy};
+pub use sub::{download_sub_data, process_sub_lines};
 pub use unparseable_log::UnparseableLayer;
 
-fn get_current_timestamp() -> i64 {
+pub fn get_current_timestamp() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
@@ -27,31 +28,36 @@ fn get_current_timestamp() -> i64 {
         .cast_signed()
 }
 
-/// ### Errors
-/// - Any error that occurs during the mining process
-pub async fn run() -> Result<(), anyhow::Error> {
-    info!("Starting mining run");
+pub fn open_db(path: &Path) -> Result<rusqlite::Connection, anyhow::Error> {
+    let conn = rusqlite::Connection::open(path)
+        .with_context(|| format!("Failed to open database: {}", path.display()))?;
+    crate::db::init_db(&conn)
+        .context("Failed to initialize database schema")?;
+    Ok(conn)
+}
 
-    // 1. Open DB
-    let conn = rusqlite::Connection::open("v2ray-heal.db")?;
-    crate::db::init_db(&conn)?;
+pub fn build_client() -> Result<reqwest::Client, anyhow::Error> {
+    Ok(reqwest::Client::builder()
+        .proxy(reqwest::Proxy::http(PROXY_URL)?)
+        .timeout(Duration::from_secs(30))
+        .build()?)
+}
 
-    // 2. Load config
-    let channels = config::load_config(Path::new("config.yaml"))?;
-    let subscriptions = config::load_subscriptions(Path::new("config.yaml"))?;
+pub async fn run_with_config(config_path: &Path, db_path: &Path) -> Result<(), anyhow::Error> {
+    info!("Starting mining run with config: {}", config_path.display());
+
+    let conn = open_db(db_path)?;
+
+    let channels = config::load_config(config_path)?;
+    let subscriptions = config::load_subscriptions(config_path)?;
     info!(
         channels = channels.len(),
         subscriptions = subscriptions.len(),
         "Read config successfully"
     );
 
-    // 3. Create HTTP client (shared across Telegram and subscription flows)
-    let client = reqwest::Client::builder()
-        .proxy(reqwest::Proxy::http(PROXY_URL)?)
-        .timeout(Duration::from_secs(30))
-        .build()?;
+    let client = build_client()?;
 
-    // 4. Pre-populate SourceRegistry with all sources
     let mut registry = SourceRegistry::new();
     for channel in &channels {
         registry.pre_populate(channel, SourceType::Telegram);
@@ -60,12 +66,11 @@ pub async fn run() -> Result<(), anyhow::Error> {
         registry.pre_populate(sub, SourceType::Subscription);
     }
 
-    // 5. Batch upsert all sources to DB
     registry
         .upsert_all(&conn)
         .context("Failed to upsert sources to database")?;
 
-    // 6. Telegram phase
+    // Telegram phase
     info!("Running telegram mining");
     let tg_stream = telegram::fetch_tg_channels(
         client.clone(),
@@ -87,7 +92,6 @@ pub async fn run() -> Result<(), anyhow::Error> {
         };
         let ts = msg.time.timestamp();
 
-        // Emit unparseable URL events from this message
         if let Some(ref unparseable) = msg.unparseable_urls {
             for u in unparseable {
                 tracing::warn!(
@@ -112,18 +116,10 @@ pub async fn run() -> Result<(), anyhow::Error> {
     }
     info!(count = tg_count, "Telegram mining completed");
 
-    // 7. Subscription phase
+    // Subscription phase
     info!("Running subscription mining");
-    let sub_proxies =
-        sub::fetch_timestamped_subs(&client, &registry, Path::new("config.yaml")).await?;
-
-    let mut sub_count = 0usize;
-    for tp in &sub_proxies {
-        let ts = tp.timestamp.timestamp();
-        crate::db::upsert_server(&conn, &tp.urlx, tp.source.id, ts)
-            .context("Subscription upsert failed (aborting)")?;
-        sub_count += 1;
-    }
+    let sub_count =
+        sub::fetch_timestamped_subs(&client, &registry, config_path, &conn).await?;
     info!(count = sub_count, "Subscription mining completed");
 
     info!("Done");
