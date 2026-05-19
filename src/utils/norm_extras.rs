@@ -27,7 +27,7 @@ pub fn normalize_extras<'a>(span: &'a [u8]) -> Cow<'a, [u8]> {
 
         result.push(Cow::Borrowed(prefix));
 
-        if let Ok((tail, res)) = crate::permissive_json(potential_area.into()) {
+        if let Ok((tail, res)) = super::permissive_json::permissive_json_core(potential_area.into()) {
             let Ok(res) = serde_json::to_string(&res) else {
                 unreachable!("Should never fail");
             };

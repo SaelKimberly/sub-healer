@@ -653,10 +653,32 @@ impl<'a> Tokenizer<'a> {
     }
 }
 
-pub fn permissive_json(span: Span<'_>) -> RawResult<'_, serde_json::Value> {
+pub(crate) fn permissive_json_core(span: Span<'_>) -> RawResult<'_, serde_json::Value> {
     Tokenizer::new(span)
         .ok_or_else(|| nom::Err::Error(Error::new(span, ErrorKind::Eof)))?
         .tokenize()
+}
+
+/// Parse JSON permissively, with recovery for bare `[` in values (e.g. `"ps": [emoji]...`).
+/// On success, guarantees empty tail. Falls back to original error if recovery fails.
+pub fn permissive_json(span: Span<'_>) -> RawResult<'_, serde_json::Value> {
+    let first = permissive_json_core(span);
+    if let Ok((tail, _)) = &first
+        && tail.fragment().is_empty()
+    {
+        return first;
+    }
+
+    let frag = span.fragment();
+    if let Some(pos) = frag.iter().position(|&b| b == b'[') {
+        let mut m = frag.to_vec();
+        m.insert(pos, b'"');
+        if let Ok((_, value)) = permissive_json_core(Span::new(&m)) {
+            return Ok((Span::new(b""), value));
+        }
+    }
+
+    first
 }
 
 #[cfg(test)]

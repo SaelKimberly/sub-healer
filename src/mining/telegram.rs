@@ -525,102 +525,239 @@ where
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
+    use std::fs::OpenOptions;
+    use std::io::{BufWriter, Write};
+    use std::path::PathBuf;
+    use std::sync::{Arc, Mutex};
 
+    use chrono::Local;
     use futures::StreamExt;
+    use serde_json::json;
+    use tracing_subscriber::filter::filter_fn;
+    use tracing_subscriber::fmt;
+    use tracing_subscriber::prelude::*;
+    use tracing_subscriber::registry;
+
+    use crate::mining::registry::{SourceRegistry, SourceType};
+    use crate::mining::UnparseableLayer;
 
     use super::*;
 
+    /// Mutex-guarded file writer shared across tracing layer clones.
+    #[derive(Clone)]
+    struct SharedLogWriter {
+        writer: Arc<Mutex<BufWriter<std::fs::File>>>,
+    }
+
+    impl SharedLogWriter {
+        fn new(path: PathBuf) -> Self {
+            let file = OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)
+                .expect("Failed to open pipeline log file");
+            Self {
+                writer: Arc::new(Mutex::new(BufWriter::new(file))),
+            }
+        }
+    }
+
+    impl Write for SharedLogWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.writer.lock().unwrap().write(buf)
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            self.writer.lock().unwrap().flush()
+        }
+    }
+
+    impl<'a> fmt::MakeWriter<'a> for SharedLogWriter {
+        type Writer = Self;
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
     #[tokio::test]
+    #[ignore = "fetches real Telegram data; run manually to diagnose parsing warnings"]
     async fn test_fetch_tg_channel() -> anyhow::Result<()> {
-        tracing_subscriber::fmt().compact().init();
+        // --- Output directory ---
+        let ts = Local::now().format("%Y%m%d-%H%M%S");
+        let out_dir = PathBuf::from("test-output").join(format!("tg-{ts}"));
+        std::fs::create_dir_all(&out_dir)?;
 
-        let client = reqwest::Client::builder().user_agent(
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/237.84.2.178 Safari/537.36",
-        ).build()?;
+        // --- Set env var for UnparseableLayer ---
+        let unparseable_path = out_dir.join("unparseable.ndjson");
+        unsafe { std::env::set_var("V2RAY_HEAL_UNPARSEABLE_LOG", unparseable_path.to_str().unwrap()) };
 
+        // --- Tracing layers ---
+        let pipeline_writer = SharedLogWriter::new(out_dir.join("tg-pipeline.log"));
+
+        registry()
+            .with(
+                fmt::layer()
+                    .with_writer(pipeline_writer)
+                    .compact()
+                    .with_target(true)
+                    .with_level(true)
+                    .with_filter(filter_fn(|metadata| {
+                        metadata.target() == "mining::tg_channel"
+                            && *metadata.level() >= tracing::Level::INFO
+                    })),
+            )
+            .with(UnparseableLayer::new())
+            .with(
+                fmt::layer()
+                    .compact()
+                    .with_target(true)
+                    .with_level(true)
+                    .with_filter(filter_fn(|metadata| {
+                        *metadata.level() >= tracing::Level::WARN
+                    })),
+            )
+            .init();
+
+        // --- Channels ---
+        let channels = [
+            "ARv2ray",
+            "Alfred_Config",
+            "Baraye_azadi_Info",
+            "BmFt1",
+            "Capital_NET",
+            "Capoit",
+            "CloudCityy",
+            "ConfigV2rayNG",
+            "Configforvpn01",
+            "ConfigsHUB2",
+            "v2ray_configs_pool",
+            "DailyV2RY",
+            "DigiV2ray",
+            "DirectVPN",
+            "Easy_Free_VPN",
+            "Eleven_vpn",
+            "EliV2ray",
+            "EuServer",
+            "EzNett",
+            "FOXNT",
+            "FProxies",
+            "FalconPolV2rayNG",
+            "FreakConfig",
+            "Free166",
+            "FreeV2rays",
+            "FreeVlessVpn",
+            "Free_HTTPCustom",
+            "Helix_Servers",
+            "Hope_Net",
+            "Kia_Net",
+            "IRANVPNNET",
+            "JiedianSsr",
+            "Jsnzk",
+            "Lockey_vpn",
+            "MTConfig",
+            "MrV2Ray",
+            "MsV2ray",
+        ];
+
+        // --- Registry (aligned with production: https://t.me/s/{name}) ---
+        let mut registry = SourceRegistry::new();
+        for name in &channels {
+            registry.pre_populate(&format!("https://t.me/s/{name}"), SourceType::Telegram);
+        }
+
+        // --- Client ---
+        let client = reqwest::Client::builder()
+            .user_agent(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
+                 (KHTML, like Gecko) Chrome/237.84.2.178 Safari/537.36",
+            )
+            .build()?;
+
+        // --- Fetch ---
         let mut tg_messages = fetch_tg_channels(
             client,
             16,
-            [
-                "ARv2ray",
-                "Alfred_Config",
-                "Baraye_azadi_Info",
-                "BmFt1",
-                "Capital_NET",
-                "Capoit",
-                "CloudCityy",
-                "ConfigV2rayNG",
-                "Configforvpn01",
-                "ConfigsHUB2",
-                "v2ray_configs_pool",
-                "DailyV2RY",
-                "DigiV2ray",
-                "DirectVPN",
-                "Easy_Free_VPN",
-                "Eleven_vpn",
-                "EliV2ray",
-                "EuServer",
-                "EzNett",
-                "FOXNT",
-                "FProxies",
-                "FalconPolV2rayNG",
-                "FreakConfig",
-                "Free166",
-                "FreeV2rays",
-                "FreeVlessVpn",
-                "Free_HTTPCustom",
-                "Helix_Servers",
-                "Hope_Net",
-                "Kia_Net",
-                "IRANVPNNET",
-                "JiedianSsr",
-                "Jsnzk",
-                "Lockey_vpn",
-                "MTConfig",
-                "MrV2Ray",
-                "MsV2ray",
-            ]
-            .into_iter(),
+            channels.into_iter(),
             Duration::from_secs(10),
             Some(Backfill::Last(TimeDelta::hours(5))),
         );
 
-        let mut per_channel = BTreeMap::<TinyText, Vec<(DateTime<Utc>, TinyText, String)>>::new();
+        // --- Collect ---
+        let mut per_channel =
+            BTreeMap::<TinyText, Vec<(DateTime<Utc>, TinyText, String)>>::new();
 
         while let Some(msg) = tg_messages.next().await {
+            // Emit unparseable events (feeds UnparseableLayer → unparseable.ndjson)
+            if let Some(ref unparseable) = msg.unparseable_urls {
+                let source_url = format!("https://t.me/s/{}", msg.source_url);
+                let source = registry.lookup(&source_url);
+                let source_id = source.as_ref().map_or(0i64, |s| s.id);
+                let ts = msg.time.timestamp();
+                for u in unparseable {
+                    tracing::warn!(
+                        target: "mining::unparseable",
+                        raw_url = %u.raw_url,
+                        scheme = %u.scheme,
+                        error = %u.error,
+                        source_id = source_id,
+                        source_type = "telegram",
+                        timestamp = ts,
+                    );
+                }
+            }
+
             let Some(msg_urls) = msg.msg_urls.as_deref() else {
                 continue;
             };
-            per_channel.entry(msg.user).or_default().extend(
-                msg_urls
-                    .iter()
-                    .map(|urlx| (msg.time, urlx.schema.as_str().into(), urlx.reconstruct())),
-            );
+
+            per_channel
+                .entry(msg.source_url)
+                .or_default()
+                .extend(msg_urls.iter().map(|urlx| {
+                    (msg.time, urlx.schema.as_str().into(), urlx.reconstruct())
+                }));
         }
 
-        let total = per_channel.values().map(std::vec::Vec::len).sum::<usize>();
-
+        // --- Sort per channel ---
         for v in per_channel.values_mut() {
             v.sort_by_key(|t| t.0);
         }
 
-        eprintln!(
-            "+{:=^100}\n| Alive channels ({} total):\n+{:=^100}",
-            "", total, ""
-        );
-        for (c, lines) in &per_channel {
-            eprintln!("{:=^100}\n{}: {}\n{:-^100}", "", c, lines.len(), "");
-            for (time, schema, line) in lines {
-                eprintln!("- [{time}] <{schema}> {line}");
-            }
-        }
-        eprintln!(
-            "+{:=^100}\n| Alive channels {} ({} total):\n+{:=^100}",
-            "",
-            per_channel.len(),
-            total,
-            ""
-        );
+        // --- Write results JSON ---
+        let total: usize = per_channel.values().map(Vec::len).sum();
+        let channels_map: serde_json::Map<String, serde_json::Value> = per_channel
+            .iter()
+            .map(|(channel, entries)| {
+                let entries: Vec<serde_json::Value> = entries
+                    .iter()
+                    .map(|(time, schema, url)| {
+                        json!({
+                            "time": time.to_rfc3339(),
+                            "schema": schema,
+                            "url": url,
+                        })
+                    })
+                    .collect();
+                (channel.to_string(), json!(entries))
+            })
+            .collect();
+
+        let results = json!({
+            "generated_at": Utc::now().to_rfc3339(),
+            "total_channels": per_channel.len(),
+            "total_urls": total,
+            "channels": channels_map,
+        });
+
+        let results_file = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(out_dir.join("tg-results.json"))?;
+        serde_json::to_writer_pretty(results_file, &results)?;
+
+        // --- Summary to stderr ---
+        eprintln!("Logs written to: {}/", out_dir.display());
+        eprintln!("{} URLs from {} channels", total, per_channel.len());
 
         Ok(())
     }

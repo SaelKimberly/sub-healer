@@ -68,8 +68,10 @@ impl UserInfo {
     }
 
     pub fn new_from_b64<S: AsRef<str>>(data: S) -> Result<Self, UserInfoError> {
-        // 1: First, percent decoding
-        let data = urlencoding::decode(data.as_ref())?;
+        // 1: First, percent decoding (only %XX, no '+' -> ' ')
+        let data = percent_encoding::percent_decode_str(data.as_ref())
+            .collect::<Vec<_>>();
+        let data = String::from_utf8(data).map_err(UserInfoError::InvalidUtf8)?;
         // 2: Trim optional '=' at the end
         let data = data.trim_end_matches(|c: char| c == '=' || c.is_whitespace());
         // 3: Then base64 decoding

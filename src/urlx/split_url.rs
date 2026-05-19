@@ -251,9 +251,18 @@ impl<'a> RawUrlX<'a> {
         // * [userinfo]@ <-split-> [channel]@[host:port]/[path]?[query]#[fragment]
         // * ==============================
         // ! When no '@' sign is present, all url body just is userinfo
-        let (userinfo, rest) = match unparsed.split_once('@') {
-            Some((userinfo, "")) => (userinfo, None),
-            Some((userinfo, rest)) => (userinfo, Some(rest)),
+        // ! Only split at '@' if it appears before any '#' or '?' — otherwise
+        // ! the '@' is part of a query value or fragment, not a userinfo separator.
+        let split_at = unparsed.find('@').filter(|pos| {
+            let earliest = unparsed.find('#').or_else(|| unparsed.find('?'));
+            earliest.map_or_else(|| true, |early| *pos < early)
+        });
+        let (userinfo, rest) = match split_at {
+            Some(_) => match unparsed.split_once('@') {
+                Some((userinfo, "")) => (userinfo, None),
+                Some((userinfo, rest)) => (userinfo, Some(rest)),
+                _ => unreachable!(),
+            },
             _ => (unparsed, None),
         };
 

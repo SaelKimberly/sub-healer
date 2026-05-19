@@ -41,7 +41,7 @@ impl super::ProtoVisitor for VmessProto {
                     super::ParseError::InvalidHost(format!("cannot parse: {host}").into())
                 })?
             } else {
-                return Err(super::ParseError::InvalidStructure(SchemeX::Vmess));
+                host
             };
 
             rustls::pki_types::ServerName::try_from(host)
@@ -75,11 +75,16 @@ impl super::ProtoVisitor for VmessProto {
         let security: TinyText = json
             .get("scy")
             .map(|v| {
+                if v.is_null() {
+                    return Ok(None);
+                }
                 v.as_str().ok_or_else(|| {
                     super::ParseError::InvalidConf("scy".into(), v.to_string().into())
                 })
+                .map(Some)
             })
             .transpose()?
+            .flatten()
             .unwrap_or("auto")
             .into();
 
@@ -87,11 +92,16 @@ impl super::ProtoVisitor for VmessProto {
         let transport: TinyText = json
             .get("net")
             .map(|v| {
+                if v.is_null() {
+                    return Ok(None);
+                }
                 v.as_str().ok_or_else(|| {
                     super::ParseError::InvalidConf("net".into(), v.to_string().into())
                 })
+                .map(Some)
             })
             .transpose()?
+            .flatten()
             .unwrap_or("tcp")
             .into();
 
@@ -100,6 +110,9 @@ impl super::ProtoVisitor for VmessProto {
             .as_object_mut()
             .and_then(|o| o.remove("ps"))
             .map(|v| {
+                if v.is_null() {
+                    return Ok(None);
+                }
                 v.as_str()
                     .map(|s| s.trim_matches(['"', '\'']))
                     .map(TinyText::from)
@@ -107,8 +120,10 @@ impl super::ProtoVisitor for VmessProto {
                         "ps".into(),
                         v.to_string().into(),
                     ))
+                    .map(Some)
             })
-            .transpose()?;
+            .transpose()?
+            .flatten();
 
         // Extract user (UUID)
         let user = json

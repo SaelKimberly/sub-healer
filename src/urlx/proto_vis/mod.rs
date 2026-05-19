@@ -10,6 +10,7 @@ mod hysteria2;
 mod slipnet;
 mod ss;
 mod ssr;
+mod stormdns;
 mod tg;
 mod trojan;
 mod vless;
@@ -159,6 +160,8 @@ pub fn try_accept_raw(raw: &Input<'_>) -> Result<UrlX, ParseError> {
         SchemeX::Hysteria2 => hysteria2::Hysteria2Proto::parse(raw),
         SchemeX::Tg | SchemeX::Https => tg::TgProto::parse(raw),
 
+        SchemeX::Stormdns => StormdnsProto::parse(raw),
+
         ref _other @ (SchemeX::Slipnet | SchemeX::SlipnetEnc) => {
             tracing::debug!(target: "visit", "SlipNet - trying to parse as slipnet");
             slipnet::SlipnetProto::parse(raw)
@@ -208,6 +211,7 @@ use bstr::ByteSlice;
 pub use hysteria2::Hysteria2Proto;
 pub use slipnet::SlipnetProto;
 pub use ss::SsProto;
+pub use stormdns::StormdnsProto;
 pub use tg::TgProto;
 pub use trojan::TrojanProto;
 pub use vless::VlessProto;

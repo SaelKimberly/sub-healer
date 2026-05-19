@@ -21,6 +21,7 @@ pub enum SchemeX {
     Tg,
     SlipnetEnc,
     Slipnet,
+    Stormdns,
     WireGuard,
     Unknown(TinyText),
 }
@@ -42,6 +43,7 @@ impl SchemeX {
             Self::Tg => "tg",
             Self::Slipnet => "slipnet",
             Self::SlipnetEnc => "slipnet-enc",
+            Self::Stormdns => "stormdns",
             Self::WireGuard => "wireguard",
             Self::Unknown(s) => s.as_str(),
         }
@@ -70,6 +72,7 @@ impl SchemeX {
                     "https://",
                     "tg://",
                     "slipnet://",
+                    "stormdns://",
                     "tuic://",
                     "wireguard://",
                     "slipnet-enc://",
@@ -140,6 +143,7 @@ impl std::str::FromStr for SchemeX {
             Tg => "tg";
             Slipnet => "slipnet";
             SlipnetEnc => "slipnet-enc";
+            Stormdns => "stormdns";
             WireGuard => "wireguard";
         );
 

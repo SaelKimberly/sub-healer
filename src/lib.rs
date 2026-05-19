@@ -1,6 +1,7 @@
 #![warn(clippy::nursery, clippy::pedantic)]
 pub mod db;
 pub mod mining;
+mod proto_spec;
 mod utils;
 
 pub mod urlx;
