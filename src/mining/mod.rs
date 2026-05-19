@@ -20,6 +20,10 @@ pub use registry::{SourceMetadata, SourceRegistry, SourceType, TimestampedProxy}
 pub use sub::{download_sub_data, process_sub_lines};
 pub use unparseable_log::UnparseableLayer;
 
+/// # Panics
+///
+/// Will panic if the system time is before the UNIX epoch.
+#[must_use]
 pub fn get_current_timestamp() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -28,14 +32,19 @@ pub fn get_current_timestamp() -> i64 {
         .cast_signed()
 }
 
+/// # Errors
+///
+/// Will return `Err` if the database cannot be opened or the schema cannot be initialized.
 pub fn open_db(path: &Path) -> Result<rusqlite::Connection, anyhow::Error> {
     let conn = rusqlite::Connection::open(path)
         .with_context(|| format!("Failed to open database: {}", path.display()))?;
-    crate::db::init_db(&conn)
-        .context("Failed to initialize database schema")?;
+    crate::db::init_db(&conn).context("Failed to initialize database schema")?;
     Ok(conn)
 }
 
+/// # Errors
+///
+/// Will return `Err` if the proxy URL is invalid or the client cannot be built.
 pub fn build_client() -> Result<reqwest::Client, anyhow::Error> {
     Ok(reqwest::Client::builder()
         .proxy(reqwest::Proxy::http(PROXY_URL)?)
@@ -43,6 +52,9 @@ pub fn build_client() -> Result<reqwest::Client, anyhow::Error> {
         .build()?)
 }
 
+/// # Errors
+///
+/// Will return `Err` if the config file is invalid or the database cannot be opened.
 pub async fn run_with_config(config_path: &Path, db_path: &Path) -> Result<(), anyhow::Error> {
     info!("Starting mining run with config: {}", config_path.display());
 
@@ -119,7 +131,7 @@ pub async fn run_with_config(config_path: &Path, db_path: &Path) -> Result<(), a
     // Subscription phase
     info!("Running subscription mining");
     let sub_count =
-        sub::fetch_timestamped_subs(&client, &registry, config_path, &conn).await?;
+        sub::fetch_timestamped_subs(client.clone(), &registry, config_path, conn).await?;
     info!(count = sub_count, "Subscription mining completed");
 
     info!("Done");

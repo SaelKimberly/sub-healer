@@ -3,6 +3,9 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use yaml_rust2::{Yaml, YamlLoader};
 
+/// # Errors
+///
+/// Will return `Err` if the config file is invalid or missing.
 pub fn load_config(path: &Path) -> Result<Vec<String>> {
     let content = std::fs::read_to_string(path).context("Failed to read config.yaml")?;
     let docs = YamlLoader::load_from_str(&content).context("Failed to parse YAML")?;
@@ -32,6 +35,9 @@ pub fn load_config(path: &Path) -> Result<Vec<String>> {
     Ok(result)
 }
 
+/// # Errors
+///
+/// Will return `Err` if the config file is not found or is invalid.
 pub fn load_subscriptions(path: &Path) -> Result<Vec<String>> {
     let content = std::fs::read_to_string(path).context("Failed to read config.yaml")?;
     let docs = YamlLoader::load_from_str(&content).context("Failed to parse YAML")?;

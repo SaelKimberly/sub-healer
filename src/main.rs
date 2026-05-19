@@ -8,27 +8,25 @@ use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 use v2ray_heal::mining;
 
 fn is_telegram_url(url: &url::Url) -> bool {
-    url.host_str().map_or(false, |h| h == "t.me")
+    url.host_str() == Some("t.me")
 }
 
 fn extract_channel_name(url: &url::Url) -> Option<String> {
     let path = url.path().trim_start_matches('/');
     let channel = path.rsplit_once('/').map_or(path, |(_, name)| name);
-    if channel.is_empty() { None } else { Some(channel.to_string()) }
+    if channel.is_empty() {
+        None
+    } else {
+        Some(channel.to_string())
+    }
 }
 
 #[derive(Debug, clap::Subcommand)]
 enum Commands {
     Stdin,
-    Config {
-        file: Option<PathBuf>,
-    },
-    Remote {
-        url: Vec<url::Url>,
-    },
-    Local {
-        file: Vec<PathBuf>,
-    },
+    Config { file: Option<PathBuf> },
+    Remote { url: Vec<url::Url> },
+    Local { file: Vec<PathBuf> },
 }
 
 #[derive(Debug, clap::Parser)]
@@ -169,7 +167,8 @@ async fn main() -> anyhow::Result<()> {
                         tracing::warn!(url = %url_str, "Source not found in registry");
                         continue;
                     };
-                    let count = mining::process_sub_lines(&lines, &source, &conn, "subscription", ts)?;
+                    let count =
+                        mining::process_sub_lines(&lines, &source, &conn, "subscription", ts)?;
                     total += count;
                 }
                 tracing::info!(count = total, "Remote subscription mining completed");
@@ -191,8 +190,9 @@ async fn main() -> anyhow::Result<()> {
             for path in &file {
                 let abs = std::fs::canonicalize(path)
                     .with_context(|| format!("Failed to resolve path: {}", path.display()))?;
-                let source_url = url::Url::from_file_path(&abs)
-                    .map_err(|()| anyhow::anyhow!("Cannot convert path to file URL: {}", abs.display()))?;
+                let source_url = url::Url::from_file_path(&abs).map_err(|()| {
+                    anyhow::anyhow!("Cannot convert path to file URL: {}", abs.display())
+                })?;
                 let url_str = source_url.as_str().to_string();
                 registry.pre_populate(&url_str, mining::SourceType::Other);
                 resolved.push((abs, source_url, url_str));

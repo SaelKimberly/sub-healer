@@ -4,8 +4,11 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 
 use crate::mining::registry::{SourceMetadata, SourceRegistry};
-use crate::utils::line::{Data, Lines, Line};
+use crate::utils::line::{Data, Line, Lines};
 
+/// # Errors
+///
+/// - If the database upsert fails
 pub fn process_sub_lines(
     lines: &Lines,
     source: &Arc<SourceMetadata>,
@@ -29,7 +32,12 @@ pub fn process_sub_lines(
 
     let mut count = 0usize;
     for line in lines.iter() {
-        let Line { url: Data::Url(urlx), err: None, .. } = line else {
+        let Line {
+            url: Data::Url(urlx),
+            err: None,
+            ..
+        } = line
+        else {
             continue;
         };
         crate::db::upsert_server(conn, urlx, source.id, ts)
@@ -41,10 +49,10 @@ pub fn process_sub_lines(
 }
 
 pub async fn fetch_timestamped_subs(
-    client: &reqwest::Client,
+    client: reqwest::Client,
     registry: &SourceRegistry,
     config_path: &Path,
-    conn: &rusqlite::Connection,
+    conn: rusqlite::Connection,
 ) -> Result<usize> {
     let subscriptions = super::config::load_subscriptions(config_path)?;
 
@@ -66,7 +74,7 @@ pub async fn fetch_timestamped_subs(
         };
 
         let data = match url.scheme() {
-            "https" | "http" => match download_sub_data(client, &url).await {
+            "https" | "http" => match download_sub_data(&client, &url).await {
                 Ok(d) => d,
                 Err(e) => {
                     tracing::warn!(url = %sub_url_str, error = %e, "Failed to download subscription");
@@ -99,7 +107,7 @@ pub async fn fetch_timestamped_subs(
             continue;
         };
 
-        let count = process_sub_lines(&lines, &source, conn, "subscription", current_ts)?;
+        let count = process_sub_lines(&lines, &source, &conn, "subscription", current_ts)?;
         total += count;
     }
 
@@ -107,6 +115,9 @@ pub async fn fetch_timestamped_subs(
     Ok(total)
 }
 
+/// # Errors
+///
+/// Will return `Err` if the request fails.
 pub async fn download_sub_data(client: &reqwest::Client, url: &url::Url) -> Result<Vec<u8>> {
     let req = if matches!(
         url.host_str(),

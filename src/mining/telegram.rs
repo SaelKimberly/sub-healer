@@ -472,6 +472,7 @@ pub enum Backfill {
 }
 
 impl Backfill {
+    #[must_use]
     pub fn to_min_datetime(&self) -> DateTime<Utc> {
         match self {
             Self::Upto(datetime) => *datetime,
