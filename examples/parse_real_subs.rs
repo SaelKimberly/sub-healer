@@ -197,17 +197,6 @@ fn main() {
 
         let raw = RawUrlX::from(entry.raw_url.as_str());
 
-        // Debug first few vmess failures
-        if matches!(entry.scheme, SchemeX::Vmess) {
-            let schema_debug = format!("{:?}", raw.schema);
-            if schema_debug.contains("Unknown") {
-                eprintln!(
-                    "DEBUG: vmess URL got Unknown schema: url={}",
-                    &entry.raw_url[..80.min(entry.raw_url.len())]
-                );
-            }
-        }
-
         match ProtocolConfig::try_parse(&raw) {
             Ok(config) => {
                 let schema = config.schema().to_string();
