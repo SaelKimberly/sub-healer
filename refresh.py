@@ -1,5 +1,5 @@
-from pathlib import Path
 import subprocess as sp
+from pathlib import Path
 
 
 class Config:
@@ -63,6 +63,7 @@ REPOS: list[Config] = [
         "master",
     ),
     Config("https://github.com/WireGuard/wireguard-go.git", "wireguard-go", "master"),
+    Config("https://github.com/nullroute1970/StormDNS.git", "StormDNS", "main"),
     # - C/C++ based
     Config("https://github.com/tindy2013/subconverter.git", "subconverter", "master"),
     # - Rust based
