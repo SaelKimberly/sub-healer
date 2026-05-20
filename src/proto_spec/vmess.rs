@@ -273,4 +273,32 @@ mod tests {
     }
 
     use super::VmessConfig;
+
+    #[test]
+    fn test_trailing_emoji() {
+        let b64 = "eyJhZGQiOiIxOTIuMjAwLjE2MC4xNiIsImFpZCI6IjAiLCJob3N0IjoiIiwiaWQiOiI5YjRjMmVkYS0zNDFlLTQ4OGYtYTNiMi0xZGM3MTZiOWYzNmEiLCJuZXQiOiJ0Y3AiLCJwYXRoIjoiLyIsInBvcnQiOiI4NDQzIiwicHMiOiJ0ZXN0Iiwic2N5IjoiYXV0byIsInNuaSI6IiIsInRscyI6IiIsInR5cGUiOiIiLCJ2IjoiMiJ9";
+        let url = format!("vmess://{b64}💛💜test");
+        let raw = crate::urlx::RawUrlX::from(url.as_str());
+        let config = VmessConfig::try_parse(&raw).expect("trailing emoji failed");
+        assert_eq!(config.host, "192.200.160.16");
+    }
+
+    #[test]
+    fn test_trailing_persian() {
+        let b64 = "eyJhZGQiOiIxOTIuMjAwLjE2MC4xNiIsImFpZCI6IjAiLCJob3N0IjoiIiwiaWQiOiI5YjRjMmVkYS0zNDFlLTQ4OGYtYTNiMi0xZGM3MTZiOWYzNmEiLCJuZXQiOiJ0Y3AiLCJwYXRoIjoiLyIsInBvcnQiOiI4NDQzIiwicHMiOiJ0ZXN0Iiwic2N5IjoiYXV0byIsInNuaSI6IiIsInRscyI6IiIsInR5cGUiOiIiLCJ2IjoiMiJ9";
+        let url = format!("vmess://{b64}سرور آلمان");
+        let raw = crate::urlx::RawUrlX::from(url.as_str());
+        let config = VmessConfig::try_parse(&raw).expect("trailing persian failed");
+        assert_eq!(config.host, "192.200.160.16");
+    }
+
+    #[test]
+    fn test_trailing_ascii_after_padding() {
+        let b64 = "eyJhZGQiOiIxOTIuMjAwLjE2MC4xNiIsImFpZCI6IjAiLCJob3N0IjoiIiwiaWQiOiI5YjRjMmVkYS0zNDFlLTQ4OGYtYTNiMi0xZGM3MTZiOWYzNmEiLCJuZXQiOiJ0Y3AiLCJwYXRoIjoiLyIsInBvcnQiOiI4NDQzIiwicHMiOiJ0ZXN0Iiwic2N5IjoiYXV0byIsInNuaSI6IiIsInRscyI6IiIsInR5cGUiOiIiLCJ2IjoiMiJ9=";
+        let url = format!("vmess://{b64}Irancell&Mciفوروارد فراموش نشه📌");
+        let raw = crate::urlx::RawUrlX::from(url.as_str());
+        let config = VmessConfig::try_parse(&raw).expect("trailing ascii after = failed");
+        assert_eq!(config.host, "192.200.160.16");
+    }
 }
+

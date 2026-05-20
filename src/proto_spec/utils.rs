@@ -51,7 +51,23 @@ pub fn parse_port(s: &str) -> Result<PortSpec, Cow<'static, str>> {
 }
 
 /// Base64 decode a string (tries URL-safe then standard)
+/// Silently strips trailing non-base64 characters (Telegram annotation text, emoji, etc.)
 pub fn decode_base64(data: &str) -> Result<Vec<u8>, base64::DecodeError> {
+    // Strip Telegram annotation text appended to the base64 (emoji, Persian, Chinese, etc.)
+    let end = data
+        .bytes()
+        .position(|b| {
+            !b.is_ascii_alphanumeric() && !matches!(b, b'+' | b'/' | b'-' | b'_' | b'=')
+        })
+        .unwrap_or(data.len());
+    let mut data = &data[..end];
+    // After the last padding marker (`==` or `=`), strip ASCII annotation text too.
+    // E.g. `...base64==Irancell&Mci...` — the `Irancell` is valid base64 chars but is annotation.
+    if let Some(pos) = data.rfind("==") {
+        data = &data[..pos + 2];
+    } else if let Some(pos) = data.rfind('=') {
+        data = &data[..pos + 1];
+    }
     let data = urlencoding::decode_binary(data.as_bytes());
     let data = data.trim_end_with(|c| c == '=' || c.is_whitespace());
     'block: {
