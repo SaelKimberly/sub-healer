@@ -3,19 +3,24 @@ from pathlib import Path
 
 
 class Config:
-    __slots__ = ["repo", "name", "branch"]
+    __slots__ = ["repo", "name", "branch", "clean_on_setup"]
 
-    def __init__(self, repo: str, name: str, branch: str, /) -> None:
+    def __init__(
+        self, repo: str, name: str, branch: str, /, *, clean_on_setup: bool = True
+    ) -> None:
         self.repo: str = repo
         self.name: str = name
         self.branch: str = branch
+        self.clean_on_setup: bool = clean_on_setup
 
     def __repr__(self) -> str:
-        return f"Config(repo={self.repo}, name={self.name}, branch={self.branch})"
+        return f"Config(repo={self.repo}, name={self.name}, branch={self.branch}, clean_on_setup={self.clean_on_setup})"
 
     def clean(self) -> int:
         if not self.folder().exists():
             return 0
+        if not self.clean_on_setup:
+            return 1
         return sp.check_call(["rm", "-rf", self.folder()])
 
     def clone(self) -> int:
@@ -35,8 +40,8 @@ class Config:
         )
 
     def setup(self) -> str:
-        self.clean()
-        self.clone()
+        if not self.clean():
+            self.clone()
         return str(self.folder())
 
     def folder(self) -> Path:
@@ -64,6 +69,7 @@ REPOS: list[Config] = [
     ),
     Config("https://github.com/WireGuard/wireguard-go.git", "wireguard-go", "master"),
     Config("https://github.com/nullroute1970/StormDNS.git", "StormDNS", "main"),
+    Config("https://github.com/daeuniverse/outbound.git", "outbound", "main"),
     # - C/C++ based
     Config("https://github.com/tindy2013/subconverter.git", "subconverter", "master"),
     # - Rust based
@@ -78,6 +84,7 @@ REPOS: list[Config] = [
         "shadowsocks-rust",
         "master",
     ),
+    Config("https://github.com/Itsusinn/tuic.git", "tuic", "main"),
     # - C# based
     Config("https://github.com/2dust/v2rayN.git", "v2rayN", "master"),
     # parsers and aggregators for subscription files
@@ -86,11 +93,13 @@ REPOS: list[Config] = [
         "https://github.com/AvenCores/goida-vpn-configs.git",
         "goida-vpn-configs",
         "main",
+        clean_on_setup=False,
     ),
     Config(
         "https://github.com/Epodonios/v2ray-configs.git",
         "v2ray-configs",
         "main",
+        clean_on_setup=False,
     ),
     Config(
         "https://github.com/wuqb2i4f/xray-config-toolkit.git",
