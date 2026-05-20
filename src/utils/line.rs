@@ -95,20 +95,19 @@ impl<'a> Line<'a> {
         }
 
         let raw: RawUrlX = url.as_ref().into();
-        let Ok(urlx) = try_accept_raw(&raw) else {
-            return Self {
+        match try_accept_raw(&raw) {
+            Ok(urlx) => Self {
+                row,
+                url: Data::Url(urlx),
+                wrn,
+                err: None,
+            },
+            Err(e) => Self {
                 row,
                 url: Data::Raw { scheme, url },
                 wrn,
-                err: Some("no protocol matched".into()),
-            };
-        };
-
-        Self {
-            row,
-            url: Data::Url(urlx),
-            wrn,
-            err: None,
+                err: Some(e.to_string().into()),
+            },
         }
     }
 }

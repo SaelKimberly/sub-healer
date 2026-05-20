@@ -44,6 +44,8 @@ pub enum ParseError {
     InvalidStructure(SchemeX),
     #[error("unsupported scheme: {0}")]
     UnsupportedScheme(SchemeX),
+    #[error("not a proxy config URL (promotion or navigation link)")]
+    PromotionUrl,
 }
 
 impl ParseError {
@@ -158,7 +160,12 @@ pub fn try_accept_raw(raw: &Input<'_>) -> Result<UrlX, ParseError> {
         SchemeX::Vless => vless::VlessProto::parse(raw),
         SchemeX::Trojan => trojan::TrojanProto::parse(raw),
         SchemeX::Hysteria2 => hysteria2::Hysteria2Proto::parse(raw),
-        SchemeX::Tg | SchemeX::Https => tg::TgProto::parse(raw),
+        SchemeX::Tg | SchemeX::Https => {
+            if raw.schema == SchemeX::Https && raw.userinfo != "t.me" {
+                return Err(ParseError::PromotionUrl);
+            }
+            tg::TgProto::parse(raw)
+        }
 
         SchemeX::Stormdns => StormdnsProto::parse(raw),
 

@@ -55,6 +55,8 @@ pub enum ParseError {
     InvalidStructure(SchemeX),
     #[error("unsupported scheme: {0}")]
     UnsupportedScheme(SchemeX),
+    #[error("not a proxy config URL (promotion or navigation link)")]
+    PromotionUrl,
 }
 
 pub trait ProtoSpec: Serialize + DeserializeOwned + std::fmt::Debug + Clone {
@@ -133,10 +135,15 @@ impl ProtoSpec for ProtocolConfig {
                 Ok(v) => return Ok(Self::Tuic(v)),
                 Err(e) => e,
             },
-            SchemeX::Tg | SchemeX::Https => match TgConfig::try_parse(raw) {
-                Ok(v) => return Ok(Self::Tg(v)),
-                Err(e) => e,
-            },
+            SchemeX::Tg | SchemeX::Https => {
+                if raw.schema == SchemeX::Https && raw.userinfo != "t.me" {
+                    return Err(ParseError::PromotionUrl);
+                }
+                match TgConfig::try_parse(raw) {
+                    Ok(v) => return Ok(Self::Tg(v)),
+                    Err(e) => e,
+                }
+            }
             ref other => return Err(ParseError::UnsupportedScheme(other.clone())),
         };
 

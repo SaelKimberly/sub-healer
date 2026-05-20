@@ -106,6 +106,9 @@ pub async fn run_with_config(config_path: &Path, db_path: &Path) -> Result<(), a
 
         if let Some(ref unparseable) = msg.unparseable_urls {
             for u in unparseable {
+                if u.error.contains("promotion") {
+                    continue;
+                }
                 tracing::warn!(
                     target: "mining::unparseable",
                     raw_url = %u.raw_url,

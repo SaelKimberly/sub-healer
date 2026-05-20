@@ -18,6 +18,9 @@ pub fn process_sub_lines(
 ) -> Result<usize> {
     for line in lines.raw_entries() {
         if let Data::Raw { scheme, url } = &line.url {
+            if line.err.as_deref().is_some_and(|e| e.contains("promotion")) {
+                continue;
+            }
             tracing::warn!(
                 target: "mining::unparseable",
                 raw_url = %url.as_ref(),
