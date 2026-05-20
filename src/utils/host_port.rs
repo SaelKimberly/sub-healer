@@ -113,6 +113,7 @@ pub fn host(span: Span<'_>) -> RawResult<'_, ServerName<'_>> {
         delimited(tag("["), ipv6, tag("]"))
             .map(IpAddr::V6)
             .map(ServerName::IpAddress),
+        ipv6.map(IpAddr::V6).map(ServerName::IpAddress),
         dns_name.map(ServerName::DnsName),
     ))
     .parse(span)

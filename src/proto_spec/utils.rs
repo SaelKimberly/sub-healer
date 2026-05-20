@@ -10,11 +10,14 @@ pub fn parse_hostport(s: &str) -> Result<(HostSpec, PortSpec), Cow<'static, str>
     let (tail, (host, port)) = crate::utils::host_port_spec(s.as_bytes().into())
         .map_err(|_| format!("Invalid hostport: {s}"))?;
     if !tail.is_empty() {
-        return Err(format!(
-            "Invalid hostport: {s} (non-empty tail: {})",
-            unsafe { std::str::from_utf8_unchecked(tail.into_fragment()) }
-        )
-        .into());
+        let tail_str = unsafe { std::str::from_utf8_unchecked(tail.into_fragment()) };
+        // Lenient: if tail contains query-like chars (= or &), strip it
+        if !tail_str.contains('=') && !tail_str.contains('&') {
+            return Err(format!(
+                "Invalid hostport: {s} (non-empty tail: {tail_str})"
+            )
+            .into());
+        }
     }
     Ok((host.to_owned(), port))
 }

@@ -26,7 +26,8 @@ pub struct SsrConfig {
 
 impl ProtoSpec for SsrConfig {
     fn try_parse(raw: &RawUrlX<'_>) -> Result<Self, ParseError> {
-        let decoded = utils::decode_base64(raw.userinfo)
+        let clean_userinfo = clean_ssr_userinfo(raw.userinfo);
+        let decoded = utils::decode_base64(clean_userinfo)
             .map_err(|_| ParseError::InvalidStructure(SchemeX::SSR))?;
         let text = String::from_utf8(decoded)
             .map_err(|_| ParseError::InvalidStructure(SchemeX::SSR))?;
@@ -36,17 +37,19 @@ impl ProtoSpec for SsrConfig {
             return Err(ParseError::InvalidStructure(SchemeX::SSR));
         }
 
-        let raw_host = parts[0];
-        let raw_port = parts[1];
-        let protocol = parts[2].to_string();
-        let method = parts[3].to_string();
-        let obfs = parts[4].to_string();
-        let raw_password = parts[5..].join(":");
+        // Index from end: last 5 are port, protocol, method, obfs, password.
+        // Everything before is the host (handles IPv6 with colons).
+        let raw_host = parts[..parts.len() - 5].join(":");
+        let raw_port = parts[parts.len() - 5];
+        let protocol = parts[parts.len() - 4].to_string();
+        let method = parts[parts.len() - 3].to_string();
+        let obfs = parts[parts.len() - 2].to_string();
+        let raw_password = parts[parts.len() - 1..].join(":");
 
         let (password, query_part) = raw_password
             .split_once("/?")
             .or_else(|| raw_password.split_once('?'))
-            .ok_or_else(|| ParseError::InvalidStructure(SchemeX::SSR))?;
+            .unwrap_or((&raw_password, ""));
 
         let mut params = std::collections::HashMap::new();
         params.insert("protocol".into(), protocol.clone());
@@ -68,7 +71,7 @@ impl ProtoSpec for SsrConfig {
                 .unwrap_or(r)
         });
 
-        let parsed_host = utils::parse_host(raw_host)
+        let parsed_host = utils::parse_host(&raw_host)
             .map_err(|e| ParseError::InvalidHost(format!("{raw_host}: {e}").into()))?;
 
         Ok(Self {
@@ -87,15 +90,6 @@ impl ProtoSpec for SsrConfig {
     fn reconstruct(&self) -> Result<String, ParseError> {
         use base64::Engine as _;
 
-        let mut parts = vec![
-            self.host.clone(),
-            self.port.clone(),
-            self.protocol.clone(),
-            self.method.clone(),
-            self.obfs.clone(),
-            self.password.clone(),
-        ];
-
         let mut query_str = String::new();
         let mut sorted_params: Vec<_> = self.params.iter().collect();
         sorted_params.sort_by(|a, b| a.0.cmp(b.0));
@@ -106,9 +100,16 @@ impl ProtoSpec for SsrConfig {
             query_str.push_str(format!("{k}={v}").as_str());
         }
 
-        parts.push(format!("/?{query_str}"));
-
-        let raw = parts.join(":");
+        let raw = format!(
+            "{host}:{port}:{proto}:{method}:{obfs}:{password}/?{query_str}",
+            host = self.host,
+            port = self.port,
+            proto = self.protocol,
+            method = self.method,
+            obfs = self.obfs,
+            password = self.password,
+            query_str = query_str,
+        );
         let encoded = base64::prelude::BASE64_URL_SAFE_NO_PAD.encode(raw.as_bytes());
         Ok(format!("ssr://{encoded}"))
     }
@@ -146,6 +147,50 @@ impl ProtoSpec for SsrConfig {
     }
 }
 
+/// Strip trailing non-base64 garbage (Telegram annotation text and decorative
+/// hyphens) from the SSR userinfo before base64 decoding.
+///
+/// Strategy:
+/// 1. If the base64 has `=` padding, everything after the last `=` that is
+///    hyphens followed by non-ASCII is stripped.
+/// 2. For no-pad base64, find the first occurrence of 3+ consecutive decorative
+///    `-` or `_` that is followed by non-ASCII and truncate there.
+/// 3. If neither heuristic triggers, return the string unchanged.
+fn clean_ssr_userinfo(s: &str) -> &str {
+    // Try padded-base64 heuristic first
+    if let Some(last_eq) = s.rfind('=') {
+        let after = &s[last_eq + 1..];
+        let after_hyphens = after.trim_start_matches(|c: char| c == '-' || c == '_');
+        if after_hyphens.is_empty()
+            || !after_hyphens.as_bytes().first().map_or(true, |b| b.is_ascii())
+        {
+            return &s[..=last_eq];
+        }
+    }
+
+    // For NO_PAD base64: find 3+ consecutive '-' or '_' that are followed
+    // by non-ASCII (Telegram annotation text). 3+ consecutive hyphens are
+    // virtually never valid URL-safe base64 data.
+    let bytes = s.as_bytes();
+    let mut hyphen_run: u32 = 0;
+    for (i, &b) in bytes.iter().enumerate() {
+        if b == b'-' || b == b'_' {
+            hyphen_run += 1;
+        } else {
+            if hyphen_run >= 3 && (i >= bytes.len() || !bytes[i].is_ascii()) {
+                return &s[..i - hyphen_run as usize];
+            }
+            hyphen_run = 0;
+        }
+    }
+    // Handle case where the run extends to the end
+    if hyphen_run >= 3 {
+        return &s[..s.len() - hyphen_run as usize];
+    }
+
+    s
+}
+
 impl SsrConfig {
     fn compute_sig(&self) -> u64 {
         let mut parts: Vec<&[u8]> = vec![b"ssr"];
@@ -178,6 +223,7 @@ mod tests {
         assert_eq!(config.schema(), SchemeX::SSR);
         assert_eq!(config.method, "rc4-md5");
         assert_eq!(config.host, "example.com");
+        assert_eq!(config.remarks.as_deref(), Some("TestServer"));
     }
 
     #[test]
@@ -196,6 +242,49 @@ mod tests {
 
         assert_eq!(parsed.host, reparsed.host, "host mismatch");
         assert_eq!(parsed.port, reparsed.port, "port mismatch");
+    }
+
+    #[test]
+    fn test_ssr_trailing_text() {
+        // Valid base64 with trailing Chinese annotation text (Telegram pattern)
+        let url = "ssr://MTE2LjE2Mi4xMjAuMjY6NTYxOmF1dGhfYWVzMTI4X21kNTpjaGFjaGEyMC1pZXRmOnBsYWluOmJXSnNZVzVyTVhCdmNuUT0vP2dyb3VwPWFIUjBjSE02THk5Mk1uSmhlWE5sTG1OdmJRPT0mcHJvdG9wYXJhbT1OVEUzTmpBNlRFeE1NRGt3ZFdrNGIyeHNPQT0=必进：【全网导航】》下载地址：";
+        let raw = crate::urlx::RawUrlX::from(url);
+        let config = SsrConfig::try_parse(&raw).expect("failed to parse url with trailing text");
+        assert_eq!(config.host, "116.162.120.26");
+        assert_eq!(config.port, "561");
+        assert_eq!(config.protocol, "auth_aes128_md5");
+        assert_eq!(config.method, "chacha20-ietf");
+        assert_eq!(config.obfs, "plain");
+    }
+
+    #[test]
+    fn test_ssr_no_query() {
+        // Valid SSR URL with no /? query params and a # fragment
+        let url = "ssr://MTMuMzcuMjguMjM6NTk0NzpvcmlnaW46Y2hhY2hhMjAtaWV0ZjpwbGFpbjpOVGswTnc#@dark_telecom";
+        let raw = crate::urlx::RawUrlX::from(url);
+        let config = SsrConfig::try_parse(&raw).expect("failed to parse url with hash and no query");
+        assert_eq!(config.host, "13.37.28.23");
+        assert_eq!(config.port, "5947");
+        assert_eq!(config.protocol, "origin");
+        assert_eq!(config.method, "chacha20-ietf");
+        assert_eq!(config.obfs, "plain");
+    }
+
+    #[test]
+    fn test_ssr_garbage_returns_err() {
+        // Chinese text only — not a valid SSR URL
+        let url = "ssr://的格式";
+        let raw = crate::urlx::RawUrlX::from(url);
+        assert!(SsrConfig::try_parse(&raw).is_err());
+    }
+
+    #[test]
+    fn test_ssr_remarks_decoded() {
+        // URL with base64-encoded remarks in query params
+        let url = "ssr://MTIzLjQ1LjY3Ljg5OjEwMDA6b3JpZ2luOnBsYWluOnBsYWluOmRHVnpkRjl3WVhOei8_cmVtYXJrcz1jM055WDNSbGMzUT0";
+        let raw = crate::urlx::RawUrlX::from(url);
+        let config = SsrConfig::try_parse(&raw).expect("failed to parse");
+        assert_eq!(config.remarks.as_deref(), Some("ssr_test"));
     }
 
     use super::SsrConfig;
