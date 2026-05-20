@@ -88,6 +88,11 @@ REPOS: list[Config] = [
         "main",
     ),
     Config(
+        "https://github.com/Epodonios/v2ray-configs.git",
+        "v2ray-configs",
+        "main",
+    ),
+    Config(
         "https://github.com/wuqb2i4f/xray-config-toolkit.git",
         "xray-config-toolkit",
         "main",

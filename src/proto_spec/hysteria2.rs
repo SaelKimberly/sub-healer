@@ -1,0 +1,242 @@
+use std::num::NonZeroU64;
+
+use serde::{Deserialize, Serialize};
+
+use crate::urlx::{RawUrlX, SchemeX};
+
+use super::utils;
+use super::{ParseError, ProtoSpec};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct Hysteria2Config {
+    #[serde(skip)]
+    sig_cache: std::sync::OnceLock<NonZeroU64>,
+
+    pub auth: String,
+    pub host: String,
+    pub port: String,
+    pub security: String,
+    pub obfs: Option<String>,
+    pub obfs_password: Option<String>,
+    pub insecure: Option<bool>,
+    pub sni: Option<String>,
+    pub up: Option<String>,
+    pub down: Option<String>,
+    pub remarks: Option<String>,
+}
+
+impl ProtoSpec for Hysteria2Config {
+    fn try_parse(raw: &RawUrlX<'_>) -> Result<Self, ParseError> {
+        let (auth, hostport) = if let Some(hostport) = raw.hostport {
+            (raw.userinfo, hostport)
+        } else {
+            let userinfo = raw.userinfo;
+            let (auth, hostport) = userinfo.split_once('@').ok_or_else(|| {
+                ParseError::InvalidUserInfo(format!("{userinfo}: missing hostport").into())
+            })?;
+            (auth, hostport)
+        };
+
+        let (parsed_host, parsed_port) = utils::parse_hostport(hostport)
+            .map_err(|e| ParseError::InvalidHostPort(format!("{hostport}: {e}").into()))?;
+
+        let query = utils::parse_query(raw.query);
+
+        let security = query
+            .get("security")
+            .map_or("tls", |s| s.as_str())
+            .to_string();
+        let obfs = query.get("obfs").cloned();
+        let obfs_password = query.get("obfs-password").cloned();
+        let insecure = query.get("insecure").and_then(|v| match v.as_str() {
+            "1" | "true" | "yes" => Some(true),
+            "0" | "false" | "no" => Some(false),
+            _ => None,
+        });
+        let sni = query.get("sni").cloned();
+        let up = query.get("up").cloned();
+        let down = query.get("down").cloned();
+        let remarks = utils::decode_fragment(raw)?;
+
+        Ok(Self {
+            sig_cache: std::sync::OnceLock::new(),
+            auth: auth.to_string(),
+            host: parsed_host.to_str().into_owned(),
+            port: parsed_port.to_string(),
+            security,
+            obfs,
+            obfs_password,
+            insecure,
+            sni,
+            up,
+            down,
+            remarks,
+        })
+    }
+
+    fn reconstruct(&self) -> Result<String, ParseError> {
+        let hostport = if self.host.contains(':') {
+            format!("[{}]:{}", self.host, self.port)
+        } else {
+            format!("{}:{}", self.host, self.port)
+        };
+
+        let query_string = {
+            let mut parts: Vec<String> = Vec::new();
+            if self.security != "tls" {
+                parts.push(format!("security={}", self.security));
+            }
+            if let Some(ref v) = self.obfs {
+                parts.push(format!("obfs={}", urlencoding::encode(v)));
+            }
+            if let Some(ref v) = self.obfs_password {
+                parts.push(format!("obfs-password={}", urlencoding::encode(v)));
+            }
+            if let Some(v) = self.insecure {
+                if v {
+                    parts.push("insecure=1".to_string());
+                }
+            }
+            if let Some(ref v) = self.sni {
+                parts.push(format!("sni={}", urlencoding::encode(v)));
+            }
+            if let Some(ref v) = self.up {
+                parts.push(format!("up={}", urlencoding::encode(v)));
+            }
+            if let Some(ref v) = self.down {
+                parts.push(format!("down={}", urlencoding::encode(v)));
+            }
+            if parts.is_empty() {
+                String::new()
+            } else {
+                format!("?{}", parts.join("&"))
+            }
+        };
+
+        let fragment = self
+            .remarks
+            .as_ref()
+            .map(|f| format!("#{}", urlencoding::encode(f)))
+            .unwrap_or_default();
+
+        Ok(format!(
+            "hysteria2://{auth}@{hostport}{query_string}{fragment}",
+            auth = self.auth,
+        ))
+    }
+
+    fn schema(&self) -> SchemeX {
+        SchemeX::Hysteria2
+    }
+
+    fn host(&self) -> Option<&str> {
+        Some(&self.host)
+    }
+
+    fn port(&self) -> Option<&str> {
+        Some(&self.port)
+    }
+
+    fn remarks(&self) -> Option<&str> {
+        self.remarks.as_deref()
+    }
+
+    fn cred_hash(&self) -> u64 {
+        utils::compute_cred_hash(None, None, &self.auth, &self.auth)
+    }
+
+    fn sig(&self) -> u64 {
+        let v = self
+            .sig_cache
+            .get_or_init(|| {
+                let val = self.compute_sig();
+                NonZeroU64::new(val).unwrap_or(NonZeroU64::MIN)
+            });
+        v.get()
+    }
+
+    fn set_sig_cache(&self, v: NonZeroU64) {
+        _ = self.sig_cache.set(v);
+    }
+}
+
+impl Hysteria2Config {
+    fn compute_sig(&self) -> u64 {
+        let mut parts: Vec<&[u8]> = vec![b"hysteria2"];
+        parts.push(self.security.as_bytes());
+
+        for v in [&self.obfs, &self.obfs_password] {
+            if let Some(v) = v {
+                parts.push(v.as_bytes());
+            }
+        }
+        if let Some(v) = self.insecure {
+            parts.push(if v { b"true" } else { b"false" });
+        }
+        if let Some(ref v) = self.sni {
+            parts.push(v.as_bytes());
+        }
+        if let Some(ref v) = self.up {
+            parts.push(v.as_bytes());
+        }
+        if let Some(ref v) = self.down {
+            parts.push(v.as_bytes());
+        }
+
+        rapidhash::v3::rapidhash_v3(&parts.concat())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::ProtoSpec;
+    use crate::urlx::SchemeX;
+
+    #[test]
+    fn test_hysteria2_basic() {
+        let url = "hysteria2://b4bd0613-ff7c-4f2f-954d-185915e6ddad@206.71.158.41:35000?security=tls&obfs=salamander&obfs-password=password123&insecure=1&sni=jnir.pichondan.com";
+        let raw = crate::urlx::RawUrlX::from(url);
+        let config = Hysteria2Config::try_parse(&raw).expect("failed");
+        assert_eq!(config.schema(), SchemeX::Hysteria2);
+        assert_eq!(config.obfs.as_deref(), Some("salamander"));
+        assert_eq!(config.insecure, Some(true));
+    }
+
+    #[test]
+    fn test_hy2_ipv6() {
+        let url = "hy2://linux.do@[2a01:4f9:4b:f378::1]:13599?security=tls&insecure=1&sni=www.bing.com";
+        let raw = crate::urlx::RawUrlX::from(url);
+        let config = Hysteria2Config::try_parse(&raw).expect("failed");
+        assert_eq!(config.schema(), SchemeX::Hysteria2);
+        assert_eq!(config.host, "2a01:4f9:4b:f378::1");
+    }
+
+    #[test]
+    fn test_reconstruct_roundtrip() {
+        let input = "hysteria2://b4bd0613-ff7c-4f2f-954d-185915e6ddad@206.71.158.41:35000?security=tls&obfs=salamander&obfs-password=password123&insecure=1&sni=jnir.pichondan.com";
+        let raw = crate::urlx::RawUrlX::from(input);
+        let parsed = Hysteria2Config::try_parse(&raw).expect("failed to parse");
+        let reconstructed = parsed.reconstruct().expect("failed to reconstruct");
+
+        let raw2 = crate::urlx::RawUrlX::from(reconstructed.as_str());
+        let reparsed = Hysteria2Config::try_parse(&raw2).expect("failed to re-parse");
+
+        assert_eq!(parsed.host, reparsed.host, "host mismatch");
+        assert_eq!(parsed.port, reparsed.port, "port mismatch");
+        assert_eq!(parsed.auth, reparsed.auth, "auth mismatch");
+    }
+
+    #[test]
+    fn test_serde_roundtrip() {
+        let input = "hysteria2://b4bd0613-ff7c-4f2f-954d-185915e6ddad@206.71.158.41:35000?security=tls&obfs=salamander&obfs-password=password123&insecure=1&sni=jnir.pichondan.com";
+        let raw = crate::urlx::RawUrlX::from(input);
+        let parsed = Hysteria2Config::try_parse(&raw).expect("failed");
+        let json = serde_json::to_string(&parsed).expect("serialize");
+        let deserialized: Hysteria2Config = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(parsed.host, deserialized.host);
+        assert_eq!(parsed.auth, deserialized.auth);
+    }
+
+    use super::Hysteria2Config;
+}
