@@ -1,7 +1,7 @@
 #![warn(clippy::nursery, clippy::pedantic)]
 pub mod db;
 pub mod mining;
-mod proto_spec;
+pub mod proto_spec;
 mod utils;
 
 pub mod urlx;
@@ -11,9 +11,8 @@ use std::borrow::Cow;
 use base64::Engine;
 use bstr::ByteSlice;
 
-pub(crate) use utils::{
-    norm_extras::normalize_extras, permissive_json::permissive_json, unescaper::Unescaper,
-};
+pub use utils::norm_extras::normalize_extras;
+pub(crate) use utils::{permissive_json::permissive_json, unescaper::Unescaper};
 // exported
 
 pub use urlx::{SchemeX, UrlX};
