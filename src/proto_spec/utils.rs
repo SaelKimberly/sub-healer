@@ -7,6 +7,9 @@ use crate::urlx::{HostSpec, PortSpec, RawUrlX};
 
 /// Parse host:port from a string, returning (HostSpec, PortSpec)
 pub fn parse_hostport(s: &str) -> Result<(HostSpec, PortSpec), Cow<'static, str>> {
+    // Strip decorative prefixes like @@ or $*@
+    let s = s.trim_start_matches('@');
+    let s = s.trim_start_matches("$*@");
     let (tail, (host, port)) = crate::utils::host_port_spec(s.as_bytes().into())
         .map_err(|_| format!("Invalid hostport: {s}"))?;
     if !tail.is_empty() {
@@ -54,6 +57,8 @@ pub fn parse_port(s: &str) -> Result<PortSpec, Cow<'static, str>> {
 /// Silently strips trailing non-base64 characters (Telegram annotation text, emoji, etc.)
 pub fn decode_base64(data: &str) -> Result<Vec<u8>, base64::DecodeError> {
     // Strip Telegram annotation text appended to the base64 (emoji, Persian, Chinese, etc.)
+    // Remove stray backtick characters that sometimes appear mid-base64 in subscription data
+    let data: String = data.chars().filter(|&c| c != '`').collect();
     let end = data
         .bytes()
         .position(|b| {
