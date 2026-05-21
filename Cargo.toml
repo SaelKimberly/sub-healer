@@ -64,3 +64,16 @@ aho-corasick = { version = "*" }
 # CPU profiling: `cargo flamegraph --bin v2ray-heal -- mine`
 # Requires: `cargo install flamegraph` and `sudo apt install linux-tools-common linux-tools-$(uname -r)` (or equivalent)
 flamegraph = "*"
+criterion = { version = "0.8.2" }
+
+[[bench]]
+name = "raw_urlx"
+harness = false
+
+[[bench]]
+name = "proto_spec"
+harness = false
+
+[[bench]]
+name = "slice_input"
+harness = false
