@@ -1,4 +1,4 @@
-use std::{str::FromStr, sync::LazyLock};
+use std::{borrow::Cow, str::FromStr, sync::LazyLock};
 
 use aho_corasick::AhoCorasick;
 
@@ -50,7 +50,7 @@ impl SchemeX {
     }
 
     #[allow(clippy::missing_panics_doc, reason = "no panic expected")]
-    pub fn slice_input(s: &str) -> Vec<(Self, &str)> {
+    pub fn slice_input(s: &str) -> Vec<(Self, Cow<'_, str>)> {
         static SCHEMA_AC: LazyLock<AhoCorasick> = LazyLock::new(|| {
             AhoCorasick::builder()
                 .ascii_case_insensitive(true)
@@ -89,12 +89,28 @@ impl SchemeX {
 
             if let Some((schema, begin)) = last.replace((schema, m.range().start)) {
                 let end = m.range().start;
-                chunks.push((schema, s.get(begin..end).unwrap()));
+                chunks.push((schema, Cow::Borrowed(s.get(begin..end).unwrap())));
             }
         }
 
         if let Some((schema, begin)) = last.take() {
-            chunks.push((schema, s.get(begin..).unwrap()));
+            chunks.push((schema, Cow::Borrowed(s.get(begin..).unwrap())));
+        }
+        if chunks.is_empty() {
+            let s = match s.find("://") {
+                Some(0) => &s[3..],
+                None => s,
+                _ => return vec![],
+            };
+            return if s
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_ascii() && !c.is_ascii_whitespace())
+            {
+                vec![(Self::Vmess, Cow::Owned(format!("vmess://{s}")))]
+            } else {
+                vec![]
+            };
         }
         chunks
     }
