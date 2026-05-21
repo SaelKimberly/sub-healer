@@ -19,6 +19,7 @@ mod trojan;
 mod tuic;
 mod vless;
 mod vmess;
+mod wireguard;
 
 pub use hysteria2::Hysteria2Config;
 pub use slipnet::{SlipnetConfig, SlipnetEncConfig};
@@ -30,6 +31,7 @@ pub use trojan::TrojanConfig;
 pub use tuic::TuicConfig;
 pub use vless::VlessConfig;
 pub use vmess::VmessConfig;
+pub use wireguard::WireguardConfig;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ParseError {
@@ -94,6 +96,7 @@ pub enum ProtocolConfig {
     SlipnetEnc(SlipnetEncConfig),
     Stormdns(StormdnsConfig),
     Tuic(TuicConfig),
+    Wireguard(WireguardConfig),
 }
 
 impl ProtoSpec for ProtocolConfig {
@@ -137,6 +140,10 @@ impl ProtoSpec for ProtocolConfig {
             },
             SchemeX::TUIC => match TuicConfig::try_parse(raw) {
                 Ok(v) => return Ok(Self::Tuic(v)),
+                Err(e) => e,
+            },
+            SchemeX::WireGuard => match WireguardConfig::try_parse(raw) {
+                Ok(v) => return Ok(Self::Wireguard(v)),
                 Err(e) => e,
             },
             SchemeX::Tg | SchemeX::Https => {
@@ -194,6 +201,7 @@ impl ProtoSpec for ProtocolConfig {
             Self::SlipnetEnc(c) => c.reconstruct(),
             Self::Stormdns(c) => c.reconstruct(),
             Self::Tuic(c) => c.reconstruct(),
+            Self::Wireguard(c) => c.reconstruct(),
         }
     }
 
@@ -210,6 +218,7 @@ impl ProtoSpec for ProtocolConfig {
             Self::SlipnetEnc(c) => c.schema(),
             Self::Stormdns(c) => c.schema(),
             Self::Tuic(c) => c.schema(),
+            Self::Wireguard(c) => c.schema(),
         }
     }
 
@@ -226,6 +235,7 @@ impl ProtoSpec for ProtocolConfig {
             Self::SlipnetEnc(_) => None,
             Self::Stormdns(c) => c.host(),
             Self::Tuic(c) => c.host(),
+            Self::Wireguard(c) => c.host(),
         }
     }
 
@@ -242,6 +252,7 @@ impl ProtoSpec for ProtocolConfig {
             Self::SlipnetEnc(_) => None,
             Self::Stormdns(c) => c.port(),
             Self::Tuic(c) => c.port(),
+            Self::Wireguard(c) => c.port(),
         }
     }
 
@@ -258,6 +269,7 @@ impl ProtoSpec for ProtocolConfig {
             Self::SlipnetEnc(_) => None,
             Self::Stormdns(c) => c.name.as_deref(),
             Self::Tuic(c) => c.remarks(),
+            Self::Wireguard(c) => c.remarks(),
         }
     }
 
@@ -274,6 +286,7 @@ impl ProtoSpec for ProtocolConfig {
             Self::SlipnetEnc(c) => c.cred_hash(),
             Self::Stormdns(c) => c.cred_hash(),
             Self::Tuic(c) => c.cred_hash(),
+            Self::Wireguard(c) => c.cred_hash(),
         }
     }
 
@@ -290,6 +303,7 @@ impl ProtoSpec for ProtocolConfig {
             Self::SlipnetEnc(c) => c.sig(),
             Self::Stormdns(c) => c.sig(),
             Self::Tuic(c) => c.sig(),
+            Self::Wireguard(c) => c.sig(),
         }
     }
 
@@ -306,6 +320,7 @@ impl ProtoSpec for ProtocolConfig {
             Self::SlipnetEnc(c) => c.set_sig_cache(v),
             Self::Stormdns(c) => c.set_sig_cache(v),
             Self::Tuic(c) => c.set_sig_cache(v),
+            Self::Wireguard(c) => c.set_sig_cache(v),
         }
     }
 }
