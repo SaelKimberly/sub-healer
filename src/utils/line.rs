@@ -123,34 +123,50 @@ pub struct Lines<'a> {
 fn split_at_scheme<'a>(
     (i, s): (usize, &'a str),
     schemas: &[&'static str],
-) -> Vec<(usize, Cow<'static, str>, &'a str)> {
-    let mut slice = Option::<(Cow<'static, str>, &'a str)>::None;
-    let mut result = Vec::<(usize, Cow<'static, str>, &'a str)>::with_capacity(1);
-
-    // 1: Find first schema in line (any word://, not just KNOWN_SCHEMAS)
-    if let Some(prefix) = s.split_inclusive("://").next() {
-        let before = prefix.strip_suffix("://").unwrap_or(prefix);
-        let scheme_word = before.split_whitespace().last().filter(|w| !w.is_empty());
-        if let Some(sw) = scheme_word {
-            let rest = if before.trim().is_empty() {
-                s.trim_start()
-            } else {
-                s.strip_prefix(before.trim_end()).unwrap_or(s)
-            };
-            let cow_scheme = KNOWN_SCHEMAS
-                .iter()
-                .find(|k| **k == format!("{sw}://"))
-                .map_or_else(
-                    || Cow::Owned(sw.to_string()),
-                    |k| Cow::Borrowed(k.strip_suffix("://").unwrap_or(k)),
-                );
-            slice.replace((cow_scheme, rest));
-        }
+) -> Vec<(usize, Cow<'static, str>, Cow<'a, str>)> {
+    let s = s.trim_start();
+    if s.starts_with('#') || s.starts_with("//") || s.is_empty() {
+        // This is a commentary or an empty line
+        return vec![];
     }
 
+    // 1: Find first schema in line (any word://, not just KNOWN_SCHEMAS)
+    let mut slice: Option<(Cow<'static, str>, &'a str)> = match s.find("://") {
+        Some(pos @ 1..) => {
+            let prefix = &s[..pos + 3];
+            let before = prefix.strip_suffix("://").unwrap_or(prefix);
+            let scheme_word = before.split_whitespace().last().filter(|w| !w.is_empty());
+            scheme_word.map(|sw| {
+                let rest = if before.trim().is_empty() {
+                    s.trim_start()
+                } else {
+                    s.strip_prefix(before.trim_end()).unwrap_or(s)
+                };
+                let cow_scheme = KNOWN_SCHEMAS
+                    .iter()
+                    .find(|k| **k == format!("{sw}://"))
+                    .map_or_else(
+                        || Cow::Owned(sw.to_string()),
+                        |k| Cow::Borrowed(k.strip_suffix("://").unwrap_or(k)),
+                    );
+                (cow_scheme, rest)
+            })
+        }
+        Some(0) => {
+            // When there is a schema separator in the beginning (empty schema)
+            let s = s.strip_prefix("://").unwrap_or(s);
+            return vec![(i, Cow::Borrowed("vmess"), format!("vmess://{s}").into())];
+        }
+        None => {
+            // When there is no such thing as "://", we assume it is a vmess link (naive).
+            return vec![(i, Cow::Borrowed("vmess"), format!("vmess://{s}").into())];
+        }
+    };
+
+    let mut result: Vec<(usize, Cow<'static, str>, Cow<'a, str>)> = Vec::with_capacity(1);
     while let Some((schema, sx)) = slice.take() {
         if sx.is_empty() || sx.len() < 5 {
-            result.push((i, schema, sx));
+            result.push((i, schema, sx.into()));
             break;
         }
 
@@ -174,10 +190,10 @@ fn split_at_scheme<'a>(
 
         if let Some((min_schema_pos, another_schema)) = min_schema_pos {
             let (prefix, schema_and_tail) = sx.split_at(min_schema_pos);
-            result.push((i, schema, prefix));
+            result.push((i, schema, prefix.into()));
             _ = slice.replace((another_schema, schema_and_tail));
         } else {
-            result.push((i, schema, sx));
+            result.push((i, schema, sx.into()));
             break;
         }
     }
@@ -228,12 +244,9 @@ impl<'a> Lines<'a> {
                 .par_bridge()
                 .flat_map(|(idx, line)| line.split("<br/>").map(move |s| (idx, s)).par_bridge())
                 .flat_map(|s| split_at_scheme(s, KNOWN_SCHEMAS))
-                .map(|(i, s, sx)| Line {
+                .map(|(i, scheme, url)| Line {
                     row: i,
-                    url: Data::Raw {
-                        scheme: s,
-                        url: Cow::Borrowed(sx),
-                    },
+                    url: Data::Raw { scheme, url },
                     wrn: None,
                     err: None,
                 })
