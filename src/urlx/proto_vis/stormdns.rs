@@ -1,4 +1,4 @@
-use crate::urlx::{HostSpec, PortSpec, ParseError, SchemeX, TinyText, UrlX, UserInfo};
+use crate::urlx::{HostSpec, ParseError, PortSpec, SchemeX, TinyText, UrlX, UserInfo};
 
 pub struct StormdnsProto;
 

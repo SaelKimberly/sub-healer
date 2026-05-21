@@ -194,7 +194,7 @@ mod tests {
         let raw = crate::urlx::RawUrlX::from(SLIPNET_URL);
         let config = SlipnetConfig::try_parse(&raw).expect("failed");
         assert_eq!(config.schema(), SchemeX::Slipnet);
-        assert!(config.host.len() > 0);
+        assert!(!config.host.is_empty());
     }
 
     #[test]

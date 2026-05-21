@@ -230,6 +230,7 @@ impl<'a> RawUrlX<'a> {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     fn from_str_impl(s: &'a str) -> Option<Self> {
         // we just parse this from sides to the center
         let mut unparsed = s.trim_end();
@@ -255,7 +256,27 @@ impl<'a> RawUrlX<'a> {
         // ! the '@' is part of a query value or fragment, not a userinfo separator.
         let split_at = unparsed.find('@').filter(|pos| {
             let earliest = unparsed.find('#').or_else(|| unparsed.find('?'));
-            earliest.map_or_else(|| true, |early| *pos < early)
+            earliest.map_or_else(|| true, |early| {
+                if *pos < early {
+                    return true;
+                }
+                // Trojan URLs may have '#' in the 16-byte ASCII password
+                // (e.g. "8r<[9'l6hAO#8ZQi@host:port").
+                // Check if after @ is a valid host:port.
+                if schema == SchemeX::Trojan && *pos == 16
+                    && unparsed[..16].is_ascii()
+                {
+                    let after_at = &unparsed[*pos + 1..];
+                    let host_end = after_at.find('/')
+                        .or_else(|| after_at.find('?'))
+                        .or_else(|| after_at.find('#'))
+                        .unwrap_or(after_at.len());
+                    let candidate = &after_at[..host_end];
+                    let span = candidate.as_bytes().into();
+                    return crate::utils::host_port::host_port_spec(span).is_ok();
+                }
+                false
+            })
         });
         let (userinfo, rest) = match split_at {
             Some(_) => match unparsed.split_once('@') {

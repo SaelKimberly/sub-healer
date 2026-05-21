@@ -29,8 +29,8 @@ impl ProtoSpec for SsrConfig {
         let clean_userinfo = clean_ssr_userinfo(raw.userinfo);
         let decoded = utils::decode_base64(clean_userinfo)
             .map_err(|_| ParseError::InvalidStructure(SchemeX::SSR))?;
-        let text = String::from_utf8(decoded)
-            .map_err(|_| ParseError::InvalidStructure(SchemeX::SSR))?;
+        let text =
+            String::from_utf8(decoded).map_err(|_| ParseError::InvalidStructure(SchemeX::SSR))?;
 
         let parts: Vec<&str> = text.split(':').collect();
         if parts.len() < 6 {
@@ -160,11 +160,10 @@ fn clean_ssr_userinfo(s: &str) -> &str {
     // Try padded-base64 heuristic first
     if let Some(last_eq) = s.rfind('=') {
         let after = &s[last_eq + 1..];
-        let after_hyphens = after.trim_start_matches(|c: char| c == '-' || c == '_');
-        if after_hyphens.is_empty()
-            || !after_hyphens.as_bytes().first().map_or(true, |b| b.is_ascii())
-        {
-            return &s[..=last_eq];
+        match after.trim_start_matches(['-', '_']).as_bytes().first() {
+            None => return &s[..=last_eq],
+            Some(n) if !n.is_ascii() => return &s[..=last_eq],
+            _ => (),
         }
     }
 
@@ -262,7 +261,8 @@ mod tests {
         // Valid SSR URL with no /? query params and a # fragment
         let url = "ssr://MTMuMzcuMjguMjM6NTk0NzpvcmlnaW46Y2hhY2hhMjAtaWV0ZjpwbGFpbjpOVGswTnc#@dark_telecom";
         let raw = crate::urlx::RawUrlX::from(url);
-        let config = SsrConfig::try_parse(&raw).expect("failed to parse url with hash and no query");
+        let config =
+            SsrConfig::try_parse(&raw).expect("failed to parse url with hash and no query");
         assert_eq!(config.host, "13.37.28.23");
         assert_eq!(config.port, "5947");
         assert_eq!(config.protocol, "origin");

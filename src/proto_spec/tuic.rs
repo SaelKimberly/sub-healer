@@ -1,4 +1,4 @@
-use std::num::NonZeroU64;
+use std::{fmt::Write, num::NonZeroU64};
 
 use serde::{Deserialize, Serialize};
 
@@ -38,14 +38,11 @@ impl ProtoSpec for TuicConfig {
         };
 
         let (uuid, password) = userinfo.split_once(':').ok_or_else(|| {
-            ParseError::InvalidUserInfo(
-                format!("{userinfo}: expected uuid:password").into(),
-            )
+            ParseError::InvalidUserInfo(format!("{userinfo}: expected uuid:password").into())
         })?;
 
-        uuid::Uuid::parse_str(uuid).map_err(|_| {
-            ParseError::InvalidUserInfo(format!("invalid UUID: {uuid}").into())
-        })?;
+        uuid::Uuid::parse_str(uuid)
+            .map_err(|_| ParseError::InvalidUserInfo(format!("invalid UUID: {uuid}").into()))?;
 
         let (parsed_host, parsed_port) = utils::parse_hostport(hostport)
             .map_err(|e| ParseError::InvalidHostPort(format!("{hostport}: {e}").into()))?;
@@ -57,8 +54,8 @@ impl ProtoSpec for TuicConfig {
         let alpn = query.get("alpn").cloned();
         let allow_insecure = query
             .get("allow_insecure")
-            .or(query.get("insecure"))
-            .or(query.get("allowInsecure"))
+            .or_else(|| query.get("insecure"))
+            .or_else(|| query.get("allowInsecure"))
             .and_then(|v| match v.as_str() {
                 "1" | "true" => Some(true),
                 "0" | "false" => Some(false),
@@ -127,7 +124,7 @@ impl ProtoSpec for TuicConfig {
                 .unwrap();
             let frag = frag.trim();
             if !frag.is_empty() {
-                base.push_str(&format!("#{}", urlencoding::encode(frag)));
+                _ = write!(base, "#{}", urlencoding::encode(frag));
             }
         }
 
@@ -151,17 +148,18 @@ impl ProtoSpec for TuicConfig {
     }
 
     fn cred_hash(&self) -> u64 {
-        let cred_data = format!("{}:{}:{}:{}", self.host, self.port, self.uuid, self.password);
+        let cred_data = format!(
+            "{}:{}:{}:{}",
+            self.host, self.port, self.uuid, self.password
+        );
         rapidhash::v3::rapidhash_v3(cred_data.as_bytes())
     }
 
     fn sig(&self) -> u64 {
-        let v = self
-            .sig_cache
-            .get_or_init(|| {
-                let val = self.compute_sig();
-                NonZeroU64::new(val).unwrap_or(NonZeroU64::MIN)
-            });
+        let v = self.sig_cache.get_or_init(|| {
+            let val = self.compute_sig();
+            NonZeroU64::new(val).unwrap_or(NonZeroU64::MIN)
+        });
         v.get()
     }
 
@@ -194,7 +192,7 @@ impl TuicConfig {
 
 #[cfg(test)]
 mod tests {
-    use super::super::{ProtocolConfig, ProtoSpec};
+    use super::super::{ProtoSpec, ProtocolConfig};
     use crate::urlx::SchemeX;
 
     #[test]
@@ -256,8 +254,7 @@ mod tests {
         assert_eq!(parsed.uuid, reparsed.uuid, "uuid mismatch");
         assert_eq!(parsed.password, reparsed.password, "password mismatch");
         assert_eq!(
-            parsed.congestion_control,
-            reparsed.congestion_control,
+            parsed.congestion_control, reparsed.congestion_control,
             "congestion_control mismatch"
         );
     }

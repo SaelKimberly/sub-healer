@@ -60,7 +60,13 @@ pub enum ParseError {
 }
 
 pub trait ProtoSpec: Serialize + DeserializeOwned + std::fmt::Debug + Clone {
+    /// # Errors
+    ///
+    /// If either the URL is invalid or the external configuration is invalid.
     fn try_parse(raw: &RawUrlX<'_>) -> Result<Self, ParseError>;
+    /// # Errors
+    ///
+    /// If internal configuration is invalid.
     fn reconstruct(&self) -> Result<String, ParseError>;
     fn schema(&self) -> SchemeX;
     fn host(&self) -> Option<&str>;
@@ -105,12 +111,10 @@ impl ProtoSpec for ProtocolConfig {
                 Ok(v) => return Ok(Self::Vmess(v)),
                 Err(e) => e,
             },
-            SchemeX::Hysteria | SchemeX::Hysteria2 => {
-                match Hysteria2Config::try_parse(raw) {
-                    Ok(v) => return Ok(Self::Hysteria2(v)),
-                    Err(e) => e,
-                }
-            }
+            SchemeX::Hysteria | SchemeX::Hysteria2 => match Hysteria2Config::try_parse(raw) {
+                Ok(v) => return Ok(Self::Hysteria2(v)),
+                Err(e) => e,
+            },
             SchemeX::SS => match SsConfig::try_parse(raw) {
                 Ok(v) => return Ok(Self::Ss(v)),
                 Err(e) => e,

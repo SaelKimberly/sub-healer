@@ -40,7 +40,7 @@ impl ProtoSpec for StormdnsConfig {
 
         let version = json
             .get("version")
-            .and_then(|v| v.as_i64())
+            .and_then(serde_json::Value::as_i64)
             .ok_or_else(|| ParseError::InvalidStructure(SchemeX::Stormdns))?;
         if version != 1 {
             return Err(ParseError::InvalidStructure(SchemeX::Stormdns));
@@ -75,7 +75,7 @@ impl ProtoSpec for StormdnsConfig {
 
         let encryption_method = server
             .get("encryption_method")
-            .and_then(|v| v.as_i64())
+            .and_then(serde_json::Value::as_i64)
             .map(|n| format!("enc{n}"));
 
         Ok(Self {
@@ -181,7 +181,9 @@ mod tests {
 
     #[test]
     fn test_stormdns_basic() {
-        let raw = crate::urlx::RawUrlX::from("stormdns://eyJzY2hlbWEiOiJ3aGl0ZWRucy5wcm9maWxlIiwidmVyc2lvbiI6MSwicHJvZmlsZSI6eyJuYW1lIjoiQ2xvdWRmbGFyZSIsInNlcnZlciI6eyJkb21haW4iOiJleGFtcGxlLmNvbSIsImVuY3J5cHRpb25fa2V5Ijoic29tZS1rZXkiLCJlbmNyeXB0aW9uX21ldGhvZCI6MX19fQ==");
+        let raw = crate::urlx::RawUrlX::from(
+            "stormdns://eyJzY2hlbWEiOiJ3aGl0ZWRucy5wcm9maWxlIiwidmVyc2lvbiI6MSwicHJvZmlsZSI6eyJuYW1lIjoiQ2xvdWRmbGFyZSIsInNlcnZlciI6eyJkb21haW4iOiJleGFtcGxlLmNvbSIsImVuY3J5cHRpb25fa2V5Ijoic29tZS1rZXkiLCJlbmNyeXB0aW9uX21ldGhvZCI6MX19fQ==",
+        );
         let config = StormdnsConfig::try_parse(&raw).expect("failed");
         assert_eq!(config.schema(), SchemeX::Stormdns);
         assert_eq!(config.host, "example.com");
@@ -189,7 +191,9 @@ mod tests {
 
     #[test]
     fn test_serde_roundtrip() {
-        let raw = crate::urlx::RawUrlX::from("stormdns://eyJzY2hlbWEiOiJ3aGl0ZWRucy5wcm9maWxlIiwidmVyc2lvbiI6MSwicHJvZmlsZSI6eyJuYW1lIjoiQ2xvdWRmbGFyZSIsInNlcnZlciI6eyJkb21haW4iOiJleGFtcGxlLmNvbSIsImVuY3J5cHRpb25fa2V5Ijoic29tZS1rZXkiLCJlbmNyeXB0aW9uX21ldGhvZCI6MX19fQ==");
+        let raw = crate::urlx::RawUrlX::from(
+            "stormdns://eyJzY2hlbWEiOiJ3aGl0ZWRucy5wcm9maWxlIiwidmVyc2lvbiI6MSwicHJvZmlsZSI6eyJuYW1lIjoiQ2xvdWRmbGFyZSIsInNlcnZlciI6eyJkb21haW4iOiJleGFtcGxlLmNvbSIsImVuY3J5cHRpb25fa2V5Ijoic29tZS1rZXkiLCJlbmNyeXB0aW9uX21ldGhvZCI6MX19fQ==",
+        );
         let parsed = StormdnsConfig::try_parse(&raw).expect("failed");
         let json = serde_json::to_string(&parsed).expect("serialize");
         let deserialized: StormdnsConfig = serde_json::from_str(&json).expect("deserialize");

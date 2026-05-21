@@ -93,10 +93,8 @@ impl ProtoSpec for Hysteria2Config {
             if let Some(ref v) = self.obfs_password {
                 parts.push(format!("obfs-password={}", urlencoding::encode(v)));
             }
-            if let Some(v) = self.insecure {
-                if v {
-                    parts.push("insecure=1".to_string());
-                }
+            if self.insecure == Some(true) {
+                parts.push("insecure=1".to_string());
             }
             if let Some(ref v) = self.sni {
                 parts.push(format!("sni={}", urlencoding::encode(v)));
@@ -147,12 +145,10 @@ impl ProtoSpec for Hysteria2Config {
     }
 
     fn sig(&self) -> u64 {
-        let v = self
-            .sig_cache
-            .get_or_init(|| {
-                let val = self.compute_sig();
-                NonZeroU64::new(val).unwrap_or(NonZeroU64::MIN)
-            });
+        let v = self.sig_cache.get_or_init(|| {
+            let val = self.compute_sig();
+            NonZeroU64::new(val).unwrap_or(NonZeroU64::MIN)
+        });
         v.get()
     }
 
@@ -166,11 +162,12 @@ impl Hysteria2Config {
         let mut parts: Vec<&[u8]> = vec![b"hysteria2"];
         parts.push(self.security.as_bytes());
 
-        for v in [&self.obfs, &self.obfs_password] {
-            if let Some(v) = v {
-                parts.push(v.as_bytes());
-            }
-        }
+        parts.extend(
+            [&self.obfs, &self.obfs_password]
+                .into_iter()
+                .flatten()
+                .map(String::as_bytes),
+        );
         if let Some(v) = self.insecure {
             parts.push(if v { b"true" } else { b"false" });
         }
@@ -205,7 +202,8 @@ mod tests {
 
     #[test]
     fn test_hy2_ipv6() {
-        let url = "hy2://linux.do@[2a01:4f9:4b:f378::1]:13599?security=tls&insecure=1&sni=www.bing.com";
+        let url =
+            "hy2://linux.do@[2a01:4f9:4b:f378::1]:13599?security=tls&insecure=1&sni=www.bing.com";
         let raw = crate::urlx::RawUrlX::from(url);
         let config = Hysteria2Config::try_parse(&raw).expect("failed");
         assert_eq!(config.schema(), SchemeX::Hysteria2);

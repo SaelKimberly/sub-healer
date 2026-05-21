@@ -46,9 +46,8 @@ impl ProtoSpec for VlessConfig {
         let (parsed_host, parsed_port) = utils::parse_hostport(hostport)
             .map_err(|e| ParseError::InvalidHostPort(format!("{hostport}: {e}").into()))?;
 
-        uuid::Uuid::parse_str(username).map_err(|_| {
-            ParseError::InvalidUserInfo(format!("invalid UUID: {username}").into())
-        })?;
+        uuid::Uuid::parse_str(username)
+            .map_err(|_| ParseError::InvalidUserInfo(format!("invalid UUID: {username}").into()))?;
 
         let query = utils::parse_query(raw.query);
 
@@ -56,10 +55,7 @@ impl ProtoSpec for VlessConfig {
             .get("security")
             .map_or("none", |s| s.as_str())
             .to_string();
-        let transport_type = query
-            .get("type")
-            .map_or("tcp", |s| s.as_str())
-            .to_string();
+        let transport_type = query.get("type").map_or("tcp", |s| s.as_str()).to_string();
         let path = query.get("path").cloned();
         let encryption = query.get("encryption").filter(|v| v != &"none").cloned();
         let flow = query.get("flow").cloned();
@@ -113,10 +109,8 @@ impl ProtoSpec for VlessConfig {
             format!("{}:{}", self.host, self.port)
         };
 
-        let mut base = url::Url::parse(
-            format!("vless://{}@{hostport}", self.uuid).as_str(),
-        )
-        .map_err(|e| ParseError::Unknown(e.into()))?;
+        let mut base = url::Url::parse(format!("vless://{}@{hostport}", self.uuid).as_str())
+            .map_err(|e| ParseError::Unknown(e.into()))?;
 
         if let Some(ref path) = self.path {
             base.set_path(path);
@@ -192,12 +186,7 @@ impl ProtoSpec for VlessConfig {
     }
 
     fn cred_hash(&self) -> u64 {
-        utils::compute_cred_hash(
-            None,
-            None,
-            &self.uuid,
-            &self.uuid,
-        )
+        utils::compute_cred_hash(None, None, &self.uuid, &self.uuid)
     }
 
     fn sig(&self) -> u64 {
@@ -251,7 +240,6 @@ impl VlessConfig {
 
 #[cfg(test)]
 mod tests {
-    use super::super::ProtocolConfig;
     use super::super::ProtoSpec;
     use crate::urlx::SchemeX;
 

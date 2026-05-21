@@ -55,15 +55,16 @@ impl ProtoSpec for VmessConfig {
 
         let uuid = json
             .get("id")
-            .and_then(|v| v.as_str())
             .ok_or_else(|| ParseError::MissingConf("id".into()))?
-            .to_string();
+            .as_str()
+            .ok_or_else(|| ParseError::InvalidConf("id".into(), "not a string".into()))?
+            .to_owned();
 
         let security = json
             .get("scy")
             .and_then(|v| v.as_str())
             .filter(|s| !s.is_empty() && s != &"null")
-            .or_else(|| Some("auto"))
+            .or(Some("auto"))
             .map(String::from);
 
         let net = json
@@ -175,8 +176,7 @@ impl ProtoSpec for VmessConfig {
         }
 
         let json = serde_json::Value::Object(map);
-        let json_str = serde_json::to_string(&json)
-            .map_err(|e| ParseError::Unknown(e.into()))?;
+        let json_str = serde_json::to_string(&json).map_err(|e| ParseError::Unknown(e.into()))?;
         let encoded = base64::prelude::BASE64_URL_SAFE_NO_PAD.encode(json_str.as_bytes());
         Ok(format!("vmess://{encoded}"))
     }
@@ -301,4 +301,3 @@ mod tests {
         assert_eq!(config.host, "192.200.160.16");
     }
 }
-
