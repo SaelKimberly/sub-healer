@@ -1,7 +1,5 @@
 use super::{HostSpec, PortSpec, TinyText};
 
-use serde::Serialize;
-
 pub(crate) mod host_opt_serde {
 
     use serde::{Deserialize, Serialize};

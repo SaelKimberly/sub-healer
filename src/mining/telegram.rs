@@ -527,7 +527,7 @@ mod tests {
     use std::collections::BTreeMap;
     use std::fs::OpenOptions;
     use std::io::{BufWriter, Write};
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use std::sync::{Arc, Mutex};
 
     use chrono::Local;
@@ -538,8 +538,8 @@ mod tests {
     use tracing_subscriber::prelude::*;
     use tracing_subscriber::registry;
 
-    use crate::mining::registry::{SourceRegistry, SourceType};
     use crate::mining::UnparseableLayer;
+    use crate::mining::registry::{SourceRegistry, SourceType};
 
     use super::*;
 
@@ -550,11 +550,11 @@ mod tests {
     }
 
     impl SharedLogWriter {
-        fn new(path: PathBuf) -> Self {
+        fn new(path: &Path) -> Self {
             let file = OpenOptions::new()
                 .create(true)
                 .append(true)
-                .open(&path)
+                .open(path)
                 .expect("Failed to open pipeline log file");
             Self {
                 writer: Arc::new(Mutex::new(BufWriter::new(file))),
@@ -588,10 +588,15 @@ mod tests {
 
         // --- Set env var for UnparseableLayer ---
         let unparseable_path = out_dir.join("unparseable.ndjson");
-        unsafe { std::env::set_var("V2RAY_HEAL_UNPARSEABLE_LOG", unparseable_path.to_str().unwrap()) };
+        unsafe {
+            std::env::set_var(
+                "V2RAY_HEAL_UNPARSEABLE_LOG",
+                unparseable_path.to_str().unwrap(),
+            );
+        };
 
         // --- Tracing layers ---
-        let pipeline_writer = SharedLogWriter::new(out_dir.join("tg-pipeline.log"));
+        let pipeline_writer = SharedLogWriter::new(out_dir.join("tg-pipeline.log").as_path());
 
         registry()
             .with(
@@ -682,8 +687,7 @@ mod tests {
         );
 
         // --- Collect ---
-        let mut per_channel =
-            BTreeMap::<TinyText, Vec<(DateTime<Utc>, TinyText, String)>>::new();
+        let mut per_channel = BTreeMap::<TinyText, Vec<(DateTime<Utc>, TinyText, String)>>::new();
 
         while let Some(msg) = tg_messages.next().await {
             // Emit unparseable events (feeds UnparseableLayer → unparseable.ndjson)
@@ -709,12 +713,11 @@ mod tests {
                 continue;
             };
 
-            per_channel
-                .entry(msg.source_url)
-                .or_default()
-                .extend(msg_urls.iter().map(|urlx| {
-                    (msg.time, urlx.schema.as_str().into(), urlx.reconstruct())
-                }));
+            per_channel.entry(msg.source_url).or_default().extend(
+                msg_urls
+                    .iter()
+                    .map(|urlx| (msg.time, urlx.schema.as_str().into(), urlx.reconstruct())),
+            );
         }
 
         // --- Sort per channel ---

@@ -2,9 +2,7 @@ use std::num::NonZeroU64;
 
 use serde::{Deserialize, Serialize};
 
-use crate::urlx::{
-    host_serde, port_serde, HostSpec, RawUrlX, SchemeX,
-};
+use crate::urlx::{HostSpec, RawUrlX, SchemeX, host_serde, port_serde};
 
 use super::utils;
 use super::{ParseError, ProtoSpec};
@@ -31,12 +29,12 @@ pub struct WireguardConfig {
 impl ProtoSpec for WireguardConfig {
     fn try_parse(raw: &RawUrlX<'_>) -> Result<Self, ParseError> {
         let private_key = urlencoding::decode(raw.userinfo)
-            .map_err(|_| ParseError::InvalidUserInfo("invalid percent-encoding in private_key".into()))?
+            .map_err(|_| {
+                ParseError::InvalidUserInfo("invalid percent-encoding in private_key".into())
+            })?
             .into_owned();
 
-        let hostport = raw
-            .hostport
-            .ok_or(ParseError::MissingHost)?;
+        let hostport = raw.hostport.ok_or(ParseError::MissingHost)?;
         let (parsed_host, parsed_port) = utils::parse_hostport(hostport)
             .map_err(|e| ParseError::InvalidHostPort(format!("{hostport}: {e}").into()))?;
         let parsed_port = parsed_port
@@ -46,7 +44,7 @@ impl ProtoSpec for WireguardConfig {
         let query = utils::parse_query(raw.query);
 
         let decode_val = |v: &str| -> String {
-            urlencoding::decode(v).map(|c| c.into_owned()).unwrap_or_else(|_| v.to_string())
+            urlencoding::decode(v).map_or_else(|_| v.to_string(), std::borrow::Cow::into_owned)
         };
 
         let address = query
@@ -95,11 +93,14 @@ impl ProtoSpec for WireguardConfig {
 
         let mut parts: Vec<String> = Vec::new();
         parts.push(format!("address={}", urlencoding::encode(&self.address)));
-        parts.push(format!("publickey={}", urlencoding::encode(&self.public_key)));
-        if let Some(ref v) = self.preshared_key {
-            if !v.is_empty() {
-                parts.push(format!("presharedkey={}", urlencoding::encode(v)));
-            }
+        parts.push(format!(
+            "publickey={}",
+            urlencoding::encode(&self.public_key)
+        ));
+        if let Some(ref v) = self.preshared_key
+            && !v.is_empty()
+        {
+            parts.push(format!("presharedkey={}", urlencoding::encode(v)));
         }
         if let Some(ref v) = self.reserved {
             parts.push(format!("reserved={}", urlencoding::encode(v)));
@@ -153,12 +154,10 @@ impl ProtoSpec for WireguardConfig {
     }
 
     fn sig(&self) -> u64 {
-        let v = self
-            .sig_cache
-            .get_or_init(|| {
-                let val = self.compute_sig();
-                NonZeroU64::new(val).unwrap_or(NonZeroU64::MIN)
-            });
+        let v = self.sig_cache.get_or_init(|| {
+            let val = self.compute_sig();
+            NonZeroU64::new(val).unwrap_or(NonZeroU64::MIN)
+        });
         v.get()
     }
 
@@ -250,9 +249,15 @@ mod tests {
 
         assert_eq!(parsed.host, reparsed.host, "host mismatch");
         assert_eq!(parsed.port, reparsed.port, "port mismatch");
-        assert_eq!(parsed.private_key, reparsed.private_key, "private_key mismatch");
+        assert_eq!(
+            parsed.private_key, reparsed.private_key,
+            "private_key mismatch"
+        );
         assert_eq!(parsed.address, reparsed.address, "address mismatch");
-        assert_eq!(parsed.public_key, reparsed.public_key, "public_key mismatch");
+        assert_eq!(
+            parsed.public_key, reparsed.public_key,
+            "public_key mismatch"
+        );
         assert_eq!(parsed.mtu, reparsed.mtu, "mtu mismatch");
         assert_eq!(parsed.remarks, reparsed.remarks, "remarks mismatch");
     }
@@ -267,9 +272,15 @@ mod tests {
 
         assert_eq!(parsed.host, deserialized.host, "host mismatch");
         assert_eq!(parsed.port, deserialized.port, "port mismatch");
-        assert_eq!(parsed.private_key, deserialized.private_key, "private_key mismatch");
+        assert_eq!(
+            parsed.private_key, deserialized.private_key,
+            "private_key mismatch"
+        );
         assert_eq!(parsed.address, deserialized.address, "address mismatch");
-        assert_eq!(parsed.public_key, deserialized.public_key, "public_key mismatch");
+        assert_eq!(
+            parsed.public_key, deserialized.public_key,
+            "public_key mismatch"
+        );
     }
 
     use super::WireguardConfig;

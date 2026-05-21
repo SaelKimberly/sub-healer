@@ -3,9 +3,7 @@ use std::num::NonZeroU64;
 use base64::Engine;
 use serde::{Deserialize, Serialize};
 
-use crate::urlx::{
-    host_serde, port_serde, HostSpec, RawUrlX, SchemeX,
-};
+use crate::urlx::{HostSpec, RawUrlX, SchemeX, TinyText, host_serde, port_serde};
 
 use super::utils;
 use super::{ParseError, ProtoSpec};
@@ -23,6 +21,7 @@ pub struct SlipnetConfig {
     pub tunnel_type: Option<String>,
     pub public_key: Option<String>,
     pub remarks: Option<String>,
+    pub raw_fields: Vec<TinyText>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -41,14 +40,20 @@ impl ProtoSpec for SlipnetConfig {
         let text = String::from_utf8(decoded)
             .map_err(|_| ParseError::InvalidStructure(SchemeX::Slipnet))?;
 
-        let fields: Vec<&str> = text.split('|').collect();
-        if fields.len() < 12 {
+        let raw_fields: Vec<TinyText> = text.split('|').map(TinyText::from).collect();
+        if raw_fields.len() < 12 {
             return Err(ParseError::InvalidStructure(SchemeX::Slipnet));
         }
 
-        let domain = fields.get(3).copied().filter(|s| !s.is_empty());
-        let public_key = fields.get(11).copied().filter(|s| !s.is_empty());
-        let tunnel_type = fields.get(1).copied().filter(|s| !s.is_empty());
+        let domain = raw_fields.get(3).and_then(|s| {
+            if s.is_empty() { None } else { Some(s.as_str()) }
+        });
+        let public_key = raw_fields.get(11).and_then(|s| {
+            if s.is_empty() { None } else { Some(s.as_str()) }
+        });
+        let tunnel_type = raw_fields.get(1).and_then(|s| {
+            if s.is_empty() { None } else { Some(s.as_str()) }
+        });
 
         let host = domain
             .map(|d| {
@@ -58,32 +63,28 @@ impl ProtoSpec for SlipnetConfig {
             .transpose()?
             .ok_or(ParseError::MissingHost)?;
 
-        let port = fields
+        let port = raw_fields
             .get(8)
-            .copied()
-            .ok_or(ParseError::MissingPort)
             .and_then(|s| {
-                s.parse::<u16>()
-                    .map_err(|_| ParseError::InvalidPort(s.to_string().into()))
-            })?;
+                if s.is_empty() { None } else { s.parse::<u16>().ok() }
+            })
+            .ok_or(ParseError::MissingPort)?;
 
         let remarks = utils::decode_fragment(raw)?;
 
         Ok(Self {
             sig_cache: std::sync::OnceLock::new(),
-            host: host,
+            host,
             port,
             tunnel_type: tunnel_type.map(String::from),
             public_key: public_key.map(String::from),
             remarks,
+            raw_fields,
         })
     }
 
     fn reconstruct(&self) -> Result<String, ParseError> {
-        let encoded = self
-            .reconstruct_raw()
-            .map_err(|e| ParseError::Unknown(e.into()))?;
-        Ok(format!("slipnet://{encoded}"))
+        Ok(format!("slipnet://{}", self.reconstruct_raw()))
     }
 
     fn schema(&self) -> SchemeX {
@@ -120,16 +121,26 @@ impl ProtoSpec for SlipnetConfig {
 }
 
 impl SlipnetConfig {
-    fn reconstruct_raw(&self) -> Result<String, base64::DecodeError> {
-        let raw = format!(
-            "22|{}|{}|{}|8.8.8.8:53:0|0|5000|bbr|{}|127.0.0.1|0|{}|iranux\tranux|0|||22|0|45.148.28.115|0||udp|password||||0|443|||0||0|0||0||0|0||0|1080|0|txt|101|0|0|0|0|0|0|||8080||0|/|1||",
-            self.tunnel_type.as_deref().unwrap_or("dnstt"),
-            self.tunnel_type.as_deref().unwrap_or("dnstt-socks"),
-            self.host.to_str(),
-            self.port,
-            self.public_key.as_deref().unwrap_or("0"),
-        );
-        Ok(base64::prelude::BASE64_URL_SAFE_NO_PAD.encode(raw.as_bytes()))
+    fn reconstruct_raw(&self) -> String {
+        let mut fields = self.raw_fields.clone();
+        if let Some(ref tt) = self.tunnel_type {
+            if fields.len() > 1 {
+                fields[1] = TinyText::from(tt.as_str());
+            }
+        }
+        if fields.len() > 3 {
+            fields[3] = TinyText::from(self.host.to_str());
+        }
+        if fields.len() > 8 {
+            fields[8] = TinyText::from(self.port.to_string());
+        }
+        if let Some(ref pk) = self.public_key {
+            if fields.len() > 11 {
+                fields[11] = TinyText::from(pk.as_str());
+            }
+        }
+        let raw: String = fields.iter().map(|t| t.as_str()).collect::<Vec<&str>>().join("|");
+        base64::prelude::BASE64_URL_SAFE_NO_PAD.encode(raw.as_bytes())
     }
 
     fn compute_sig(&self) -> u64 {
@@ -198,6 +209,14 @@ mod tests {
         let raw = crate::urlx::RawUrlX::from(SLIPNET_URL);
         let config = SlipnetConfig::try_parse(&raw).expect("failed");
         assert_eq!(config.schema(), SchemeX::Slipnet);
+    }
+
+    #[test]
+    fn test_slipnet_round_trip() {
+        let raw = crate::urlx::RawUrlX::from(SLIPNET_URL);
+        let config = SlipnetConfig::try_parse(&raw).expect("failed");
+        let reconstructed = config.reconstruct().expect("reconstruct failed");
+        assert_eq!(reconstructed, SLIPNET_URL);
     }
 
     #[test]
