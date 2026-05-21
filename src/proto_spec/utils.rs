@@ -118,13 +118,15 @@ pub fn parse_query(query: Option<&str>) -> std::collections::HashMap<String, Str
 #[must_use]
 pub fn compute_cred_hash(
     host: Option<&HostSpec>,
-    port: Option<&PortSpec>,
+    port: Option<u16>,
+    port_spec: Option<&PortSpec>,
     username: &str,
     password: &str,
 ) -> u64 {
     let host_s = host.map(|h| h.to_str().into_owned()).unwrap_or_default();
-    let port_s = port
+    let port_s = port_spec
         .map(std::string::ToString::to_string)
+        .or_else(|| port.map(|p| p.to_string()))
         .unwrap_or_default();
     if host_s.is_empty() && port_s.is_empty() && username.is_empty() && password.is_empty() {
         return 0;

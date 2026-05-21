@@ -2,7 +2,9 @@ use std::num::NonZeroU64;
 
 use serde::{Deserialize, Serialize};
 
-use crate::urlx::{RawUrlX, SchemeX};
+use crate::urlx::{
+    host_serde, port_serde, HostSpec, RawUrlX, SchemeX,
+};
 
 use super::common::TransportConfig;
 use super::utils;
@@ -15,8 +17,10 @@ pub struct VlessConfig {
     sig_cache: std::sync::OnceLock<NonZeroU64>,
 
     pub uuid: String,
-    pub host: String,
-    pub port: String,
+    #[serde(with = "host_serde")]
+    pub host: HostSpec,
+    #[serde(with = "port_serde")]
+    pub port: u16,
     pub security: String,
     pub transport: TransportConfig,
     pub encryption: Option<String>,
@@ -45,6 +49,9 @@ impl ProtoSpec for VlessConfig {
 
         let (parsed_host, parsed_port) = utils::parse_hostport(hostport)
             .map_err(|e| ParseError::InvalidHostPort(format!("{hostport}: {e}").into()))?;
+        let parsed_port = parsed_port
+            .first()
+            .ok_or_else(|| ParseError::InvalidPort("empty port spec".into()))?;
 
         uuid::Uuid::parse_str(username)
             .map_err(|_| ParseError::InvalidUserInfo(format!("invalid UUID: {username}").into()))?;
@@ -85,8 +92,8 @@ impl ProtoSpec for VlessConfig {
         Ok(Self {
             sig_cache: std::sync::OnceLock::new(),
             uuid: username.to_string(),
-            host: parsed_host.to_str().into_owned(),
-            port: parsed_port.to_string(),
+            host: parsed_host,
+            port: parsed_port,
             transport,
             security,
             encryption,
@@ -103,10 +110,11 @@ impl ProtoSpec for VlessConfig {
     }
 
     fn reconstruct(&self) -> Result<String, ParseError> {
-        let hostport = if self.host.contains(':') {
-            format!("[{}]:{}", self.host, self.port)
+        let host = self.host.to_str();
+        let hostport = if host.contains(':') {
+            format!("[{host}]:{}", self.port)
         } else {
-            format!("{}:{}", self.host, self.port)
+            format!("{host}:{}", self.port)
         };
 
         let mut base = url::Url::parse(format!("vless://{}@{hostport}", self.uuid).as_str())
@@ -173,12 +181,12 @@ impl ProtoSpec for VlessConfig {
         SchemeX::Vless
     }
 
-    fn host(&self) -> Option<&str> {
+    fn host(&self) -> Option<&HostSpec> {
         Some(&self.host)
     }
 
-    fn port(&self) -> Option<&str> {
-        Some(&self.port)
+    fn port(&self) -> Option<u16> {
+        Some(self.port)
     }
 
     fn remarks(&self) -> Option<&str> {
@@ -186,7 +194,7 @@ impl ProtoSpec for VlessConfig {
     }
 
     fn cred_hash(&self) -> u64 {
-        utils::compute_cred_hash(None, None, &self.uuid, &self.uuid)
+        utils::compute_cred_hash(Some(&self.host), Some(self.port), None, &self.uuid, &self.uuid)
     }
 
     fn sig(&self) -> u64 {
@@ -249,7 +257,7 @@ mod tests {
         let raw = crate::urlx::RawUrlX::from(url);
         let config = VlessConfig::try_parse(&raw).expect("failed");
         assert_eq!(config.schema(), SchemeX::Vless);
-        assert_eq!(config.host(), Some("159.223.24.65"));
+        assert_eq!(config.host().map(|h| h.to_str()), Some("159.223.24.65".into()));
         assert_eq!(config.uuid, "6202b230-417c-4d8e-b624-0f71afa9c75d");
     }
 

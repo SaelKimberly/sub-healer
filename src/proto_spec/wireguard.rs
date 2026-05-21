@@ -2,7 +2,9 @@ use std::num::NonZeroU64;
 
 use serde::{Deserialize, Serialize};
 
-use crate::urlx::{RawUrlX, SchemeX};
+use crate::urlx::{
+    host_serde, port_serde, HostSpec, RawUrlX, SchemeX,
+};
 
 use super::utils;
 use super::{ParseError, ProtoSpec};
@@ -14,8 +16,10 @@ pub struct WireguardConfig {
     sig_cache: std::sync::OnceLock<NonZeroU64>,
 
     pub private_key: String,
-    pub host: String,
-    pub port: String,
+    #[serde(with = "host_serde")]
+    pub host: HostSpec,
+    #[serde(with = "port_serde")]
+    pub port: u16,
     pub address: String,
     pub public_key: String,
     pub preshared_key: Option<String>,
@@ -35,6 +39,9 @@ impl ProtoSpec for WireguardConfig {
             .ok_or(ParseError::MissingHost)?;
         let (parsed_host, parsed_port) = utils::parse_hostport(hostport)
             .map_err(|e| ParseError::InvalidHostPort(format!("{hostport}: {e}").into()))?;
+        let parsed_port = parsed_port
+            .first()
+            .ok_or_else(|| ParseError::InvalidPort("empty port spec".into()))?;
 
         let query = utils::parse_query(raw.query);
 
@@ -67,8 +74,8 @@ impl ProtoSpec for WireguardConfig {
         Ok(Self {
             sig_cache: std::sync::OnceLock::new(),
             private_key,
-            host: parsed_host.to_str().into_owned(),
-            port: parsed_port.to_string(),
+            host: parsed_host,
+            port: parsed_port,
             address,
             public_key,
             preshared_key,
@@ -79,10 +86,11 @@ impl ProtoSpec for WireguardConfig {
     }
 
     fn reconstruct(&self) -> Result<String, ParseError> {
-        let hostport = if self.host.contains(':') {
-            format!("[{}]:{}", self.host, self.port)
+        let host = self.host.to_str();
+        let hostport = if host.contains(':') {
+            format!("[{host}]:{}", self.port)
         } else {
-            format!("{}:{}", self.host, self.port)
+            format!("{host}:{}", self.port)
         };
 
         let mut parts: Vec<String> = Vec::new();
@@ -122,12 +130,12 @@ impl ProtoSpec for WireguardConfig {
         SchemeX::WireGuard
     }
 
-    fn host(&self) -> Option<&str> {
+    fn host(&self) -> Option<&HostSpec> {
         Some(&self.host)
     }
 
-    fn port(&self) -> Option<&str> {
-        Some(&self.port)
+    fn port(&self) -> Option<u16> {
+        Some(self.port)
     }
 
     fn remarks(&self) -> Option<&str> {
@@ -135,7 +143,13 @@ impl ProtoSpec for WireguardConfig {
     }
 
     fn cred_hash(&self) -> u64 {
-        utils::compute_cred_hash(None, None, &self.private_key, &self.private_key)
+        utils::compute_cred_hash(
+            Some(&self.host),
+            Some(self.port),
+            None,
+            &self.private_key,
+            &self.private_key,
+        )
     }
 
     fn sig(&self) -> u64 {
@@ -182,8 +196,8 @@ mod tests {
         let raw = crate::urlx::RawUrlX::from(url);
         let config = WireguardConfig::try_parse(&raw).expect("failed");
         assert_eq!(config.schema(), SchemeX::WireGuard);
-        assert_eq!(config.host, "162.159.192.1");
-        assert_eq!(config.port, "2408");
+        assert_eq!(config.host.to_str(), "162.159.192.1");
+        assert_eq!(config.port, 2408_u16);
         assert_eq!(config.address, "172.16.0.2/32");
         assert_eq!(config.mtu.as_deref(), Some("1280"));
         assert_eq!(config.remarks, None);
@@ -203,8 +217,8 @@ mod tests {
         let url = "wireguard://privatekey==@wg.example.com:51820?address=10.0.0.2%2F32&publickey=serverpubkey==";
         let raw = crate::urlx::RawUrlX::from(url);
         let config = WireguardConfig::try_parse(&raw).expect("failed");
-        assert_eq!(config.host, "wg.example.com");
-        assert_eq!(config.port, "51820");
+        assert_eq!(config.host.to_str(), "wg.example.com");
+        assert_eq!(config.port, 51820_u16);
         assert_eq!(config.address, "10.0.0.2/32");
     }
 

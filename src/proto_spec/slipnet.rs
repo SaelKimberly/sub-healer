@@ -3,7 +3,9 @@ use std::num::NonZeroU64;
 use base64::Engine;
 use serde::{Deserialize, Serialize};
 
-use crate::urlx::{RawUrlX, SchemeX};
+use crate::urlx::{
+    host_serde, port_serde, HostSpec, RawUrlX, SchemeX,
+};
 
 use super::utils;
 use super::{ParseError, ProtoSpec};
@@ -14,8 +16,10 @@ pub struct SlipnetConfig {
     #[serde(skip)]
     sig_cache: std::sync::OnceLock<NonZeroU64>,
 
-    pub host: String,
-    pub port: String,
+    #[serde(with = "host_serde")]
+    pub host: HostSpec,
+    #[serde(with = "port_serde")]
+    pub port: u16,
     pub tunnel_type: Option<String>,
     pub public_key: Option<String>,
     pub remarks: Option<String>,
@@ -67,8 +71,8 @@ impl ProtoSpec for SlipnetConfig {
 
         Ok(Self {
             sig_cache: std::sync::OnceLock::new(),
-            host: host.to_str().into_owned(),
-            port: port.to_string(),
+            host: host,
+            port,
             tunnel_type: tunnel_type.map(String::from),
             public_key: public_key.map(String::from),
             remarks,
@@ -86,12 +90,12 @@ impl ProtoSpec for SlipnetConfig {
         SchemeX::Slipnet
     }
 
-    fn host(&self) -> Option<&str> {
+    fn host(&self) -> Option<&HostSpec> {
         Some(&self.host)
     }
 
-    fn port(&self) -> Option<&str> {
-        Some(&self.port)
+    fn port(&self) -> Option<u16> {
+        Some(self.port)
     }
 
     fn remarks(&self) -> Option<&str> {
@@ -99,7 +103,7 @@ impl ProtoSpec for SlipnetConfig {
     }
 
     fn cred_hash(&self) -> u64 {
-        utils::compute_cred_hash(None, None, "", "")
+        utils::compute_cred_hash(Some(&self.host), Some(self.port), None, "", "")
     }
 
     fn sig(&self) -> u64 {
@@ -121,7 +125,7 @@ impl SlipnetConfig {
             "22|{}|{}|{}|8.8.8.8:53:0|0|5000|bbr|{}|127.0.0.1|0|{}|iranux\tranux|0|||22|0|45.148.28.115|0||udp|password||||0|443|||0||0|0||0||0|0||0|1080|0|txt|101|0|0|0|0|0|0|||8080||0|/|1||",
             self.tunnel_type.as_deref().unwrap_or("dnstt"),
             self.tunnel_type.as_deref().unwrap_or("dnstt-socks"),
-            self.host,
+            self.host.to_str(),
             self.port,
             self.public_key.as_deref().unwrap_or("0"),
         );
@@ -153,11 +157,11 @@ impl ProtoSpec for SlipnetEncConfig {
         SchemeX::SlipnetEnc
     }
 
-    fn host(&self) -> Option<&str> {
+    fn host(&self) -> Option<&HostSpec> {
         None
     }
 
-    fn port(&self) -> Option<&str> {
+    fn port(&self) -> Option<u16> {
         None
     }
 
@@ -194,7 +198,6 @@ mod tests {
         let raw = crate::urlx::RawUrlX::from(SLIPNET_URL);
         let config = SlipnetConfig::try_parse(&raw).expect("failed");
         assert_eq!(config.schema(), SchemeX::Slipnet);
-        assert!(!config.host.is_empty());
     }
 
     #[test]

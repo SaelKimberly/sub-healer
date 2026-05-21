@@ -2,7 +2,7 @@ use std::num::NonZeroU64;
 
 use serde::{Deserialize, Serialize};
 
-use crate::urlx::{RawUrlX, SchemeX};
+use crate::urlx::{HostSpec, PortSpec, RawUrlX, SchemeX, host_serde, port_spec_serde};
 
 use super::utils;
 use super::{ParseError, ProtoSpec};
@@ -14,8 +14,10 @@ pub struct Hysteria2Config {
     sig_cache: std::sync::OnceLock<NonZeroU64>,
 
     pub auth: String,
-    pub host: String,
-    pub port: String,
+    #[serde(with = "host_serde")]
+    pub host: HostSpec,
+    #[serde(with = "port_spec_serde")]
+    pub port: PortSpec,
     pub security: String,
     pub obfs: Option<String>,
     pub obfs_password: Option<String>,
@@ -62,8 +64,8 @@ impl ProtoSpec for Hysteria2Config {
         Ok(Self {
             sig_cache: std::sync::OnceLock::new(),
             auth: auth.to_string(),
-            host: parsed_host.to_str().into_owned(),
-            port: parsed_port.to_string(),
+            host: parsed_host,
+            port: parsed_port,
             security,
             obfs,
             obfs_password,
@@ -76,10 +78,11 @@ impl ProtoSpec for Hysteria2Config {
     }
 
     fn reconstruct(&self) -> Result<String, ParseError> {
-        let hostport = if self.host.contains(':') {
-            format!("[{}]:{}", self.host, self.port)
+        let host = self.host.to_str();
+        let hostport = if host.contains(':') {
+            format!("[{host}]:{}", self.port)
         } else {
-            format!("{}:{}", self.host, self.port)
+            format!("{host}:{}", self.port)
         };
 
         let query_string = {
@@ -128,12 +131,12 @@ impl ProtoSpec for Hysteria2Config {
         SchemeX::Hysteria2
     }
 
-    fn host(&self) -> Option<&str> {
+    fn host(&self) -> Option<&HostSpec> {
         Some(&self.host)
     }
 
-    fn port(&self) -> Option<&str> {
-        Some(&self.port)
+    fn port(&self) -> Option<u16> {
+        self.port.first()
     }
 
     fn remarks(&self) -> Option<&str> {
@@ -141,7 +144,13 @@ impl ProtoSpec for Hysteria2Config {
     }
 
     fn cred_hash(&self) -> u64 {
-        utils::compute_cred_hash(None, None, &self.auth, &self.auth)
+        utils::compute_cred_hash(
+            Some(&self.host),
+            None,
+            Some(&self.port),
+            &self.auth,
+            &self.auth,
+        )
     }
 
     fn sig(&self) -> u64 {
@@ -207,7 +216,7 @@ mod tests {
         let raw = crate::urlx::RawUrlX::from(url);
         let config = Hysteria2Config::try_parse(&raw).expect("failed");
         assert_eq!(config.schema(), SchemeX::Hysteria2);
-        assert_eq!(config.host, "2a01:4f9:4b:f378::1");
+        assert_eq!(config.host.to_str(), "2a01:4f9:4b:f378::1");
     }
 
     #[test]

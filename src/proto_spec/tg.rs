@@ -2,7 +2,9 @@ use std::num::NonZeroU64;
 
 use serde::{Deserialize, Serialize};
 
-use crate::urlx::{RawUrlX, SchemeX};
+use crate::urlx::{
+    host_serde, port_serde, HostSpec, RawUrlX, SchemeX,
+};
 
 use super::utils;
 use super::{ParseError, ProtoSpec};
@@ -13,8 +15,10 @@ pub struct TgConfig {
     #[serde(skip)]
     sig_cache: std::sync::OnceLock<NonZeroU64>,
 
-    pub server: String,
-    pub port: String,
+    #[serde(rename = "server", with = "host_serde")]
+    pub host: HostSpec,
+    #[serde(rename = "port", with = "port_serde")]
+    pub port: u16,
     pub secret: String,
     pub transport: String,
     pub remarks: Option<String>,
@@ -42,17 +46,20 @@ impl ProtoSpec for TgConfig {
             .query()
             .map_err(|e| ParseError::InvalidConf("query".into(), e.to_string().into()))?;
 
-        let server = query
+        let server_raw = query
             .iter()
             .find_map(|(k, v)| if k == "server" { v.as_ref() } else { None })
-            .ok_or(ParseError::MissingHost)?
-            .to_string();
+            .ok_or(ParseError::MissingHost)?;
+        let host: HostSpec = rustls::pki_types::ServerName::try_from(server_raw.as_str())
+            .map_err(|e| ParseError::InvalidHost(format!("{server_raw}: {e}").into()))?
+            .to_owned();
 
         let port = query
             .iter()
             .find_map(|(k, v)| if k == "port" { v.as_ref() } else { None })
             .ok_or(ParseError::MissingPort)?
-            .to_string();
+            .parse::<u16>()
+            .map_err(|e| ParseError::InvalidPort(format!("cannot parse port: {e}").into()))?;
 
         let secret = query
             .iter()
@@ -64,7 +71,7 @@ impl ProtoSpec for TgConfig {
 
         Ok(Self {
             sig_cache: std::sync::OnceLock::new(),
-            server,
+            host,
             port,
             secret,
             transport: if is_socks { "socks".into() } else { "mtproto".into() },
@@ -78,7 +85,7 @@ impl ProtoSpec for TgConfig {
         let tg_url = url::Url::parse(
             format!(
                 "tg://{userinfo}?server={server}&port={port}&secret={secret}",
-                server = self.server,
+                server = self.host.to_str(),
                 port = self.port,
                 secret = self.secret,
             )
@@ -93,12 +100,12 @@ impl ProtoSpec for TgConfig {
         SchemeX::Tg
     }
 
-    fn host(&self) -> Option<&str> {
-        Some(&self.server)
+    fn host(&self) -> Option<&HostSpec> {
+        Some(&self.host)
     }
 
-    fn port(&self) -> Option<&str> {
-        Some(&self.port)
+    fn port(&self) -> Option<u16> {
+        Some(self.port)
     }
 
     fn remarks(&self) -> Option<&str> {
@@ -106,7 +113,7 @@ impl ProtoSpec for TgConfig {
     }
 
     fn cred_hash(&self) -> u64 {
-        utils::compute_cred_hash(None, None, &self.secret, &self.secret)
+        utils::compute_cred_hash(Some(&self.host), Some(self.port), None, &self.secret, &self.secret)
     }
 
     fn sig(&self) -> u64 {
@@ -140,7 +147,7 @@ mod tests {
         let raw = crate::urlx::RawUrlX::from(url);
         let config = TgConfig::try_parse(&raw).expect("failed");
         assert_eq!(config.schema(), SchemeX::Tg);
-        assert_eq!(config.server, "146.185.211.126");
+        assert_eq!(config.host.to_str(), "146.185.211.126");
     }
 
     #[test]
@@ -149,7 +156,7 @@ mod tests {
         let raw = crate::urlx::RawUrlX::from(url);
         let config = TgConfig::try_parse(&raw).expect("failed");
         assert_eq!(config.schema(), SchemeX::Tg);
-        assert_eq!(config.server, "proxium.rest");
+        assert_eq!(config.host.to_str(), "proxium.rest");
     }
 
     #[test]
@@ -171,7 +178,7 @@ mod tests {
         let parsed = TgConfig::try_parse(&raw).expect("failed");
         let json = serde_json::to_string(&parsed).expect("serialize");
         let deserialized: TgConfig = serde_json::from_str(&json).expect("deserialize");
-        assert_eq!(parsed.server, deserialized.server);
+        assert_eq!(parsed.host, deserialized.host);
         assert_eq!(parsed.port, deserialized.port);
     }
 

@@ -8,7 +8,8 @@ mod user_info;
 use std::borrow::Cow;
 
 use rustls::pki_types::{IpAddr, ServerName};
-use serde_util::{host_serde, port_serde};
+use serde_util::{host_opt_serde, port_opt_serde};
+pub(crate) use serde_util::{host_serde, port_serde, port_spec_serde};
 
 pub(crate) use user_info::UserInfo;
 pub(crate) type TinyText = smartstring::SmartString<smartstring::LazyCompact>;
@@ -36,11 +37,11 @@ pub struct UrlX {
     pub(crate) schema: SchemeX,
 
     /// host (may be included in username, always present)
-    #[serde(default, with = "host_serde")]
+    #[serde(default, with = "host_opt_serde")]
     pub(crate) host: Option<HostSpec>,
 
     /// port (may be included in username, always present)
-    #[serde(default, with = "port_serde")]
+    #[serde(default, with = "port_opt_serde")]
     pub(crate) port: Option<PortSpec>,
 
     /// username part (always present)

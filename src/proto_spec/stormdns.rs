@@ -2,7 +2,9 @@ use std::num::NonZeroU64;
 
 use serde::{Deserialize, Serialize};
 
-use crate::urlx::{RawUrlX, SchemeX};
+use crate::urlx::{
+    host_serde, port_serde, HostSpec, RawUrlX, SchemeX,
+};
 
 use super::utils;
 use super::{ParseError, ProtoSpec};
@@ -13,8 +15,10 @@ pub struct StormdnsConfig {
     #[serde(skip)]
     sig_cache: std::sync::OnceLock<NonZeroU64>,
 
-    pub host: String,
-    pub port: String,
+    #[serde(with = "host_serde")]
+    pub host: HostSpec,
+    #[serde(with = "port_serde")]
+    pub port: u16,
     pub encryption_key: String,
     pub encryption_method: Option<String>,
     pub name: Option<String>,
@@ -80,8 +84,8 @@ impl ProtoSpec for StormdnsConfig {
 
         Ok(Self {
             sig_cache: std::sync::OnceLock::new(),
-            host: parsed_host.to_str().into_owned(),
-            port: "53".to_string(),
+            host: parsed_host,
+            port: 53,
             encryption_key,
             encryption_method,
             name,
@@ -94,7 +98,7 @@ impl ProtoSpec for StormdnsConfig {
         let mut server = serde_json::Map::new();
         server.insert(
             "domain".into(),
-            serde_json::Value::String(self.host.clone()),
+            serde_json::Value::String(self.host.to_str().into_owned()),
         );
         server.insert(
             "encryption_key".into(),
@@ -135,12 +139,12 @@ impl ProtoSpec for StormdnsConfig {
         SchemeX::Stormdns
     }
 
-    fn host(&self) -> Option<&str> {
+    fn host(&self) -> Option<&HostSpec> {
         Some(&self.host)
     }
 
-    fn port(&self) -> Option<&str> {
-        Some(&self.port)
+    fn port(&self) -> Option<u16> {
+        Some(self.port)
     }
 
     fn remarks(&self) -> Option<&str> {
@@ -148,7 +152,7 @@ impl ProtoSpec for StormdnsConfig {
     }
 
     fn cred_hash(&self) -> u64 {
-        utils::compute_cred_hash(None, None, "", &self.encryption_key)
+        utils::compute_cred_hash(Some(&self.host), Some(self.port), None, "", &self.encryption_key)
     }
 
     fn sig(&self) -> u64 {
@@ -186,7 +190,7 @@ mod tests {
         );
         let config = StormdnsConfig::try_parse(&raw).expect("failed");
         assert_eq!(config.schema(), SchemeX::Stormdns);
-        assert_eq!(config.host, "example.com");
+        assert_eq!(config.host.to_str(), "example.com");
     }
 
     #[test]

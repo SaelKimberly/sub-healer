@@ -2,7 +2,9 @@ use std::{fmt::Write, num::NonZeroU64};
 
 use serde::{Deserialize, Serialize};
 
-use crate::urlx::{RawUrlX, SchemeX};
+use crate::urlx::{
+    host_serde, port_serde, HostSpec, RawUrlX, SchemeX,
+};
 
 use super::utils;
 use super::{ParseError, ProtoSpec};
@@ -15,8 +17,10 @@ pub struct TuicConfig {
 
     pub uuid: String,
     pub password: String,
-    pub host: String,
-    pub port: String,
+    #[serde(with = "host_serde")]
+    pub host: HostSpec,
+    #[serde(with = "port_serde")]
+    pub port: u16,
     pub congestion_control: Option<String>,
     pub udp_relay_mode: Option<String>,
     pub alpn: Option<String>,
@@ -46,6 +50,9 @@ impl ProtoSpec for TuicConfig {
 
         let (parsed_host, parsed_port) = utils::parse_hostport(hostport)
             .map_err(|e| ParseError::InvalidHostPort(format!("{hostport}: {e}").into()))?;
+        let parsed_port = parsed_port
+            .first()
+            .ok_or_else(|| ParseError::InvalidPort("empty port spec".into()))?;
 
         let query = utils::parse_query(raw.query);
 
@@ -68,8 +75,8 @@ impl ProtoSpec for TuicConfig {
             sig_cache: std::sync::OnceLock::new(),
             uuid: uuid.to_string(),
             password: password.to_string(),
-            host: parsed_host.to_str().into_owned(),
-            port: parsed_port.to_string(),
+            host: parsed_host,
+            port: parsed_port,
             congestion_control,
             udp_relay_mode,
             alpn,
@@ -80,12 +87,11 @@ impl ProtoSpec for TuicConfig {
     }
 
     fn reconstruct(&self) -> Result<String, ParseError> {
-        let host = self.host.as_str();
-        let port = &self.port;
+        let host = self.host.to_str();
         let hostport = if host.contains(':') {
-            format!("[{host}]:{port}")
+            format!("[{host}]:{}", self.port)
         } else {
-            format!("{host}:{port}")
+            format!("{host}:{}", self.port)
         };
 
         let mut base = format!("tuic://{}:{}@{}", self.uuid, self.password, hostport);
@@ -135,12 +141,12 @@ impl ProtoSpec for TuicConfig {
         SchemeX::TUIC
     }
 
-    fn host(&self) -> Option<&str> {
+    fn host(&self) -> Option<&HostSpec> {
         Some(&self.host)
     }
 
-    fn port(&self) -> Option<&str> {
-        Some(&self.port)
+    fn port(&self) -> Option<u16> {
+        Some(self.port)
     }
 
     fn remarks(&self) -> Option<&str> {
@@ -148,11 +154,13 @@ impl ProtoSpec for TuicConfig {
     }
 
     fn cred_hash(&self) -> u64 {
-        let cred_data = format!(
-            "{}:{}:{}:{}",
-            self.host, self.port, self.uuid, self.password
-        );
-        rapidhash::v3::rapidhash_v3(cred_data.as_bytes())
+        utils::compute_cred_hash(
+            Some(&self.host),
+            Some(self.port),
+            None,
+            &self.uuid,
+            &self.password,
+        )
     }
 
     fn sig(&self) -> u64 {
@@ -201,8 +209,8 @@ mod tests {
         let raw = crate::urlx::RawUrlX::from(url);
         let config = TuicConfig::try_parse(&raw).expect("failed");
         assert_eq!(config.schema(), SchemeX::TUIC);
-        assert_eq!(config.host(), Some("5.178.101.117"));
-        assert_eq!(config.port(), Some("30006"));
+        assert_eq!(config.host().map(|h| h.to_str()), Some("5.178.101.117".into()));
+        assert_eq!(config.port(), Some(30006_u16));
         assert_eq!(config.uuid, "36106e0f-4d9a-470b-a3fd-535f3b7a1e92");
         assert_eq!(config.password, "dongtaiwang.com");
         assert_eq!(config.congestion_control.as_deref(), Some("cubic"));
@@ -216,7 +224,7 @@ mod tests {
         let raw = crate::urlx::RawUrlX::from(url);
         let config = TuicConfig::try_parse(&raw).expect("failed");
         assert_eq!(config.schema(), SchemeX::TUIC);
-        assert_eq!(config.host(), Some("ip1.758733.xyz"));
+        assert_eq!(config.host().map(|h| h.to_str()), Some("ip1.758733.xyz".into()));
         assert_eq!(config.allow_insecure, Some(false));
         assert_eq!(config.sni.as_deref(), Some("apple.com"));
         assert_eq!(config.congestion_control.as_deref(), Some("bbr"));
@@ -236,7 +244,7 @@ mod tests {
         let raw = crate::urlx::RawUrlX::from(url);
         let config = ProtocolConfig::try_parse(&raw).expect("failed");
         assert_eq!(config.schema(), SchemeX::TUIC);
-        assert_eq!(config.host(), Some("5.178.101.117"));
+        assert_eq!(config.host().map(|h| h.to_str()), Some("5.178.101.117".into()));
     }
 
     #[test]

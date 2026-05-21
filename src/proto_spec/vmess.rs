@@ -2,7 +2,9 @@ use std::num::NonZeroU64;
 
 use serde::{Deserialize, Serialize};
 
-use crate::urlx::{RawUrlX, SchemeX};
+use crate::urlx::{
+    host_serde, port_serde, HostSpec, RawUrlX, SchemeX,
+};
 
 use super::utils;
 use super::{ParseError, ProtoSpec};
@@ -14,8 +16,10 @@ pub struct VmessConfig {
     sig_cache: std::sync::OnceLock<NonZeroU64>,
 
     pub uuid: String,
-    pub host: String,
-    pub port: String,
+    #[serde(with = "host_serde")]
+    pub host: HostSpec,
+    #[serde(with = "port_serde")]
+    pub port: u16,
     pub security: Option<String>,
     pub transport: Option<String>,
     pub alter_id: Option<String>,
@@ -122,8 +126,8 @@ impl ProtoSpec for VmessConfig {
         Ok(Self {
             sig_cache: std::sync::OnceLock::new(),
             uuid,
-            host: parsed_host.to_str().into_owned(),
-            port: port_val.to_string(),
+            host: parsed_host,
+            port: port_val,
             security,
             transport,
             alter_id,
@@ -141,8 +145,14 @@ impl ProtoSpec for VmessConfig {
         use base64::Engine as _;
 
         let mut map = serde_json::Map::new();
-        map.insert("add".into(), serde_json::Value::String(self.host.clone()));
-        map.insert("port".into(), serde_json::Value::String(self.port.clone()));
+        map.insert(
+            "add".into(),
+            serde_json::Value::String(self.host.to_str().into_owned()),
+        );
+        map.insert(
+            "port".into(),
+            serde_json::Value::String(self.port.to_string()),
+        );
         map.insert("id".into(), serde_json::Value::String(self.uuid.clone()));
 
         if let Some(ref v) = self.security {
@@ -185,12 +195,12 @@ impl ProtoSpec for VmessConfig {
         SchemeX::Vmess
     }
 
-    fn host(&self) -> Option<&str> {
+    fn host(&self) -> Option<&HostSpec> {
         Some(&self.host)
     }
 
-    fn port(&self) -> Option<&str> {
-        Some(&self.port)
+    fn port(&self) -> Option<u16> {
+        Some(self.port)
     }
 
     fn remarks(&self) -> Option<&str> {
@@ -198,7 +208,7 @@ impl ProtoSpec for VmessConfig {
     }
 
     fn cred_hash(&self) -> u64 {
-        utils::compute_cred_hash(None, None, &self.uuid, &self.uuid)
+        utils::compute_cred_hash(Some(&self.host), Some(self.port), None, &self.uuid, &self.uuid)
     }
 
     fn sig(&self) -> u64 {
@@ -244,7 +254,7 @@ mod tests {
         let raw = crate::urlx::RawUrlX::from(url);
         let config = VmessConfig::try_parse(&raw).expect("failed");
         assert_eq!(config.schema(), SchemeX::Vmess);
-        assert_eq!(config.host, "192.200.160.16");
+        assert_eq!(config.host.to_str(), "192.200.160.16");
     }
 
     #[test]
@@ -280,7 +290,7 @@ mod tests {
         let url = format!("vmess://{b64}💛💜test");
         let raw = crate::urlx::RawUrlX::from(url.as_str());
         let config = VmessConfig::try_parse(&raw).expect("trailing emoji failed");
-        assert_eq!(config.host, "192.200.160.16");
+        assert_eq!(config.host.to_str(), "192.200.160.16");
     }
 
     #[test]
@@ -289,7 +299,7 @@ mod tests {
         let url = format!("vmess://{b64}سرور آلمان");
         let raw = crate::urlx::RawUrlX::from(url.as_str());
         let config = VmessConfig::try_parse(&raw).expect("trailing persian failed");
-        assert_eq!(config.host, "192.200.160.16");
+        assert_eq!(config.host.to_str(), "192.200.160.16");
     }
 
     #[test]
@@ -298,6 +308,6 @@ mod tests {
         let url = format!("vmess://{b64}Irancell&Mciفوروارد فراموش نشه📌");
         let raw = crate::urlx::RawUrlX::from(url.as_str());
         let config = VmessConfig::try_parse(&raw).expect("trailing ascii after = failed");
-        assert_eq!(config.host, "192.200.160.16");
+        assert_eq!(config.host.to_str(), "192.200.160.16");
     }
 }

@@ -3,7 +3,9 @@ use std::num::NonZeroU64;
 use base64::Engine;
 use serde::{Deserialize, Serialize};
 
-use crate::urlx::{RawUrlX, SchemeX};
+use crate::urlx::{
+    host_serde, port_serde, HostSpec, RawUrlX, SchemeX,
+};
 
 use super::utils;
 use super::{ParseError, ProtoSpec};
@@ -14,8 +16,10 @@ pub struct SsrConfig {
     #[serde(skip)]
     sig_cache: std::sync::OnceLock<NonZeroU64>,
 
-    pub host: String,
-    pub port: String,
+    #[serde(with = "host_serde")]
+    pub host: HostSpec,
+    #[serde(with = "port_serde")]
+    pub port: u16,
     pub protocol: String,
     pub method: String,
     pub obfs: String,
@@ -73,11 +77,14 @@ impl ProtoSpec for SsrConfig {
 
         let parsed_host = utils::parse_host(&raw_host)
             .map_err(|e| ParseError::InvalidHost(format!("{raw_host}: {e}").into()))?;
+        let parsed_port: u16 = raw_port
+            .parse()
+            .map_err(|_| ParseError::InvalidPort(raw_port.to_string().into()))?;
 
         Ok(Self {
             sig_cache: std::sync::OnceLock::new(),
-            host: parsed_host.to_str().into_owned(),
-            port: raw_port.to_string(),
+            host: parsed_host,
+            port: parsed_port,
             protocol,
             method,
             obfs,
@@ -102,7 +109,7 @@ impl ProtoSpec for SsrConfig {
 
         let raw = format!(
             "{host}:{port}:{proto}:{method}:{obfs}:{password}/?{query_str}",
-            host = self.host,
+            host = self.host.to_str(),
             port = self.port,
             proto = self.protocol,
             method = self.method,
@@ -118,12 +125,12 @@ impl ProtoSpec for SsrConfig {
         SchemeX::SSR
     }
 
-    fn host(&self) -> Option<&str> {
+    fn host(&self) -> Option<&HostSpec> {
         Some(&self.host)
     }
 
-    fn port(&self) -> Option<&str> {
-        Some(&self.port)
+    fn port(&self) -> Option<u16> {
+        Some(self.port)
     }
 
     fn remarks(&self) -> Option<&str> {
@@ -131,7 +138,13 @@ impl ProtoSpec for SsrConfig {
     }
 
     fn cred_hash(&self) -> u64 {
-        utils::compute_cred_hash(None, None, &self.method, &self.password)
+        utils::compute_cred_hash(
+            Some(&self.host),
+            Some(self.port),
+            None,
+            &self.method,
+            &self.password,
+        )
     }
 
     fn sig(&self) -> u64 {
@@ -221,7 +234,7 @@ mod tests {
         let config = SsrConfig::try_parse(&raw).expect("failed");
         assert_eq!(config.schema(), SchemeX::SSR);
         assert_eq!(config.method, "rc4-md5");
-        assert_eq!(config.host, "example.com");
+        assert_eq!(config.host.to_str(), "example.com");
         assert_eq!(config.remarks.as_deref(), Some("TestServer"));
     }
 
@@ -249,8 +262,8 @@ mod tests {
         let url = "ssr://MTE2LjE2Mi4xMjAuMjY6NTYxOmF1dGhfYWVzMTI4X21kNTpjaGFjaGEyMC1pZXRmOnBsYWluOmJXSnNZVzVyTVhCdmNuUT0vP2dyb3VwPWFIUjBjSE02THk5Mk1uSmhlWE5sTG1OdmJRPT0mcHJvdG9wYXJhbT1OVEUzTmpBNlRFeE1NRGt3ZFdrNGIyeHNPQT0=必进：【全网导航】》下载地址：";
         let raw = crate::urlx::RawUrlX::from(url);
         let config = SsrConfig::try_parse(&raw).expect("failed to parse url with trailing text");
-        assert_eq!(config.host, "116.162.120.26");
-        assert_eq!(config.port, "561");
+        assert_eq!(config.host.to_str(), "116.162.120.26");
+        assert_eq!(config.port, 561_u16);
         assert_eq!(config.protocol, "auth_aes128_md5");
         assert_eq!(config.method, "chacha20-ietf");
         assert_eq!(config.obfs, "plain");
@@ -263,8 +276,8 @@ mod tests {
         let raw = crate::urlx::RawUrlX::from(url);
         let config =
             SsrConfig::try_parse(&raw).expect("failed to parse url with hash and no query");
-        assert_eq!(config.host, "13.37.28.23");
-        assert_eq!(config.port, "5947");
+        assert_eq!(config.host.to_str(), "13.37.28.23");
+        assert_eq!(config.port, 5947_u16);
         assert_eq!(config.protocol, "origin");
         assert_eq!(config.method, "chacha20-ietf");
         assert_eq!(config.obfs, "plain");

@@ -4,7 +4,7 @@ use std::num::NonZeroU64;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
-use crate::urlx::{RawUrlX, SchemeX};
+use crate::urlx::{HostSpec, RawUrlX, SchemeX};
 
 pub mod common;
 pub mod utils;
@@ -71,8 +71,8 @@ pub trait ProtoSpec: Serialize + DeserializeOwned + std::fmt::Debug + Clone {
     /// If internal configuration is invalid.
     fn reconstruct(&self) -> Result<String, ParseError>;
     fn schema(&self) -> SchemeX;
-    fn host(&self) -> Option<&str>;
-    fn port(&self) -> Option<&str>;
+    fn host(&self) -> Option<&HostSpec>;
+    fn port(&self) -> Option<u16>;
     fn remarks(&self) -> Option<&str>;
     fn cred_hash(&self) -> u64;
     fn sig(&self) -> u64;
@@ -222,7 +222,7 @@ impl ProtoSpec for ProtocolConfig {
         }
     }
 
-    fn host(&self) -> Option<&str> {
+    fn host(&self) -> Option<&HostSpec> {
         match self {
             Self::Vless(c) => c.host(),
             Self::Vmess(c) => c.host(),
@@ -230,7 +230,7 @@ impl ProtoSpec for ProtocolConfig {
             Self::Hysteria2(c) => c.host(),
             Self::Ss(c) => c.host(),
             Self::Ssr(c) => c.host(),
-            Self::Tg(c) => Some(c.server.as_str()),
+            Self::Tg(c) => c.host(),
             Self::Slipnet(c) => c.host(),
             Self::SlipnetEnc(_) => None,
             Self::Stormdns(c) => c.host(),
@@ -239,7 +239,7 @@ impl ProtoSpec for ProtocolConfig {
         }
     }
 
-    fn port(&self) -> Option<&str> {
+    fn port(&self) -> Option<u16> {
         match self {
             Self::Vless(c) => c.port(),
             Self::Vmess(c) => c.port(),
@@ -247,7 +247,7 @@ impl ProtoSpec for ProtocolConfig {
             Self::Hysteria2(c) => c.port(),
             Self::Ss(c) => c.port(),
             Self::Ssr(c) => c.port(),
-            Self::Tg(c) => Some(&c.port),
+            Self::Tg(c) => c.port(),
             Self::Slipnet(c) => c.port(),
             Self::SlipnetEnc(_) => None,
             Self::Stormdns(c) => c.port(),

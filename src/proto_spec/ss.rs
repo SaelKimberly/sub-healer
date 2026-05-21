@@ -3,7 +3,9 @@ use std::num::NonZeroU64;
 use base64::Engine;
 use serde::{Deserialize, Serialize};
 
-use crate::urlx::{RawUrlX, SchemeX};
+use crate::urlx::{
+    host_serde, port_serde, HostSpec, RawUrlX, SchemeX,
+};
 
 use super::utils;
 use super::{ParseError, ProtoSpec};
@@ -16,8 +18,10 @@ pub struct SsConfig {
 
     pub method: String,
     pub password: String,
-    pub host: String,
-    pub port: String,
+    #[serde(with = "host_serde")]
+    pub host: HostSpec,
+    #[serde(with = "port_serde")]
+    pub port: u16,
     pub remarks: Option<String>,
 }
 
@@ -42,6 +46,9 @@ impl ProtoSpec for SsConfig {
 
         let (parsed_host, parsed_port) = utils::parse_hostport(&hostport)
             .map_err(|e| ParseError::InvalidHostPort(format!("{hostport}: {e}").into()))?;
+        let parsed_port = parsed_port
+            .first()
+            .ok_or_else(|| ParseError::InvalidPort("empty port spec".into()))?;
 
         let (method, password) = userinfo.split_once(':').ok_or_else(|| {
             ParseError::InvalidUserInfo(format!("{}: missing password", raw.userinfo).into())
@@ -53,8 +60,8 @@ impl ProtoSpec for SsConfig {
             sig_cache: std::sync::OnceLock::new(),
             method: method.to_string(),
             password: password.to_string(),
-            host: parsed_host.to_str().into_owned(),
-            port: parsed_port.to_string(),
+            host: parsed_host,
+            port: parsed_port,
             remarks,
         })
     }
@@ -62,10 +69,11 @@ impl ProtoSpec for SsConfig {
     fn reconstruct(&self) -> Result<String, ParseError> {
         let userinfo = format!("{}:{}", self.method, self.password);
         let encoded = base64::prelude::BASE64_URL_SAFE_NO_PAD.encode(userinfo.as_bytes());
-        let hostport = if self.host.contains(':') {
-            format!("[{}]:{}", self.host, self.port)
+        let host = self.host.to_str();
+        let hostport = if host.contains(':') {
+            format!("[{host}]:{}", self.port)
         } else {
-            format!("{}:{}", self.host, self.port)
+            format!("{host}:{}", self.port)
         };
         Ok(format!("ss://{encoded}@{hostport}"))
     }
@@ -74,12 +82,12 @@ impl ProtoSpec for SsConfig {
         SchemeX::SS
     }
 
-    fn host(&self) -> Option<&str> {
+    fn host(&self) -> Option<&HostSpec> {
         Some(&self.host)
     }
 
-    fn port(&self) -> Option<&str> {
-        Some(&self.port)
+    fn port(&self) -> Option<u16> {
+        Some(self.port)
     }
 
     fn remarks(&self) -> Option<&str> {
@@ -87,7 +95,13 @@ impl ProtoSpec for SsConfig {
     }
 
     fn cred_hash(&self) -> u64 {
-        utils::compute_cred_hash(None, None, &self.method, &self.password)
+        utils::compute_cred_hash(
+            Some(&self.host),
+            Some(self.port),
+            None,
+            &self.method,
+            &self.password,
+        )
     }
 
     fn sig(&self) -> u64 {
@@ -121,7 +135,7 @@ mod tests {
         let raw = crate::urlx::RawUrlX::from(url);
         let config = SsConfig::try_parse(&raw).expect("failed");
         assert_eq!(config.schema(), SchemeX::SS);
-        assert_eq!(config.host, "127.0.0.1");
+        assert_eq!(config.host.to_str(), "127.0.0.1");
         assert_eq!(config.method, "cleof");
     }
 
