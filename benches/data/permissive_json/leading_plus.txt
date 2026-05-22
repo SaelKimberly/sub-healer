@@ -1,0 +1,15 @@
+{"scMaxEachPostBytes":+1000000,+"scMaxConcurrentPosts":+100,+"scMinPostsIntervalMs":+30,+"xPaddingBytes":+"100-1000",+"noGRPCHeader":+false}
+{"scMaxEachPostBytes":+1000000,+"scMaxConcurrentPosts":+100,+"scMinPostsIntervalMs":+30,+"xPaddingBytes":+"100-1000",+"noGRPCHeader":+false,+"xmux":+{"maxConcurrency":+"16-32",+"maxConnections":+0,+"cMaxReuseTimes":+"64-128",+"cMaxLifetimeMs":+0,+"hMaxRequestTimes":+"800-900",+"hKeepAlivePeriod":+0}}
+{"scMaxEachPostBytes":+"1000000",+"scMaxConcurrentPosts":+100,+"scMinPostsIntervalMs":+30,+"xPaddingBytes":+"100-1000",+"noGRPCHeader":+false}# By EbraSha
+{"scMaxEachPostBytes":+"1000000",+"scMaxConcurrentPosts":+100,+"scMinPostsIntervalMs":+30,+"xPaddingBytes":+"100-1000",+"noGRPCHeader":+false}#⚙️ 𝐀𝐋𝐋𝐍𝐄𝐓  ⌯  [🇩🇪]
+{"scMaxEachPostBytes":+"1000000",+"scMaxConcurrentPosts":+100,+"scMinPostsIntervalMs":+30,+"xPaddingBytes":+"100-1000",+"noGRPCHeader":+false}#⚙️ 𝐀𝐋𝐋𝐍𝐄𝐓  ⌯  [🇺🇦]
+{"scMaxEachPostBytes":+1000000,"scMaxConcurrentPosts":+100,"scMinPostsIntervalMs":+30,"xPaddingBytes":+"100-1000","noGRPCHeader":+false}
+{"val":+42}
+{"n":+3.14}
+{"a":+true,"b":+false,"c":+null}
+{"k":+"string"}
+{"v":+-100}
+{"x":+1e5}
+{"nested":{"inner":+42}}
+{+"a":+1,+}"b":+2}
+{"a":+"b","c":+[1,+2]}

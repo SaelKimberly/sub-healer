@@ -653,7 +653,7 @@ impl<'a> Tokenizer<'a> {
     }
 }
 
-pub(super) fn permissive_json_core(span: Span<'_>) -> RawResult<'_, serde_json::Value> {
+pub fn permissive_json_core(span: Span<'_>) -> RawResult<'_, serde_json::Value> {
     Tokenizer::new(span)
         .ok_or_else(|| nom::Err::Error(Error::new(span, ErrorKind::Eof)))?
         .tokenize()

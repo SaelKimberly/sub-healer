@@ -1,0 +1,15 @@
+{#🇳🇱 The Netherlands, Amsterdam | [BL]
+{#XHTTP, VK [V.O.I.D]
+{#XHTTP, Max [V.O.I.D]
+{"scMaxEachPostBytes":+"1000000",+"scMaxConcurrentPosts":+100,+"scMinPostsIntervalMs":+30,+"xPaddingBytes":+"100-1000",+"noGRPCHeader":+false}#⚙️ 𝐀𝐋𝐋𝐍𝐄𝐓  ⌯  [🇩🇪]
+{"scMaxEachPostBytes":+"1000000",+"scMaxConcurrentPosts":+100,+"scMinPostsIntervalMs":+30,+"xPaddingBytes":+"100-1000",+"noGRPCHeader":+false}#⚙️ 𝐀𝐋𝐋𝐍𝐄𝐓  ⌯  [🇺🇦]
+{"ps":[Free] Amsterdam}
+{"ps":[VIP] Server}
+{"ps":[Test] 01}
+{"remark":[US] Location}
+{"tag":[SG] Node}
+{"ps":[IR] Iran}
+{"net":"ws","ps":[DE] Frankfurt}
+{"ps":[HK] Hong Kong, China}
+{"ps":[JP] Tokyo}
+{"ps":[RU] Moscow}

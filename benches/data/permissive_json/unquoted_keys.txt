@@ -1,0 +1,22 @@
+{"xPaddingBytes":"100-1000"}#Join+Telegram:@Farah_VPN
+{"xPaddingBytes":"100-300"}#Join+Telegram:@Farah_VPN
+{"xPaddingBytes":"10-100","noSSEHeader":true,"noGRPCHeader":true,xmux":{"maxConcurrency":"16-32","maxConnections":0,"cMaxReuseTimes":0,"hMaxRequestTimes":"600-900","hMaxReusableSecs":"1800-3000","hKeepAlivePeriod":0},"downloadSettings":{"address":"151.101.205.194","port":80,"network":"xhttp","security":"none","xhttpSettings":{host:"e1.ir","path":"/-LiV2ry@LIGHTNING6-TEL--@LIGHTNING6-TEL--@LIGHTNING6-TEL--@LIGHTNING6-JOIN-@LIGHTNING6-TEL--@LIGHTNING6-JOIN-@LIGHTNING6-TEL-@LIGHTNING6-TEL--@LIGHTNING6-JOIN-@LIGHTNING6-TEL--@LIGHTNING6?ed=2048","xPaddingBytes":"10-100","noSSEHeader":true,"noGRPCHeader":true}}}
+{"xPaddingBytes":"10-100","noSSEHeader":true,"noGRPCHeader":true,xmux":{"maxConcurrency":"16-32","maxConnections":0,"cMaxReuseTimes":0,"hMaxRequestTimes":"600-900","hMaxReusableSecs":"1800-3000","hKeepAlivePeriod":0},"downloadSettings":{"address":"146.75.119.82","port":80,"network":"xhttp","security":"none","xhttpSettings":{host:"e1.ir","path":"/-LiV2ry@LIGHTNING6-TEL--@LIGHTNING6-TEL--@LIGHTNING6-TEL--@LIGHTNING6-JOIN-@LIGHTNING6-TEL--@LIGHTNING6-JOIN-@LIGHTNING6-TEL-@LIGHTNING6-TEL--@LIGHTNING6-JOIN-@LIGHTNING6-TEL--@LIGHTNING6?ed=2048","xPaddingBytes":"10-100","noSSEHeader":true,"noGRPCHeader":true}}}
+{#0193 | 🇷🇺 Russia | VLESS | TG: @YoutubeUnBlockRu
+{#0272 | 🌐 Unknown | VLESS | TG: @YoutubeUnBlockRu
+{"host":"","path":"","mode":"","headers":null,"xPaddingBytes":"0","xPaddingObfsMode":false,"xPaddingKey":"","xPaddingHeader":"","xPaddingPlacement":"","xPaddingMethod":"","uplinkHTTPMethod":"","sessionPlacement":"","sessionKey":"","seqPlacement":"","seqKey":"","uplinkDataPlacement":"","uplinkDataKey":"","uplinkChunkSize":0,"noGRPCHeader":false,"noSSEHeader":false,"scMaxEachPostBytes":"500000","scMinPostsIntervalMs":"0","scMaxBufferedPosts":10,"scStreamUpServerSecs":"0","xmux":{"maxConcurrency":"0","maxConnections":"0","cMaxReuseTimes":"0","hMaxRequestTimes":"0","hMaxReusableSecs":"0","hKeepAlivePeriod":0},"downloadSettings":null,"extra":null}#1093 | 🇷🇺 Russia | VLESS | TG: @YoutubeUnBlockRu
+{#1766 | 🌐 Unknown | VLESS | TG: @YoutubeUnBlockRu
+{"host":"","path":"","mode":"","headers":null,"xPaddingBytes":"0","xPaddingObfsMode":false,"xPaddingKey":"","xPaddingHeader":"","xPaddingPlacement":"","xPaddingMethod":"","uplinkHTTPMethod":"","sessionPlacement":"","sessionKey":"","seqPlacement":"","seqKey":"","uplinkDataPlacement":"","uplinkDataKey":"","uplinkChunkSize":0,"noGRPCHeader":false,"noSSEHeader":false,"scMaxEachPostBytes":"500000","scMinPostsIntervalMs":"0","scMaxBufferedPosts":10,"scStreamUpServerSecs":"0","xmux":{"maxConcurrency":"0","maxConnections":"0","cMaxReuseTimes":"0","hMaxRequestTimes":"0","hMaxReusableSecs":"0","hKeepAlivePeriod":0},"downloadSettings":null,"extra":null}#2425 | 🇷🇺 Russia | VLESS | TG: @YoutubeUnBlockRu
+{#2735 | 🌐 Unknown | VLESS | TG: @YoutubeUnBlockRu
+null#3397 | 🇷🇺 Russia | VLESS | TG: @YoutubeUnBlockRu
+{#3422 | 🌐 Unknown | VLESS | TG: @YoutubeUnBlockRu
+{v: '2', ps: 'tag', add: 'host.com', port: 443}
+{scMaxEachPostBytes: 1000000, xPaddingBytes: '100-1000'}
+{key: 'value', other: 42}
+{host: '', path: '/ws', mode: 'auto'}
+{scMaxEachPostBytes: '1000000', scMaxConcurrentPosts: 100}
+{nested: {inner: 'deep'}}
+{a: 1, b: 2.5, c: 'hello'}
+{headers: {Host: 'example.com'}}
+{xPaddingBytes: '100-1000', noGRPCHeader: false}
+{flag: true, other: null}

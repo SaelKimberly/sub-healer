@@ -1,0 +1,14 @@
+{'headers': {}, 'noGRPCHeader': True, 'xmux': {'maxConnections': '6'}}
+{'headers': {}, 'noGRPCHeader': True, 'xmux': {'maxConnections': '8'}}
+{'headers': {}, 'xPaddingBytes': '100-1000', 'noGRPCHeader': False}
+{'noGRPCHeader': True, 'xmux': {'maxConnections': '8'}}
+{'v': '2', 'ps': 'tag', 'add': 'host.com', 'port': 443, 'id': 'uuid', 'aid': 0, 'net': 'ws', 'type': 'none', 'tls': True}
+{'headers': {}, 'noGRPCHeader': True, 'xmux': {'maxConnections': 6, 'cMaxReuseTimes': 0}}
+{'key': None}
+{'value': True, 'other': False}
+{'a': None, 'b': True, 'c': False}
+{'xPaddingBytes': '100-1000', 'xPaddingObfsMode': True}
+{'noGRPCHeader': False}
+{'someflag': True}
+{'headers': {}, 'mode': 'auto', 'noGRPCHeader': True}
+{'tls': True, 'security': 'auto'}

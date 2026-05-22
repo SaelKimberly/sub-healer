@@ -12,7 +12,8 @@ use base64::Engine;
 use bstr::ByteSlice;
 
 pub use utils::norm_extras::normalize_extras;
-pub(crate) use utils::{permissive_json::permissive_json, unescaper::Unescaper};
+pub use utils::permissive_json::{permissive_json, permissive_json_core};
+pub(crate) use utils::unescaper::Unescaper;
 // exported
 
 pub use urlx::{SchemeX, UrlX};

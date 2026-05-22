@@ -92,6 +92,5 @@ Known, not related to recent changes:
 
 ## Tools
 
-- **grepai** configured for semantic code search (`grepai search "query" --json --compact`). Use `grepai trace callers/callees/graph` for call graphs.
 - **graphify** knowledge graph at `graphify-out/`. Use `graphify query/path/explain` for codebase questions. Run `graphify update .` after modifications.
 - **memelord** MCP memory system (`memory_start_task` / `memory_end_task` / `memory_report`).

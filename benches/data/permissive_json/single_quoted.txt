@@ -1,0 +1,16 @@
+{'headers': {}, 'noGRPCHeader': True, 'xmux': {'maxConnections': '6'}}
+{'headers': {}, 'noGRPCHeader': True, 'xmux': {'maxConnections': '8'}}
+{'headers':# By EbraSha
+{'headers': {}, 'xPaddingBytes': '100-1000', 'noGRPCHeader': False}
+{'headers': {}, 'xPaddingBytes': '100-1000', "scMaxEachPostBytes": 1000000, "scMinPostsIntervalMs": 30}
+{'noGRPCHeader': True, 'xmux': {'maxConnections': '8'}}
+{'v': '2', 'ps': 'my-tag', 'add': '1.2.3.4', 'port': '443', 'id': 'uuid-here', 'aid': '0', 'scy': 'auto', 'net': 'ws', 'type': 'none', 'host': '', 'path': '/', 'tls': ''}
+{'key': 'value'}
+{'host': 'example.com', 'path': '/ws', 'mode': 'auto'}
+{'headers': {'Host': 'example.com'}, 'noGRPCHeader': True}
+{'scMaxEachPostBytes': '1000000', 'scMaxConcurrentPosts': 100, 'scMinPostsIntervalMs': 30, 'xPaddingBytes': '100-1000', 'noGRPCHeader': False}
+{'a': 1, 'b': 2.5, 'c': 'hello', 'd': True, 'e': None}
+{'nested': {'inner': {'deep': 'value'}}}
+{'array': [1, 2, 3]}
+{'mixed': [{'a': 1}, {'b': 2}]}
+{'xPaddingBytes': '100-1000', 'mode': 'auto', 'scMaxEachPostBytes': '1000000'}

@@ -77,3 +77,7 @@ harness = false
 [[bench]]
 name = "slice_input"
 harness = false
+
+[[bench]]
+name = "permissive_json"
+harness = false
