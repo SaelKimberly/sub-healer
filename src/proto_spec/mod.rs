@@ -101,88 +101,52 @@ pub enum ProtocolConfig {
 
 impl ProtoSpec for ProtocolConfig {
     fn try_parse(raw: &RawUrlX<'_>) -> Result<Self, ParseError> {
-        let e = match raw.schema {
-            SchemeX::Vless => match VlessConfig::try_parse(raw) {
-                Ok(v) => return Ok(Self::Vless(v)),
-                Err(e) => e,
-            },
-            SchemeX::Trojan => match TrojanConfig::try_parse(raw) {
-                Ok(v) => return Ok(Self::Trojan(v)),
-                Err(e) => e,
-            },
-            SchemeX::Vmess => match VmessConfig::try_parse(raw) {
-                Ok(v) => return Ok(Self::Vmess(v)),
-                Err(e) => e,
-            },
-            SchemeX::Hysteria | SchemeX::Hysteria2 => match Hysteria2Config::try_parse(raw) {
-                Ok(v) => return Ok(Self::Hysteria2(v)),
-                Err(e) => e,
-            },
-            SchemeX::SS => match SsConfig::try_parse(raw) {
-                Ok(v) => return Ok(Self::Ss(v)),
-                Err(e) => e,
-            },
-            SchemeX::SSR => match SsrConfig::try_parse(raw) {
-                Ok(v) => return Ok(Self::Ssr(v)),
-                Err(e) => e,
-            },
-            SchemeX::Slipnet => match SlipnetConfig::try_parse(raw) {
-                Ok(v) => return Ok(Self::Slipnet(v)),
-                Err(e) => e,
-            },
-            SchemeX::SlipnetEnc => match SlipnetEncConfig::try_parse(raw) {
-                Ok(v) => return Ok(Self::SlipnetEnc(v)),
-                Err(e) => e,
-            },
-            SchemeX::Stormdns => match StormdnsConfig::try_parse(raw) {
-                Ok(v) => return Ok(Self::Stormdns(v)),
-                Err(e) => e,
-            },
-            SchemeX::TUIC => match TuicConfig::try_parse(raw) {
-                Ok(v) => return Ok(Self::Tuic(v)),
-                Err(e) => e,
-            },
-            SchemeX::WireGuard => match WireguardConfig::try_parse(raw) {
-                Ok(v) => return Ok(Self::Wireguard(v)),
-                Err(e) => e,
-            },
-            SchemeX::Tg | SchemeX::Https => {
-                if raw.schema == SchemeX::Https && raw.userinfo != "t.me" {
-                    return Err(ParseError::PromotionUrl);
-                }
-                match TgConfig::try_parse(raw) {
-                    Ok(v) => return Ok(Self::Tg(v)),
-                    Err(e) => e,
-                }
+        let r = match raw.schema {
+            SchemeX::Vless => VlessConfig::try_parse(raw).map(Self::Vless),
+            SchemeX::Trojan => TrojanConfig::try_parse(raw).map(Self::Trojan),
+            SchemeX::Vmess => VmessConfig::try_parse(raw).map(Self::Vmess),
+            SchemeX::Hysteria | SchemeX::Hysteria2 => {
+                Hysteria2Config::try_parse(raw).map(Self::Hysteria2)
             }
+            SchemeX::SS => SsConfig::try_parse(raw).map(Self::Ss),
+            SchemeX::SSR => SsrConfig::try_parse(raw).map(Self::Ssr),
+            SchemeX::Slipnet => SlipnetConfig::try_parse(raw).map(Self::Slipnet),
+            SchemeX::SlipnetEnc => SlipnetEncConfig::try_parse(raw).map(Self::SlipnetEnc),
+            SchemeX::Stormdns => StormdnsConfig::try_parse(raw).map(Self::Stormdns),
+            SchemeX::TUIC => TuicConfig::try_parse(raw).map(Self::Tuic),
+            SchemeX::WireGuard => WireguardConfig::try_parse(raw).map(Self::Wireguard),
+            SchemeX::Https if raw.userinfo == "t.me" => TgConfig::try_parse(raw).map(Self::Tg),
+            SchemeX::Tg => TgConfig::try_parse(raw).map(Self::Tg),
+            SchemeX::Https => return Err(ParseError::PromotionUrl),
             ref other => return Err(ParseError::UnsupportedScheme(other.clone())),
         };
 
-        let should_try_fallback = matches!(
-            e,
-            ParseError::InvalidStructure(_)
+        // Decide to fallback or not
+        let original_err = match r {
+            Ok(r) => return Ok(r),
+            Err(
+                e @ (ParseError::InvalidStructure(_)
                 | ParseError::MissingHost
                 | ParseError::MissingPort
                 | ParseError::InvalidUserInfo(_)
                 | ParseError::InvalidHostPort(_)
                 | ParseError::InvalidHost(_)
-                | ParseError::Unknown(_)
-        );
-        if !should_try_fallback {
-            return Err(e);
-        }
+                | ParseError::Unknown(_)),
+            ) => e,
+            unrecoverable @ Err(_) => return unrecoverable,
+        };
 
         let original_schema = raw.schema.clone();
         let v = SsConfig::try_parse(raw)
-            .map(ProtocolConfig::Ss)
-            .or_else(|_| SsrConfig::try_parse(raw).map(ProtocolConfig::Ssr))
-            .or_else(|_| VmessConfig::try_parse(raw).map(ProtocolConfig::Vmess))
-            .or_else(|_| VlessConfig::try_parse(raw).map(ProtocolConfig::Vless))
-            .or_else(|_| TrojanConfig::try_parse(raw).map(ProtocolConfig::Trojan))
-            .or_else(|_| Hysteria2Config::try_parse(raw).map(ProtocolConfig::Hysteria2))
-            .or_else(|_| SlipnetConfig::try_parse(raw).map(ProtocolConfig::Slipnet))
-            .or_else(|_| TgConfig::try_parse(raw).map(ProtocolConfig::Tg))
-            .or(Err(e))?;
+            .map(Self::Ss)
+            .or_else(|_| SsrConfig::try_parse(raw).map(Self::Ssr))
+            .or_else(|_| VmessConfig::try_parse(raw).map(Self::Vmess))
+            .or_else(|_| VlessConfig::try_parse(raw).map(Self::Vless))
+            .or_else(|_| TrojanConfig::try_parse(raw).map(Self::Trojan))
+            .or_else(|_| Hysteria2Config::try_parse(raw).map(Self::Hysteria2))
+            .or_else(|_| SlipnetConfig::try_parse(raw).map(Self::Slipnet))
+            .or_else(|_| TgConfig::try_parse(raw).map(Self::Tg))
+            .or(Err(original_err))?;
 
         tracing::warn!(target: "visit::basic", "Schema fallback success: [{} => {}]", original_schema, v.schema());
         Ok(v)
