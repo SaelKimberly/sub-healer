@@ -159,7 +159,7 @@ impl UserInfo {
             Self::Json(v) => return Ok(v),
         };
         let value = if permissive {
-            let (_, value) = permissive_json(text.as_bytes().into()).map_err(|e| {
+            let value = permissive_json(text.as_bytes()).map_err(|e| {
                 std::io::Error::new(
                     std::io::ErrorKind::InvalidData,
                     format!("Cannot parse JSON: {e}"),

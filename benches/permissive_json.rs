@@ -2,7 +2,6 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use criterion::{Criterion, SamplingMode, Throughput, criterion_group, criterion_main};
-use nom_locate::LocatedSpan;
 use v2ray_heal::permissive_json as pj;
 use v2ray_heal::permissive_json_core as pj_core;
 
@@ -39,8 +38,8 @@ fn run_category(c: &mut Criterion, name: &str, lines: &[Vec<u8>]) {
     group.bench_function("core", |b| {
         b.iter(|| {
             for line in lines {
-                let span = LocatedSpan::new(line.as_slice());
-                std::hint::black_box(pj_core(span).ok());
+                let input = line.as_slice();
+                std::hint::black_box(pj_core(input).ok());
             }
         })
     });
@@ -92,8 +91,8 @@ fn bench_vs_serde(c: &mut Criterion) {
     group.bench_function("permissive_json_core", |b| {
         b.iter(|| {
             for line in &lines {
-                let span = LocatedSpan::new(line.as_slice());
-                std::hint::black_box(pj_core(span).ok());
+                let input = line.as_slice();
+                std::hint::black_box(pj_core(input).ok());
             }
         })
     });
@@ -110,8 +109,8 @@ fn bench_vs_serde(c: &mut Criterion) {
     group.bench_function("permissive_json_wrapper", |b| {
         b.iter(|| {
             for line in &lines {
-                let span = LocatedSpan::new(line.as_slice());
-                std::hint::black_box(pj(span).ok());
+                let input = line.as_slice();
+                std::hint::black_box(pj(input).ok());
             }
         })
     });
@@ -138,8 +137,8 @@ fn bench_fallback(c: &mut Criterion) {
     group.bench_function("core (first pass)", |b| {
         b.iter(|| {
             for line in &lines {
-                let span = LocatedSpan::new(line.as_slice());
-                std::hint::black_box(pj_core(span).ok());
+                let input = line.as_slice();
+                std::hint::black_box(pj_core(input).ok());
             }
         })
     });
@@ -147,8 +146,8 @@ fn bench_fallback(c: &mut Criterion) {
     group.bench_function("wrapper (with retry)", |b| {
         b.iter(|| {
             for line in &lines {
-                let span = LocatedSpan::new(line.as_slice());
-                std::hint::black_box(pj(span).ok());
+                let input = line.as_slice();
+                std::hint::black_box(pj(input).ok());
             }
         })
     });

@@ -68,10 +68,8 @@ impl ProtoSpec for StormdnsConfig {
         let decoded = utils::decode_base64(raw.userinfo)
             .map_err(|_| ParseError::InvalidStructure(SchemeX::Stormdns))?;
 
-        let span = nom_locate::LocatedSpan::new(decoded.as_slice());
-        let (_, json): (_, serde_json::Value) =
-            crate::utils::permissive_json::permissive_json(span)
-                .map_err(|_| ParseError::InvalidStructure(SchemeX::Stormdns))?;
+        let json = crate::utils::permissive_json::permissive_json(decoded.as_slice())
+            .map_err(|_| ParseError::InvalidStructure(SchemeX::Stormdns))?;
 
         // schema must be "whitedns.profile"
         let schema = json

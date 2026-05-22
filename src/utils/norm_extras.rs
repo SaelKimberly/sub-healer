@@ -28,7 +28,7 @@ pub fn normalize_extras<'a>(span: &'a [u8]) -> Cow<'a, [u8]> {
 
         result.push(Cow::Borrowed(prefix));
 
-        if let Ok((tail, res)) = super::permissive_json::permissive_json_core(potential_area.into())
+        if let Ok((tail, res)) = super::permissive_json::permissive_json_core(potential_area)
         {
             let Ok(res) = serde_json::to_string(&res) else {
                 unreachable!("Should never fail");
@@ -44,7 +44,7 @@ pub fn normalize_extras<'a>(span: &'a [u8]) -> Cow<'a, [u8]> {
                 result.push(Cow::Borrowed(original_area));
             }
 
-            chunk = tail.into_fragment();
+            chunk = tail;
         } else {
             chunk = potential_area;
         }

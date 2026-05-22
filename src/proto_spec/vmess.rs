@@ -98,10 +98,8 @@ impl ProtoSpec for VmessConfig {
             .map_err(|_| ParseError::InvalidStructure(SchemeX::Vmess))?;
 
         // Permissive JSON parser handles single-quoted keys, trailing commas, etc.
-        let span = nom_locate::LocatedSpan::new(decoded.as_slice());
-        let (_, json): (_, serde_json::Value) =
-            crate::utils::permissive_json::permissive_json(span)
-                .map_err(|_| ParseError::InvalidStructure(SchemeX::Vmess))?;
+        let json = crate::utils::permissive_json::permissive_json(decoded.as_slice())
+            .map_err(|_| ParseError::InvalidStructure(SchemeX::Vmess))?;
 
         // "add" — server address (IP or domain), required
         let host_str = json
