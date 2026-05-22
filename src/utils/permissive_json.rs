@@ -27,6 +27,40 @@ impl core::fmt::Display for PermissiveJsonError {
 
 impl std::error::Error for PermissiveJsonError {}
 
+#[repr(transparent)]
+struct Opens(u64);
+
+const OBJ: u64 = 0b01;
+const ARR: u64 = 0b10;
+const MOV: usize = 2;
+
+impl Opens {
+    #[inline]
+    const fn push_obj(&mut self) {
+        self.0 = (self.0 << MOV) | OBJ;
+    }
+    #[inline]
+    const fn push_arr(&mut self) {
+        self.0 = (self.0 << MOV) | ARR;
+    }
+    #[inline]
+    const fn pop(&mut self) -> Option<bool> {
+        let Some(result) = self.last() else {
+            return None;
+        };
+        self.0 >>= MOV;
+        Some(result)
+    }
+    #[inline]
+    const fn last(&self) -> Option<bool> {
+        match self.0 & 0b11 {
+            OBJ => Some(true),
+            ARR => Some(false),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug)]
 enum JsonToken {
     Comma,
@@ -70,15 +104,13 @@ impl Cursor {
                     let serde_json::Value::Object(o) = container_ref else {
                         return Err(PermissiveJsonError::InvalidSyntax);
                     };
-                    o.get_mut(k)
-                        .ok_or(PermissiveJsonError::InvalidSyntax)?
+                    o.get_mut(k).ok_or(PermissiveJsonError::InvalidSyntax)?
                 }
                 Path::Index(i) => {
                     let serde_json::Value::Array(a) = container_ref else {
                         return Err(PermissiveJsonError::InvalidSyntax);
                     };
-                    a.get_mut(*i)
-                        .ok_or(PermissiveJsonError::InvalidSyntax)?
+                    a.get_mut(*i).ok_or(PermissiveJsonError::InvalidSyntax)?
                 }
             };
         }
@@ -101,15 +133,13 @@ impl Cursor {
                     let serde_json::Value::Object(o) = container_ref else {
                         return Err(PermissiveJsonError::InvalidSyntax);
                     };
-                    o.get_mut(k)
-                        .ok_or(PermissiveJsonError::InvalidSyntax)?
+                    o.get_mut(k).ok_or(PermissiveJsonError::InvalidSyntax)?
                 }
                 Path::Index(i) => {
                     let serde_json::Value::Array(a) = container_ref else {
                         return Err(PermissiveJsonError::InvalidSyntax);
                     };
-                    a.get_mut(*i)
-                        .ok_or(PermissiveJsonError::InvalidSyntax)?
+                    a.get_mut(*i).ok_or(PermissiveJsonError::InvalidSyntax)?
                 }
             };
         }
@@ -201,10 +231,6 @@ fn tokens_to_new_json(tokens: Vec<JsonToken>) -> PResult<serde_json::Value> {
             JsonToken::Colon | JsonToken::Comma => {}
             JsonToken::Val(v) => match v {
                 serde_json::Value::String(s) => {
-                    let s = Unescaper::default()
-                        .enc_uni(true)
-                        .do_unescape(s.as_bytes())
-                        .expect("As all unescape should be ok");
                     cursor.push_kv(key.take(), serde_json::Value::String(s))?;
                 }
                 other => {
@@ -233,7 +259,7 @@ impl<'a> Tokenizer<'a> {
         })
     }
 
-    fn next_char(&mut self) -> PResult<char> {
+    const fn next_char(&mut self) -> PResult<char> {
         match self.iter.next() {
             Some(c) => {
                 self.last_c = c;
@@ -298,6 +324,7 @@ impl<'a> Tokenizer<'a> {
             let txt = Unescaper::default()
                 .chardet(is_value, true)
                 .enc8259(true)
+                .enc_uni(true)
                 .do_unescape(txt.as_bytes())
                 .expect("As all unescape should be ok");
 
@@ -314,16 +341,13 @@ impl<'a> Tokenizer<'a> {
         loop {
             match self.last_c {
                 ':' => break,
-                '{' | '}' | '[' | ']' | ',' => return Err(PermissiveJsonError::InvalidSyntax),
-                _ => {}
-            }
-
-            if self.last_c.is_alphanumeric() || matches!(self.last_c, '_' | '-') {
-                key.push(self.last_c);
-            } else if matches!(self.last_c, '"' | '\'') {
-                // detected mismatched closing bracket — skip it
-            } else {
-                return Err(PermissiveJsonError::InvalidSyntax);
+                c @ ('A'..='Z' | 'a'..='z' | '0'..='9' | '_' | '-') => {
+                    key.push(c);
+                }
+                '"' | '\'' => {
+                    // detected mismatched closing bracket — skip it
+                }
+                _ => return Err(PermissiveJsonError::InvalidSyntax),
             }
 
             self.next_char()?;
@@ -418,8 +442,7 @@ impl<'a> Tokenizer<'a> {
     }
 
     fn expect_key(&mut self) -> PResult<String> {
-        self.test_text(false)?
-            .map_or_else(|| self.test_ukey(), Ok)
+        self.test_text(false)?.map_or_else(|| self.test_ukey(), Ok)
     }
 
     fn expect_val(&mut self, in_object: bool) -> PResult<serde_json::Value> {
@@ -430,21 +453,16 @@ impl<'a> Tokenizer<'a> {
     }
 
     fn tokenize(&mut self) -> PResult<(&'a [u8], serde_json::Value)> {
-        let mut opens: Vec<bool> = Vec::new();
+        let mut opens = Opens(0);
 
         if self.test_ctrl().is_none() {
-            return if 'n'.eq_ignore_ascii_case(&self.last_c)
-                && ('o'.eq_ignore_ascii_case(&self.next_char()?)
-                    && 'n'.eq_ignore_ascii_case(&self.next_char()?)
-                    && 'e'.eq_ignore_ascii_case(&self.next_char()?))
-                || ('u'.eq_ignore_ascii_case(&self.last_c)
-                    && 'l'.eq_ignore_ascii_case(&self.next_char()?)
-                    && 'l'.eq_ignore_ascii_case(&self.next_char()?))
-            {
-                let tail = self.iter.remaining();
-                Ok((tail, serde_json::Value::Null))
-            } else {
-                Err(PermissiveJsonError::InvalidSyntax)
+            return match (self.last_c, self.iter.remaining()) {
+                (
+                    'N' | 'n',
+                    [b'O' | b'o', b'N' | b'n', b'E' | b'e', tail @ ..]
+                    | [b'U' | b'u', b'L' | b'l', b'L' | b'l', tail @ ..],
+                ) => Ok((tail, serde_json::Value::Null)),
+                _ => Err(PermissiveJsonError::InvalidSyntax),
             };
         }
 
@@ -462,12 +480,12 @@ impl<'a> Tokenizer<'a> {
 
                 match t {
                     JsonToken::ArrStart => {
-                        opens.push(false);
+                        opens.push_arr();
                         allow_comma = false;
                         allow_colon = false;
                     }
                     JsonToken::ObjStart => {
-                        opens.push(true);
+                        opens.push_obj();
                         allow_comma = false;
                         allow_colon = false;
                     }
@@ -492,7 +510,7 @@ impl<'a> Tokenizer<'a> {
                 let Some(is_in_object) = opens.last() else {
                     break 'tokenize;
                 };
-                in_object = *is_in_object;
+                in_object = is_in_object;
 
                 self.next_char()?;
             }
@@ -527,6 +545,11 @@ impl<'a> Tokenizer<'a> {
     }
 }
 
+/// Parse a JSON value from a byte slice, with some leniency.
+///
+/// # Errors
+///
+/// Returns an error if the input is not valid or recoverable JSON.
 pub fn permissive_json_core(input: &[u8]) -> PResult<(&[u8], serde_json::Value)> {
     if let Ok(value) = serde_json::from_slice::<serde_json::Value>(input) {
         return Ok((b"", value));
@@ -534,6 +557,11 @@ pub fn permissive_json_core(input: &[u8]) -> PResult<(&[u8], serde_json::Value)>
     Tokenizer::new(input)?.tokenize()
 }
 
+/// Parse a JSON value from a byte slice, with some leniency.
+///
+/// # Errors
+///
+/// Returns an error if the input is not valid or recoverable JSON.
 pub fn permissive_json(input: &[u8]) -> PResult<serde_json::Value> {
     let first = permissive_json_core(input);
 
