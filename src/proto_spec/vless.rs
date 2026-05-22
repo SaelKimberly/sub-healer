@@ -1,3 +1,46 @@
+//! VLESS (`vless://`) URL parsing.
+//!
+//! # Format
+//! ```text
+//! vless://<uuid>@<host>:<port>?<query_params>#<remarks>
+//! ```
+//!
+//! Standard URI format (NOT base64-encoded). UUID goes in userinfo,
+//! all configuration in query parameters, remarks in fragment.
+//!
+//! # Query Parameters
+//!
+//! | Key        | Values                                          | Purpose                     | Default   |
+//! |------------|-------------------------------------------------|-----------------------------|-----------|
+//! | `type`     | tcp, ws, grpc, http, kcp, quic, httpupgrade     | Transport/network type      | `"tcp"`   |
+//! | `security` | none, tls, reality                               | TLS/security mode           | `"none"`  |
+//! | `encryption`| none                                           | Payload encryption          | `"none"`  |
+//! | `flow`     | xtls-rprx-vision, xtls-rprx-vision-udp443       | XTLS flow control           | —         |
+//! | `host`     | domain                                          | HTTP Host header            | —         |
+//! | `sni`      | domain                                          | TLS SNI override            | —         |
+//! | `path`     | URL path                                        | WS path / gRPC serviceName  | —         |
+//! | `alpn`     | comma-separated (h2,http/1.1)                   | ALPN list                   | —         |
+//! | `fp`       | chrome, firefox, safari, random, randomized       | uTLS fingerprint            | —         |
+//! | `pbk`      | base64 key                                      | REALITY public key          | —         |
+//! | `sid`      | hex string                                      | REALITY short ID            | —         |
+//! | `spx`      | path                                            | REALITY spider X            | —         |
+//! | `splice`   | 1/0, true/false                                 | Splice mode                 | —         |
+//!
+//! # Edge Cases
+//! - Userinfo may contain `@` for combined `userinfo@hostport` format
+//! - UUID is validated via `uuid::Uuid::parse_str`
+//! - For `type=grpc`, path is read from `serviceName` query param
+//! - For `type=kcp`/`mkcp`, path is read from `seed` query param
+//! - REALITY is VLESS-only (not supported by VMess)
+//! - IPv6 addresses must be bracketed `[::1]`
+//! - Empty `type` defaults to `"tcp"`, empty `security` to `"none"`
+//!
+//! # References
+//! - Xray-core: `proxy/vless/account.go`, `proxy/vless/encoding/addons.proto`
+//! - sing-box: `option/vless.go`
+//! - v2rayN: `VLESSFmt.cs`
+//! - outbound: `dialer/v2ray/v2ray.go` ParseVlessURL
+
 use std::num::NonZeroU64;
 
 use serde::{Deserialize, Serialize};
@@ -36,6 +79,13 @@ pub struct VlessConfig {
 }
 
 impl ProtoSpec for VlessConfig {
+    /// Parse a VLESS URL (standard URI format).
+    ///
+    /// UUID is extracted from userinfo, server address from host:port,
+    /// all configuration from query parameters, remarks from fragment.
+    ///
+    /// Supports combined `userinfo@hostport` or separate hostport components.
+    /// UUID validated via `uuid::Uuid::parse_str`.
     fn try_parse(raw: &RawUrlX<'_>) -> Result<Self, ParseError> {
         let (username, hostport) = if let Some(hostport) = raw.hostport {
             (raw.userinfo, hostport)
@@ -58,19 +108,29 @@ impl ProtoSpec for VlessConfig {
 
         let query = utils::parse_query(raw.query);
 
+        // security: tls/reality/none. Defaults to "none" (no TLS).
         let security = query
             .get("security")
             .map_or("none", |s| s.as_str())
             .to_string();
+        // type/transport: tcp/ws/grpc/http/kcp/quic/httpupgrade. Defaults to "tcp".
         let transport_type = query.get("type").map_or("tcp", |s| s.as_str()).to_string();
         let path = query.get("path").cloned();
+        // encryption: typically "none" (VLESS relies on TLS, not payload encryption)
         let encryption = query.get("encryption").filter(|v| v != &"none").cloned();
+        // flow: xtls-rprx-vision for XTLS direct transmission (TLS 1.3 required)
         let flow = query.get("flow").cloned();
+        // sni: TLS SNI override (overrides host for TLS server name)
         let sni = query.get("sni").cloned();
+        // alpn: comma-separated ALPN list (e.g., "h2,http/1.1")
         let alpn = query.get("alpn").cloned();
+        // fp: uTLS Client Hello fingerprint (chrome/firefox/safari/random/randomized)
         let fp = query.get("fp").cloned();
+        // pbk: REALITY public key (base64-encoded)
         let pbk = query.get("pbk").cloned();
+        // sid: REALITY short ID (hex string)
         let sid = query.get("sid").cloned();
+        // splice: boolean splice mode flag
         let splice = query.get("splice").and_then(|v| match v.as_str() {
             "1" | "true" | "yes" => Some(true),
             "0" | "false" | "no" => Some(false),

@@ -1,3 +1,37 @@
+//! WireGuard (`wireguard://`) URL parsing.
+//!
+//! # Format
+//! ```text
+//! wireguard://<percent-encoded(private_key)>@<host>:<port>?<query_params>#<remarks>
+//! ```
+//!
+//! Private key is percent-encoded in userinfo. Server endpoint in host:port.
+//! Interface and peer configuration in query parameters.
+//!
+//! # Query Parameters
+//!
+//! | Key          | Values              | Purpose                          | Required |
+//! |--------------|---------------------|----------------------------------|----------|
+//! | `address`    | CIDR notation       | Interface address (e.g., 10.0.0.2/32) | Yes |
+//! | `publickey`  | base64 key          | Peer's public key                | Yes      |
+//! | `presharedkey`| base64 key         | Pre-shared key                   | No       |
+//! | `reserved`   | comma-separated bytes| Reserved bytes (exactly 3)      | No       |
+//! | `mtu`        | integer             | Interface MTU                    | No       |
+//!
+//! # Edge Cases
+//! - `publickey` also accepted as `public_key`
+//! - `presharedkey` also accepted as `psk`
+//! - `reserved` accepts both comma-separated decimals and base64-encoded bytes
+//! - All query values are percent-decoded
+//! - Default MTU: 1420 (Xray-core)
+//! - Default port: 2408 (v2rayN parser), 51820 (WireGuard native)
+//!
+//! # References
+//! - v2rayN: `WireguardFmt.cs`
+//! - Xray-core: `proxy/wireguard/config.proto`
+//! - sing-box: `option/wireguard.go`
+//! - wireguard-go: `device/uapi.go`
+
 use std::num::NonZeroU64;
 
 use serde::{Deserialize, Serialize};
@@ -27,6 +61,11 @@ pub struct WireguardConfig {
 }
 
 impl ProtoSpec for WireguardConfig {
+    /// Parse a WireGuard URL.
+    ///
+    /// Private key is percent-encoded in userinfo (may contain `+`, `/`, `=`).
+    /// `address` and `publickey`/`public_key` are required; `presharedkey`/`psk`
+    /// and `reserved` are optional. All query values are percent-decoded.
     fn try_parse(raw: &RawUrlX<'_>) -> Result<Self, ParseError> {
         let private_key = urlencoding::decode(raw.userinfo)
             .map_err(|_| {
@@ -47,24 +86,29 @@ impl ProtoSpec for WireguardConfig {
             urlencoding::decode(v).map_or_else(|_| v.to_string(), std::borrow::Cow::into_owned)
         };
 
+        // address: interface address in CIDR notation (required)
         let address = query
             .get("address")
             .ok_or_else(|| ParseError::MissingConf("address".into()))
             .map(|s| decode_val(s))?;
 
+        // publickey/public_key: peer's base64-encoded public key (required)
         let public_key = query
             .get("publickey")
             .or_else(|| query.get("public_key"))
             .ok_or_else(|| ParseError::MissingConf("publickey".into()))
             .map(|s| decode_val(s))?;
 
+        // presharedkey/psk: optional pre-shared key
         let preshared_key = query
             .get("presharedkey")
             .or_else(|| query.get("psk"))
             .map(|s| decode_val(s));
 
+        // reserved: 3 bytes, comma-separated decimal or base64
         let reserved = query.get("reserved").map(|s| decode_val(s));
 
+        // mtu: interface MTU (defaults vary: 1420 Xray, 1280 WireGuard-go)
         let mtu = query.get("mtu").map(|s| decode_val(s));
 
         let remarks = utils::decode_fragment(raw)?;

@@ -1,3 +1,50 @@
+//! Shadowsocks (`ss://`) URL parsing.
+//!
+//! # Format (SIP002 — Modern Standard)
+//! ```text
+//! ss://<base64url_no_pad(method:password)>@<host>:<port>#<remarks>?plugin=...
+//! ```
+//!
+//! # Legacy QRCode Format (also accepted)
+//! ```text
+//! ss://<base64(method:password@host:port)>
+//! ```
+//! Detected by presence/absence of `@` in the base64-decoded userinfo.
+//!
+//! # Plain Format (go-shadowsocks2 compatibility)
+//! ```text
+//! ss://<method>:<password>@<host>:<port>
+//! ```
+//!
+//! # Fields
+//!
+//! | Component     | Source              | Purpose                         |
+//! |---------------|----------------------|---------------------------------|
+//! | `method`      | userinfo (method:password) | Encryption cipher         |
+//! | `password`    | userinfo (method:password) | Shared secret             |
+//! | `host`        | hostport             | Server address                  |
+//! | `port`        | hostport             | Server port                     |
+//! | `remarks`     | fragment (#)         | Display name (URL-decoded)      |
+//! | `plugin`      | query `plugin`       | SIP003 plugin (e.g., obfs-local)|
+//!
+//! # Valid Ciphers
+//! - Legacy: `rc4-md5`, `aes-256-cfb`, `chacha20`, `salsa20`, etc.
+//! - AEAD: `aes-128-gcm`, `aes-256-gcm`, `chacha20-ietf-poly1305`, `xchacha20-ietf-poly1305`
+//! - AEAD-2022: `2022-blake3-aes-128-gcm`, `2022-blake3-aes-256-gcm`
+//!
+//! # Edge Cases
+//! - Base64 can be URL-safe (`-`/`_`) or standard (`+`/`/`), with/without padding
+//! - Legacy format: whole `method:password@host:port` base64-encoded (no `@` in URL)
+//! - AEAD-2022 passwords are already base64, not double-encoded
+//! - Port defaults to 8388 if missing (shadowsocks-rust convention)
+//! - IPv6 addresses must be bracketed
+//!
+//! # References
+//! - shadowsocks-rust: `src/config.rs` SIP002 `from_url()`/`to_url()`
+//! - SIP002 spec: https://github.com/shadowsocks/shadowsocks-org/issues/27
+//! - subconverter: `subparser.cpp` `explodeSS()`
+//! - go-shadowsocks2: `parseURL()` (plain format)
+
 use std::num::NonZeroU64;
 
 use base64::Engine;
@@ -26,14 +73,25 @@ pub struct SsConfig {
 }
 
 impl ProtoSpec for SsConfig {
+    /// Parse a Shadowsocks URL.
+    ///
+    /// Supports three formats:
+    /// 1. SIP002: `base64url(method:password)@host:port` (has `@`, hostport present)
+    /// 2. Legacy QR: `base64(method:password@host:port)` (no `@` in URL, hostport absent)
+    /// 3. Plain: `method:password@host:port` (base64 decode fails but `@` present)
+    ///
+    /// `decode_base64` tolerates trailing annotation text/emoji (Telegram pattern)
+    /// and accepts both URL-safe and standard base64 alphabets.
     fn try_parse(raw: &RawUrlX<'_>) -> Result<Self, ParseError> {
         let (userinfo, hostport) = if let Some(hostport) = raw.hostport {
+            // SIP002 format: base64(method:password)@host:port
             let decoded = utils::decode_base64(raw.userinfo)
                 .map_err(|e| ParseError::InvalidUserInfo(format!("{}: {e}", raw.userinfo).into()))?;
             let text = String::from_utf8(decoded)
                 .map_err(|e| ParseError::InvalidUserInfo(format!("{}: {e}", raw.userinfo).into()))?;
             (text, hostport.to_string())
         } else {
+            // Legacy QR format: base64(method:password@host:port) — no @ in URL
             let decoded = utils::decode_base64(raw.userinfo)
                 .map_err(|e| ParseError::InvalidUserInfo(format!("{}: {e}", raw.userinfo).into()))?;
             let text = String::from_utf8(decoded)
@@ -50,6 +108,7 @@ impl ProtoSpec for SsConfig {
             .first()
             .ok_or_else(|| ParseError::InvalidPort("empty port spec".into()))?;
 
+        // Split at first ':' to get method:password
         let (method, password) = userinfo.split_once(':').ok_or_else(|| {
             ParseError::InvalidUserInfo(format!("{}: missing password", raw.userinfo).into())
         })?;

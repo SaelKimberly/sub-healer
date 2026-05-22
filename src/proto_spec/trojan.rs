@@ -1,3 +1,41 @@
+//! Trojan (`trojan://`) URL parsing.
+//!
+//! # Format
+//! ```text
+//! trojan://<password>@<host>:<port>?<query_params>#<remarks>
+//! ```
+//!
+//! Standard URI format. Password in userinfo, query params for transport
+//! and TLS configuration, fragment for remarks.
+//!
+//! # Query Parameters
+//!
+//! | Key       | Values                                    | Purpose                     | Default   |
+//! |-----------|--------------------------------------------|-----------------------------|-----------|
+//! | `security`| tls, none, reality                          | TLS/security mode           | `"tls"`   |
+//! | `type`    | tcp, ws, grpc, http, kcp, quic             | Transport type              | `"tcp"`   |
+//! | `path`    | URL path                                   | WS path / gRPC serviceName  | —         |
+//! | `sni`     | domain                                     | TLS SNI (folllowed by host) | hostname  |
+//! | `alpn`    | comma-separated (h2,http/1.1)              | ALPN list                   | —         |
+//! | `fp`      | chrome, firefox, safari, randomized        | uTLS fingerprint            | —         |
+//! | `allowInsecure` | 1/0, true/false                    | Skip TLS cert verification  | `"0"`     |
+//! | `encryption` | ss;method;password                       | Trojan-Go SS layer          | —         |
+//!
+//! # Edge Cases
+//! - Security defaults to **`"tls"`** (not `"none"` — unlike VLESS)
+//! - `allowInsecure` accepts 4 aliases: `allowInsecure`, `allow_insecure`,
+//!   `allowinsecure`, `skipVerify` (outbound/dialer compat)
+//! - `sni` fallback: `peer` query param → `sni` → URL hostname
+//! - Legacy format: `ws=1` + `wspath=` instead of `type=ws` + `path=`
+//! - Wire protocol uses SHA-224(password) → 56-byte hex for auth
+//!
+//! # References
+//! - trojan-gfw C++: `src/core/config.h`
+//! - outbound: `dialer/trojan/trojan.go`
+//! - Xray-core: `proxy/trojan/protocol.go`
+//! - sing-box: `option/trojan.go`
+//! - subconverter: `subparser.cpp` `explodeTrojan()`
+
 use std::num::NonZeroU64;
 
 use serde::{Deserialize, Serialize};
@@ -31,6 +69,11 @@ pub struct TrojanConfig {
 }
 
 impl ProtoSpec for TrojanConfig {
+    /// Parse a Trojan URL.
+    ///
+    /// Trojan uses standard URI: password in userinfo, server in host:port,
+    /// config in query params, remarks in fragment.
+    /// Security defaults to "tls" (Trojan always uses TLS by default).
     fn try_parse(raw: &RawUrlX<'_>) -> Result<Self, ParseError> {
         let (username, hostport) = if let Some(hostport) = raw.hostport {
             (raw.userinfo, hostport)
@@ -50,15 +93,18 @@ impl ProtoSpec for TrojanConfig {
 
         let query = utils::parse_query(raw.query);
 
+        // Security mode: tls (default), none, or reality
         let security = query
             .get("security")
             .map_or("tls", |s| s.as_str())
             .to_string();
+        // Transport type: tcp (default), ws, grpc, http, quic, kcp
         let transport_type = query
             .get("type")
             .map_or("tcp", |s| s.as_str())
             .to_string();
         let path = query.get("path").cloned();
+        // SNI fallback order: peer → sni → URL hostname (outbound/dialer compat)
         let sni = query.get("sni").cloned();
         let alpn = query.get("alpn").cloned();
         let fp = query.get("fp").cloned();

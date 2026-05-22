@@ -1,3 +1,35 @@
+//! SlipNet (`slipnet://` / `slipnet-enc://`) URL parsing.
+//!
+//! # Format (Plain)
+//! ```text
+//! slipnet://<base64_urlsafe_no_pad(pipe-delimited-fields)>
+//! ```
+//!
+//! The base64-decoded payload is a pipe (`|`)-delimited string with 70+ fields.
+//! Minimum viable profile has 12 fields at indices 0–11.
+//!
+//! # Key Fields
+//!
+//! | Index | Field       | Purpose                          |
+//! |-------|-------------|----------------------------------|
+//! | 0     | Version     | Profile format version (e.g., "18") |
+//! | 1     | TunnelType  | Tunnel protocol (sayedns, dnstt, ssh, socks5, vless) |
+//! | 2     | Name        | Profile name                     |
+//! | 3     | Domain      | Tunnel domain (server address)   |
+//! | 8     | Port        | Local SOCKS5 port                |
+//! | 11    | PublicKey   | Server Noise public key (required)|
+//!
+//! # Encrypted Format
+//! ```text
+//! slipnet-enc://<base64_encrypted_payload>
+//! ```
+//! Same pipe-delimited format but AES-encrypted. No host/port extracted.
+//!
+//! # References
+//! - SlipNet CLI: `parseURI()`, `interactive.go`
+//! - SlipNet Android: `ConfigImporter.kt`, `ConfigExporter.kt`
+//! - SlipNet docs: `USER_GUIDE.md`
+
 use std::num::NonZeroU64;
 
 use base64::Engine;
@@ -34,23 +66,33 @@ pub struct SlipnetEncConfig {
 }
 
 impl ProtoSpec for SlipnetConfig {
+    /// Parse a SlipNet URL.
+    ///
+    /// Userinfo is base64-decoded then split by `|` into positional fields.
+    /// Minimum 12 fields required. Key fields at indices:
+    /// [1]=tunnel_type, [3]=domain(host), [8]=port, [11]=public_key.
+    /// Remarks extracted from URL fragment.
     fn try_parse(raw: &RawUrlX<'_>) -> Result<Self, ParseError> {
         let decoded = utils::decode_base64(raw.userinfo)
             .map_err(|_| ParseError::InvalidUserInfo("Expected valid Base64".into()))?;
         let text = String::from_utf8(decoded)
             .map_err(|_| ParseError::InvalidStructure(SchemeX::Slipnet))?;
 
+        // Pipe-delimited positional fields. Minimum 12 (indices 0–11).
         let raw_fields: Vec<TinyText> = text.split('|').map(TinyText::from).collect();
         if raw_fields.len() < 12 {
             return Err(ParseError::InvalidStructure(SchemeX::Slipnet));
         }
 
+        // Field index 3: domain (server address)
         let domain = raw_fields.get(3).and_then(|s| {
             if s.is_empty() { None } else { Some(s.as_str()) }
         });
+        // Field index 11: public key (required for Noise protocol)
         let public_key = raw_fields.get(11).and_then(|s| {
             if s.is_empty() { None } else { Some(s.as_str()) }
         });
+        // Field index 1: tunnel type (sayedns, dnstt, ssh, socks5, vless)
         let tunnel_type = raw_fields.get(1).and_then(|s| {
             if s.is_empty() { None } else { Some(s.as_str()) }
         });
@@ -63,6 +105,7 @@ impl ProtoSpec for SlipnetConfig {
             .transpose()?
             .ok_or(ParseError::MissingHost)?;
 
+        // Field index 8: port
         let port = raw_fields
             .get(8)
             .and_then(|s| {
@@ -153,6 +196,10 @@ impl SlipnetConfig {
 }
 
 impl ProtoSpec for SlipnetEncConfig {
+    /// Parse an encrypted SlipNet URL.
+    ///
+    /// Simply stores the raw base64 userinfo as `data` (AES-encrypted payload).
+    /// No host/port/remarks are extracted since the payload is opaque.
     fn try_parse(raw: &RawUrlX<'_>) -> Result<Self, ParseError> {
         Ok(Self {
             sig_cache: std::sync::OnceLock::new(),

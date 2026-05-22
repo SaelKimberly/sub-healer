@@ -1,3 +1,36 @@
+//! TUIC (`tuic://`) URL parsing.
+//!
+//! # Format
+//! ```text
+//! tuic://<uuid>:<password>@<host>:<port>?<query_params>#<remarks>
+//! ```
+//!
+//! Standard URI format. UUID and password in userinfo separated by colon.
+//! Configuration in query parameters, remarks in fragment.
+//!
+//! # Query Parameters
+//!
+//! | Key                  | Values                       | Purpose                          | Default   |
+//! |----------------------|------------------------------|----------------------------------|-----------|
+//! | `congestion_control` | cubic, bbr, new_reno, bbr3  | QUIC congestion control          | `"bbr"`   |
+//! | `udp_relay_mode`     | native, quic                 | UDP relay transport              | `"native"`|
+//! | `alpn`               | comma-separated (h3,h2)      | TLS ALPN negotiation             | `"h3"`    |
+//! | `sni`                | domain                       | TLS SNI override                 | hostname  |
+//! | `allow_insecure`     | 1/0                          | Skip TLS cert verification       | `"0"`     |
+//!
+//! # Edge Cases
+//! - `allow_insecure` accepts 3 aliases: `allow_insecure`, `allowInsecure`, `insecure`
+//! - ALPN is comma-separated and URL-decoded
+//! - Default congestion control is `bbr` (from tuic-client/src/config.rs)
+//! - Default ALPN is `h3`
+//! - IPv6 addresses must be bracketed
+//! - UUID validated via `uuid::Uuid::parse_str`
+//!
+//! # References
+//! - TUIC: `tuic-client/src/config.rs`, `tuic-core/src/utils.rs`
+//! - v2rayN: `TuicFmt.cs`, `BaseFmt.cs`
+//! - sing-box: `option/tuic.go`
+
 use std::{fmt::Write, num::NonZeroU64};
 
 use serde::{Deserialize, Serialize};
@@ -30,6 +63,11 @@ pub struct TuicConfig {
 }
 
 impl ProtoSpec for TuicConfig {
+    /// Parse a TUIC URL.
+    ///
+    /// Userinfo is `uuid:password` (colon-separated). UUID validated via
+    /// `uuid::Uuid::parse_str`. Server address and port from hostport.
+    /// `allow_insecure` accepts 3 alias variants for compatibility.
     fn try_parse(raw: &RawUrlX<'_>) -> Result<Self, ParseError> {
         let (userinfo, hostport) = if let Some(hostport) = raw.hostport {
             (raw.userinfo, hostport)
@@ -56,9 +94,13 @@ impl ProtoSpec for TuicConfig {
 
         let query = utils::parse_query(raw.query);
 
+        // congestion_control: cubic/bbr/new_reno/bbr3. Defaults to bbr.
         let congestion_control = query.get("congestion_control").cloned();
+        // udp_relay_mode: native/quic. Defaults to native.
         let udp_relay_mode = query.get("udp_relay_mode").cloned();
+        // alpn: comma-separated TLS ALPN list. Defaults to h3.
         let alpn = query.get("alpn").cloned();
+        // allow_insecure: 3 alias variants for TLS cert skip.
         let allow_insecure = query
             .get("allow_insecure")
             .or_else(|| query.get("insecure"))

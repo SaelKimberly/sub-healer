@@ -1,3 +1,36 @@
+//! StormDNS (`stormdns://`) URL parsing.
+//!
+//! # Format
+//! ```text
+//! stormdns://<base64_urlsafe_no_pad(JSON)>
+//! ```
+//!
+//! Base64-decoded JSON payload follows the WhiteDNS profile format:
+//! ```json
+//! { "schema": "whitedns.profile", "version": 1,
+//!   "profile": { "name": "...",
+//!     "server": { "domain": "...", "encryption_key": "...", "encryption_method": 1 } } }
+//! ```
+//!
+//! # Fields
+//!
+//! | JSON Key                       | Purpose                          |
+//! |--------------------------------|----------------------------------|
+//! | `schema`                       | Must be `"whitedns.profile"`      |
+//! | `version`                      | Must be `1`                      |
+//! | `profile.name`                 | Profile name (optional, used as remarks) |
+//! | `profile.server.domain`        | Server domain (required)         |
+//! | `profile.server.encryption_key`| Shared encryption key (required) |
+//! | `profile.server.encryption_method`| Encryption method (i64 → `"enc{n}"`) |
+//!
+//! # Edge Cases
+//! - Port is hardcoded to 53 (DNS)
+//! - Schema and version are strictly validated (`whitedns.profile`/1)
+//! - Encryption method is an integer stored as `"enc{n}"` string
+//!
+//! # References
+//! - StormDNS: `internal/config/client.go`, `cmd/client/main.go`
+
 use std::num::NonZeroU64;
 
 use serde::{Deserialize, Serialize};
@@ -25,6 +58,12 @@ pub struct StormdnsConfig {
 }
 
 impl ProtoSpec for StormdnsConfig {
+    /// Parse a StormDNS URL.
+    ///
+    /// Userinfo is base64-encoded JSON (WhiteDNS profile format).
+    /// Schema must be `"whitedns.profile"` and version must be 1.
+    /// `encryption_method` is an integer stored as `"enc{n}"` string.
+    /// Port is always 53 (DNS).
     fn try_parse(raw: &RawUrlX<'_>) -> Result<Self, ParseError> {
         let decoded = utils::decode_base64(raw.userinfo)
             .map_err(|_| ParseError::InvalidStructure(SchemeX::Stormdns))?;
@@ -34,6 +73,7 @@ impl ProtoSpec for StormdnsConfig {
             crate::utils::permissive_json::permissive_json(span)
                 .map_err(|_| ParseError::InvalidStructure(SchemeX::Stormdns))?;
 
+        // schema must be "whitedns.profile"
         let schema = json
             .get("schema")
             .and_then(|v| v.as_str())
@@ -42,6 +82,7 @@ impl ProtoSpec for StormdnsConfig {
             return Err(ParseError::InvalidStructure(SchemeX::Stormdns));
         }
 
+        // version must be 1
         let version = json
             .get("version")
             .and_then(serde_json::Value::as_i64)

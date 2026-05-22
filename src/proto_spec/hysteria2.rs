@@ -1,3 +1,55 @@
+//! Hysteria2 (`hysteria2://` / `hy2://`) URL parsing.
+//!
+//! # Format
+//! ```text
+//! hysteria2://<auth>@<host>:<port>/?<query_params>#<remarks>
+//! hy2://<auth>@<host>:<port>/?<query_params>#<remarks>
+//! ```
+//!
+//! Canonical reference: `thirdparty/hysteria/app/cmd/client.go` `parseURI()`.
+//! Both `hysteria2://` and `hy2://` schemes are accepted.
+//!
+//! # Fields
+//!
+//! | Component     | Source       | Purpose                         |
+//! |---------------|--------------|---------------------------------|
+//! | `auth`        | userinfo     | Authentication token/password   |
+//! | `host`        | host         | Server address                  |
+//! | `port`        | port         | Port (supports port hopping)    |
+//! | `remarks`     | fragment (#) | Display name                    |
+//!
+//! # Query Parameters
+//!
+//! | Key            | Values                    | Purpose                          | Default   |
+//! |----------------|---------------------------|----------------------------------|-----------|
+//! | `security`     | tls                       | TLS mode (always QUIC-TLS)       | `"tls"`   |
+//! | `obfs`         | salamander                | Obfuscation type                 | —         |
+//! | `obfs-password`| string (min 4 bytes)      | Obfuscation pre-shared key       | —         |
+//! | `insecure`     | 1/0, true/false           | Skip TLS verification            | `false`   |
+//! | `sni`          | domain                    | TLS SNI override                 | hostname  |
+//! | `pinSHA256`    | hex hash                  | Certificate pinning (SHA-256)    | —         |
+//! | `up`           | bandwidth string          | Upload speed limit               | —         |
+//! | `down`         | bandwidth string          | Download speed limit             | —         |
+//!
+//! # Port Hopping
+//! Port supports special syntax from Hysteria's URL parser fork:
+//! - Single: `:443`
+//! - List: `:443,7788,9999`
+//! - Range: `:8888-9999`
+//! - Mixed: `:443,7788-8899,10010`
+//!
+//! # Edge Cases
+//! - Auth can be single token (`auth@`) or `user:pass` pair (concatenated to `user:pass`)
+//! - No auth → empty auth token (unusual, server may reject)
+//! - Port defaults to 443
+//! - Default port `"443"` when no port specified
+//! - Salamander obfuscation uses BLAKE2b-256 with 8-byte random salt
+//! - IPv6 addresses must be bracketed `[::1]`
+//!
+//! # References
+//! - Hysteria2: `app/cmd/client.go` `parseURI()`, `app/internal/url/url.go`
+//! - sing-box: `protocol/hysteria2/outbound.go`, `option/hysteria2.go`
+
 use std::num::NonZeroU64;
 
 use serde::{Deserialize, Serialize};
@@ -29,6 +81,11 @@ pub struct Hysteria2Config {
 }
 
 impl ProtoSpec for Hysteria2Config {
+    /// Parse a Hysteria2 URL.
+    ///
+    /// Auth token is the userinfo (single token or user:pass pair).
+    /// Port supports Hysteria's extended PortSpec (ranges, lists, mixed).
+    /// Security defaults to "tls" (QUIC always uses TLS).
     fn try_parse(raw: &RawUrlX<'_>) -> Result<Self, ParseError> {
         let (auth, hostport) = if let Some(hostport) = raw.hostport {
             (raw.userinfo, hostport)
@@ -45,18 +102,24 @@ impl ProtoSpec for Hysteria2Config {
 
         let query = utils::parse_query(raw.query);
 
+        // security: defaults to "tls". Hysteria2 always uses QUIC+TLS.
         let security = query
             .get("security")
             .map_or("tls", |s| s.as_str())
             .to_string();
+        // obfs: obfuscation type (e.g., "salamander")
         let obfs = query.get("obfs").cloned();
+        // obfs-password: pre-shared key for salamander obfuscation
         let obfs_password = query.get("obfs-password").cloned();
+        // insecure: skip TLS certificate verification
         let insecure = query.get("insecure").and_then(|v| match v.as_str() {
             "1" | "true" | "yes" => Some(true),
             "0" | "false" | "no" => Some(false),
             _ => None,
         });
+        // sni: TLS Server Name Indication (overrides host)
         let sni = query.get("sni").cloned();
+        // up/down: bandwidth limits (canonical impl doesn't parse these from URL)
         let up = query.get("up").cloned();
         let down = query.get("down").cloned();
         let remarks = utils::decode_fragment(raw)?;

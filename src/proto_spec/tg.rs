@@ -1,3 +1,41 @@
+//! Telegram MTProto (`tg://` / `https://t.me/`) proxy URL parsing.
+//!
+//! # Formats
+//! ```text
+//! https://t.me/proxy?server=<host>&port=<port>&secret=<secret>   (MTProto)
+//! https://t.me/socks?server=<host>&port=<port>[&user=<u>&pass=<p>] (SOCKS5)
+//! tg://proxy?server=<host>&port=<port>&secret=<secret>
+//! tg://socks?server=<host>&port=<port>[&user=<u>&pass=<p>]
+//! ```
+//!
+//! The primary format uses `https://t.me/proxy` with the Telegram web link
+//! format. `tg://` scheme is the shorter alternative.
+//!
+//! # Fields
+//!
+//! | Parameter | Source       | Purpose                          | Required |
+//! |-----------|--------------|----------------------------------|----------|
+//! | `server`  | query param  | Proxy server address             | Yes      |
+//! | `port`    | query param  | Proxy server port                | Yes      |
+//! | `secret`  | query param  | Obfuscation secret (hex/base64)  | Yes*     |
+//! | `user`    | query param  | SOCKS5 username                  | No       |
+//! | `pass`    | query param  | SOCKS5 password                  | No       |
+//!
+//! *secret is required for MTProto proxy, optional for SOCKS5.
+//!
+//! # Secret Format
+//! The secret encodes a 16-byte key with optional type prefix and domain:
+//! ```text
+//! [type_byte][16_bytes_secret][optional_domain]
+//! ```
+//! - `0xee` = Fake TLS (creates fake TLS handshake, domain used for SNI)
+//! - `0xdd` = Random Padding
+//! - `0x00` = Simple (no obfuscation)
+//!
+//! # References
+//! - v2ray-core: `proxy/mtproto/config.proto`
+//! - subconverter: `nodemanip.cpp` telegram detection
+
 use std::num::NonZeroU64;
 
 use serde::{Deserialize, Serialize};
@@ -25,6 +63,14 @@ pub struct TgConfig {
 }
 
 impl ProtoSpec for TgConfig {
+    /// Parse a Telegram proxy URL.
+    ///
+    /// Accepts two URL patterns:
+    /// - `https://t.me/proxy` or `https://t.me/socks` (Telegram web links)
+    /// - `tg://proxy` or `tg://socks` (short scheme)
+    ///
+    /// Detects transport type (MTProto proxy vs SOCKS5) from the URL path/userinfo.
+    /// Server address is validated via `rustls::pki_types::ServerName`.
     fn try_parse(raw: &RawUrlX<'_>) -> Result<Self, ParseError> {
         let is_socks = if raw.schema == SchemeX::Https && raw.userinfo == "t.me" {
             match raw.path {

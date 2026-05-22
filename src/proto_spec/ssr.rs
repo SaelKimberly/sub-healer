@@ -1,3 +1,43 @@
+//! ShadowsocksR (`ssr://`) URL parsing.
+//!
+//! # Format
+//! ```text
+//! ssr://<base64url(host:port:protocol:method:obfs:base64(password)/?params)>
+//! ```
+//!
+//! The entire body after `ssr://` is a single base64-encoded payload with
+//! 6 colon-separated fields plus optional `/`-delimited query parameters.
+//!
+//! # Fields
+//!
+//! | Position | Field      | Purpose                         | Examples                        |
+//! |----------|------------|---------------------------------|---------------------------------|
+//! | 1        | `host`     | Server address                  | `example.com`                   |
+//! | 2        | `port`     | Server port                     | `443`                           |
+//! | 3        | `protocol` | Protocol plugin                 | `origin`, `auth_aes128_md5`     |
+//! | 4        | `method`   | Encryption cipher               | `rc4-md5`, `aes-256-cfb`        |
+//! | 5        | `obfs`     | Obfuscation plugin              | `plain`, `http_simple`          |
+//! | 6        | `password` | Base64-encoded shared secret    | `base64(password)`              |
+//!
+//! # Query Parameters (after `/?`)
+//!
+//! | Key        | Encoding | Purpose                         |
+//! |------------|----------|---------------------------------|
+//! | `group`    | base64   | Provider/group name             |
+//! | `remarks`  | base64   | Node name (display)             |
+//! | `obfsparam`| base64   | Obfuscation parameter (e.g., host) |
+//! | `protoparam`| base64  | Protocol parameter              |
+//!
+//! # Edge Cases
+//! - Port is last-5th colon-delimited field (handles IPv6 with multiple colons)
+//! - Password may contain `/?` or `?` split for query params
+//! - Trailing non-base64 garbage (Telegram annotation) is stripped before decode
+//! - `remarks` extracted from query params (base64-decoded, URL-safe alphabet)
+//!
+//! # References
+//! - subconverter: `subparser.cpp` `explodeSSR()`, `subexport.cpp`
+//! - sing-box: `option/shadowsocksr.go`
+
 use std::num::NonZeroU64;
 
 use base64::Engine;

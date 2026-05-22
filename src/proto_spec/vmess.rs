@@ -1,3 +1,56 @@
+//! VMess (`vmess://`) URL parsing.
+//!
+//! # Format
+//! ```text
+//! vmess://<base64_urlsafe_no_pad(JSON)>
+//! ```
+//!
+//! The base64-decoded payload is JSON with abbreviated 2–3 char field names
+//! (v2rayN `VmessQRCode` format). Canonical reference:
+//! `thirdparty/v2rayN/ServiceLib/Models/Dto/VmessQRCode.cs`
+//!
+//! # JSON Fields
+//!
+//! | Field | Key | Type    | Purpose                         | Default        |
+//! |-------|-----|---------|---------------------------------|----------------|
+//! | `v`   | `v` | string  | Config version                  | `"2"`          |
+//! | `ps`  | `ps`| string  | Remarks (friendly name)         | `""`           |
+//! | `add` | `add`| string | Server address (IP or domain)   | — (required)   |
+//! | `port`| `port`| int   | Server port                     | — (required)   |
+//! | `id`  | `id` | string  | User UUID                       | — (required)   |
+//! | `aid` | `aid`| string  | AlterId (additional IDs)        | `"0"`          |
+//! | `scy` | `scy`| string  | Encryption method               | `"auto"`       |
+//! | `net` | `net`| string  | Transport type                  | `"tcp"`        |
+//! | `type`| `type`| string | TCP/KCP header / gRPC mode      | `"none"`       |
+//! | `host`| `host`| string | Host header / gRPC authority    | `""`           |
+//! | `path`| `path`| string | WS path / gRPC serviceName / KCP seed | `""`     |
+//! | `tls` | `tls`| string  | TLS: `"tls"` or `""`            | `""`           |
+//! | `sni` | `sni`| string  | TLS SNI override                | `""`           |
+//! | `alpn`| `alpn`| string | ALPN (comma-separated)          | `""`           |
+//! | `fp`  | `fp` | string  | uTLS Client Hello fingerprint   | `""`           |
+//!
+//! # Security (`scy`)
+//! - `auto` — auto-select AES-128-GCM or ChaCha20-Poly1305
+//! - `aes-128-gcm`, `chacha20-poly1305`, `none` (deprecated), `zero`
+//!
+//! # Transport (`net`)
+//! `tcp`, `ws`, `kcp`, `grpc`, `http` (→ `h2`), `quic`, `httpupgrade`,
+//! `splithttp`/`xhttp`
+//!
+//! # Edge Cases
+//! - Port is stored as string in JSON, coerced to u16
+//! - Empty/null fields filtered (scy=auto, net stripped if `"null"`)
+//! - Trailing Telegram annotation text/emoji after base64 is stripped
+//! - `host` starting with `/` treated as path when path empty (v2rayN compat)
+//! - Base64 can be URL-safe or standard, with or without padding
+//!
+//! # References
+//! - Xray-core: `proxy/vmess/`
+//! - v2rayN: `VmessQRCode.cs`, `VmessFmt.cs`
+//! - sing-box: `option/vmess.go`
+//! - outbound: `dialer/v2ray/v2ray.go`
+//! - subconverter: `subparser.cpp` `explodeVmessConf()`
+
 use std::num::NonZeroU64;
 
 use serde::{Deserialize, Serialize};
@@ -33,15 +86,24 @@ pub struct VmessConfig {
 }
 
 impl ProtoSpec for VmessConfig {
+    /// Parse a VMess URL.
+    ///
+    /// Decodes the base64 userinfo → parses lenient JSON with abbreviated v2rayN keys.
+    /// Trailing non-base64 annotation (Telegram emoji, Persian text, etc.) is stripped
+    /// by `decode_base64` before JSON parsing. Empty/null string fields are filtered.
     fn try_parse(raw: &RawUrlX<'_>) -> Result<Self, ParseError> {
+        // VMess userinfo is base64-encoded JSON (v2rayN VmessQRCode format).
+        // decode_base64 handles trailing annotation text/emoji and stray backticks.
         let decoded = utils::decode_base64(raw.userinfo)
             .map_err(|_| ParseError::InvalidStructure(SchemeX::Vmess))?;
 
+        // Permissive JSON parser handles single-quoted keys, trailing commas, etc.
         let span = nom_locate::LocatedSpan::new(decoded.as_slice());
         let (_, json): (_, serde_json::Value) =
             crate::utils::permissive_json::permissive_json(span)
                 .map_err(|_| ParseError::InvalidStructure(SchemeX::Vmess))?;
 
+        // "add" — server address (IP or domain), required
         let host_str = json
             .get("add")
             .and_then(|v| v.as_str())
@@ -49,6 +111,7 @@ impl ProtoSpec for VmessConfig {
         let parsed_host = utils::parse_host(host_str)
             .map_err(|e| ParseError::InvalidHost(format!("{host_str}: {e}").into()))?;
 
+        // "port" — can be string or number, coerce via coerce_u16
         let port_val = json
             .get("port")
             .ok_or(ParseError::MissingPort)
@@ -57,6 +120,7 @@ impl ProtoSpec for VmessConfig {
                     .ok_or_else(|| ParseError::InvalidPort(format!("cannot parse: {v}").into()))
             })?;
 
+        // "id" — UUID v4 string, required
         let uuid = json
             .get("id")
             .ok_or_else(|| ParseError::MissingConf("id".into()))?
@@ -64,6 +128,8 @@ impl ProtoSpec for VmessConfig {
             .ok_or_else(|| ParseError::InvalidConf("id".into(), "not a string".into()))?
             .to_owned();
 
+        // "scy" — security/encryption method, defaults to "auto"
+        // Filters empty/null/`"null"` values → maps to Some("auto")
         let security = json
             .get("scy")
             .and_then(|v| v.as_str())
@@ -71,54 +137,67 @@ impl ProtoSpec for VmessConfig {
             .or(Some("auto"))
             .map(String::from);
 
+        // "net" — transport network type (tcp, ws, kcp, grpc, http/h2, quic, etc.)
+        // Filters empty/null/"null" — absence means tcp
         let net = json
             .get("net")
             .and_then(|v| v.as_str())
             .filter(|s| !s.is_empty() && s != &"null")
             .map(String::from);
 
+        // "path" — transport-specific path (WS endpoint, gRPC serviceName, KCP seed)
         let path = json
             .get("path")
             .and_then(|v| v.as_str())
             .filter(|s| !s.is_empty())
             .map(String::from);
 
+        // "sni" — TLS Server Name Indication, overrides host for TLS
         let sni = json
             .get("sni")
             .and_then(|v| v.as_str())
             .filter(|s| !s.is_empty())
             .map(String::from);
 
+        // "alpn" — ALPN list (comma-separated: "h2,http/1.1")
+        // Filters empty and escaped-empty `""`
         let alpn = json
             .get("alpn")
             .and_then(|v| v.as_str())
             .filter(|s| !s.is_empty() && s != &"\"\"")
             .map(String::from);
 
+        // "fp" — uTLS Client Hello fingerprint (chrome, firefox, safari, random, randomized)
         let fp = json
             .get("fp")
             .and_then(|v| v.as_str())
             .filter(|s| !s.is_empty())
             .map(String::from);
 
+        // "tls" — TLS security flag: "tls" enables TLS, "" disables
         let tls = json
             .get("tls")
             .and_then(|v| v.as_str())
             .filter(|s| !s.is_empty() && s != &"\"\"")
             .map(String::from);
 
+        // "aid" — AlterId (additional IDs), must be 0 for AEAD-only clients
+        // Filters empty/escaped-empty/"0" since 0 is the modern AEAD default
         let alter_id = json
             .get("aid")
             .and_then(|v| v.as_str())
             .filter(|s| !s.is_empty() && s != &"\"\"" && s != &"0")
             .map(String::from);
 
+        // "ps" — remarks/friendly name, also strips wrapping quotes
         let remarks = json
             .get("ps")
             .and_then(|v| v.as_str())
             .filter(|s| !s.is_empty())
             .map(|s| s.trim_matches(['"', '\'']).to_string());
 
+        // "type" — header type (for TCP/KCP) or gRPC mode.
+        // Falls back to net value if type is absent.
         let transport = net
             .clone()
             .or_else(|| json.get("type").and_then(|v| v.as_str()).map(String::from));
