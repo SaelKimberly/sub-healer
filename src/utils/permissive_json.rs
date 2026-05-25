@@ -81,6 +81,8 @@ enum Path {
 struct Cursor {
     base: Option<serde_json::Value>,
     path: Vec<Path>,
+    head: *mut serde_json::Value,
+    _marker: std::marker::PhantomPinned,
 }
 
 impl Cursor {
@@ -88,13 +90,26 @@ impl Cursor {
         Self {
             base: None,
             path: Vec::new(),
+            head: std::ptr::null_mut(),
+            _marker: std::marker::PhantomPinned,
         }
     }
 
-    fn traverse_map<'b>(
-        &'b mut self,
-    ) -> PResult<&'b mut serde_json::Map<String, serde_json::Value>> {
-        let mut container_ref: &'b mut _ = self
+    const fn head_arr(&mut self) -> PResult<&mut Vec<serde_json::Value>> {
+        let Some(serde_json::Value::Array(a)) = (unsafe { self.head.as_mut() }) else {
+            return Err(PermissiveJsonError::InvalidSyntax);
+        };
+        Ok(a)
+    }
+    const fn head_obj(&mut self) -> PResult<&mut serde_json::Map<String, serde_json::Value>> {
+        let Some(serde_json::Value::Object(o)) = (unsafe { self.head.as_mut() }) else {
+            return Err(PermissiveJsonError::InvalidSyntax);
+        };
+        Ok(o)
+    }
+
+    fn update_head(&mut self) -> PResult<()> {
+        let mut container_ref: &mut _ = self
             .base
             .get_or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
 
@@ -115,40 +130,9 @@ impl Cursor {
             };
         }
 
-        let serde_json::Value::Object(o) = container_ref else {
-            return Err(PermissiveJsonError::InvalidSyntax);
-        };
+        self.head = container_ref;
 
-        Ok(o)
-    }
-
-    fn traverse_arr<'b>(&'b mut self) -> PResult<&'b mut Vec<serde_json::Value>> {
-        let mut container_ref: &'b mut _ = self
-            .base
-            .get_or_insert_with(|| serde_json::Value::Array(vec![]));
-
-        for elem in &self.path {
-            container_ref = match elem {
-                Path::Key(k) => {
-                    let serde_json::Value::Object(o) = container_ref else {
-                        return Err(PermissiveJsonError::InvalidSyntax);
-                    };
-                    o.get_mut(k).ok_or(PermissiveJsonError::InvalidSyntax)?
-                }
-                Path::Index(i) => {
-                    let serde_json::Value::Array(a) = container_ref else {
-                        return Err(PermissiveJsonError::InvalidSyntax);
-                    };
-                    a.get_mut(*i).ok_or(PermissiveJsonError::InvalidSyntax)?
-                }
-            };
-        }
-
-        let serde_json::Value::Array(o) = container_ref else {
-            return Err(PermissiveJsonError::InvalidSyntax);
-        };
-
-        Ok(o)
+        Ok(())
     }
 
     fn add_new_container(&mut self, key: Option<String>, is_array: bool) -> PResult<()> {
@@ -158,11 +142,12 @@ impl Cursor {
             } else {
                 self.base = Some(serde_json::Value::Object(serde_json::Map::new()));
             }
+            self.head = self.base.as_mut().unwrap();
             return Ok(());
         }
 
         if let Some(k) = key {
-            let o = self.traverse_map()?;
+            let o = self.head_obj()?;
             o.insert(
                 k.clone(),
                 if is_array {
@@ -174,7 +159,7 @@ impl Cursor {
             self.path.push(Path::Key(k));
         } else {
             let new_index = {
-                let a = self.traverse_arr()?;
+                let a = self.head_arr()?;
                 a.push(if is_array {
                     serde_json::Value::Array(Vec::new())
                 } else {
@@ -185,19 +170,22 @@ impl Cursor {
             self.path.push(Path::Index(new_index));
         }
 
+        self.update_head().expect("Never fails here");
+
         Ok(())
     }
 
     fn move_up(&mut self) {
         _ = self.path.pop();
+        self.update_head().expect("Never fails here");
     }
 
     fn push_kv(&mut self, key: Option<String>, value: serde_json::Value) -> PResult<()> {
         if let Some(key) = key {
-            let o = self.traverse_map()?;
+            let o = self.head_obj()?;
             o.insert(key, value);
         } else {
-            let a = self.traverse_arr()?;
+            let a = self.head_arr()?;
             a.push(value);
         }
         Ok(())
@@ -321,10 +309,16 @@ impl<'a> Tokenizer<'a> {
                 }
             };
 
-            let txt = Unescaper::default()
-                .chardet(is_value, true)
-                .enc8259(true)
-                .enc_uni(true)
+            let unescaper = if is_value {
+                Unescaper::default()
+                    .chardet(true, true)
+                    .enc8259(true)
+                    .enc_uni(true)
+            } else {
+                Unescaper::default().enc8259(true)
+            };
+
+            let txt = unescaper
                 .do_unescape(txt.as_bytes())
                 .expect("As all unescape should be ok");
 
