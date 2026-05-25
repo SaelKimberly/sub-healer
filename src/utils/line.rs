@@ -7,25 +7,6 @@ use rayon::iter::{IntoParallelIterator, ParallelBridge, ParallelIterator};
 use crate::proto_spec::{ProtocolConfig, ProtoSpec};
 use crate::urlx::{RawUrlX, SchemeX};
 
-static KNOWN_SCHEMAS: &[&str] = &[
-    "vless://",
-    "vmess://",
-    "trojan://",
-    "hhysteria2://",
-    "hhysteria://",
-    "hysteria2://",
-    "hysteria://",
-    "hy2://",
-    "hy://",
-    "warp://",
-    "anytls://",
-    "ss://",
-    "ssr://",
-    "slipnet://",
-    "tg://",
-    "wireguard://",
-];
-
 #[derive(Debug, Clone)]
 #[allow(clippy::large_enum_variant)]
 pub enum Data<'a> {
@@ -120,87 +101,6 @@ pub struct Lines<'a> {
     raw: Vec<Line<'a>>,
 }
 
-fn split_at_scheme<'a>(
-    (i, s): (usize, &'a str),
-    schemas: &[&'static str],
-) -> Vec<(usize, Cow<'static, str>, Cow<'a, str>)> {
-    let s = s.trim_start();
-    if s.starts_with('#') || s.starts_with("//") || s.is_empty() {
-        // This is a commentary or an empty line
-        return vec![];
-    }
-
-    // 1: Find first schema in line (any word://, not just KNOWN_SCHEMAS)
-    let mut slice: Option<(Cow<'static, str>, &'a str)> = match s.find("://") {
-        Some(pos @ 1..) => {
-            let prefix = &s[..pos + 3];
-            let before = prefix.strip_suffix("://").unwrap_or(prefix);
-            let scheme_word = before.split_whitespace().last().filter(|w| !w.is_empty());
-            scheme_word.map(|sw| {
-                let rest = if before.trim().is_empty() {
-                    s.trim_start()
-                } else {
-                    s.strip_prefix(before.trim_end()).unwrap_or(s)
-                };
-                let cow_scheme = KNOWN_SCHEMAS
-                    .iter()
-                    .find(|k| **k == format!("{sw}://"))
-                    .map_or_else(
-                        || Cow::Owned(sw.to_string()),
-                        |k| Cow::Borrowed(k.strip_suffix("://").unwrap_or(k)),
-                    );
-                (cow_scheme, rest)
-            })
-        }
-        Some(0) => {
-            // When there is a schema separator in the beginning (empty schema)
-            let s = s.strip_prefix("://").unwrap_or(s);
-            return vec![(i, Cow::Borrowed("vmess"), format!("vmess://{s}").into())];
-        }
-        None => {
-            // When there is no such thing as "://", we assume it is a vmess link (naive).
-            return vec![(i, Cow::Borrowed("vmess"), format!("vmess://{s}").into())];
-        }
-    };
-
-    let mut result: Vec<(usize, Cow<'static, str>, Cow<'a, str>)> = Vec::with_capacity(1);
-    while let Some((schema, sx)) = slice.take() {
-        if sx.is_empty() || sx.len() < 5 {
-            result.push((i, schema, sx.into()));
-            break;
-        }
-
-        // try to find another known schema in the area of current url (longest first)
-        let mut min_schema_pos = Option::<(usize, Cow<'static, str>)>::None;
-
-        for s in schemas {
-            let idx = sx.floor_char_boundary(5);
-            let Some(pos) = sx[idx..].find(s).map(|p| p + idx) else {
-                continue;
-            };
-            if let Some((current, found)) = min_schema_pos.as_mut() {
-                if pos < *current {
-                    *current = pos;
-                    *found = Cow::Borrowed(s);
-                }
-            } else {
-                min_schema_pos = Some((pos, Cow::Borrowed(s)));
-            }
-        }
-
-        if let Some((min_schema_pos, another_schema)) = min_schema_pos {
-            let (prefix, schema_and_tail) = sx.split_at(min_schema_pos);
-            result.push((i, schema, prefix.into()));
-            _ = slice.replace((another_schema, schema_and_tail));
-        } else {
-            result.push((i, schema, sx.into()));
-            break;
-        }
-    }
-
-    result
-}
-
 enum VisitResult {
     Visited(Line<'static>),
     Raw(Line<'static>),
@@ -243,7 +143,19 @@ impl<'a> Lines<'a> {
                 .enumerate()
                 .par_bridge()
                 .flat_map(|(idx, line)| line.split("<br/>").map(move |s| (idx, s)).par_bridge())
-                .flat_map(|s| split_at_scheme(s, KNOWN_SCHEMAS))
+                .flat_map(|(idx, segment)| {
+                    let s = segment.trim_start();
+                    if s.starts_with('#') || s.starts_with("//") || s.is_empty() {
+                        Vec::new()
+                    } else {
+                        SchemeX::slice_input(s)
+                            .into_iter()
+                            .map(move |(scheme, url)| {
+                                (idx, Cow::Owned(scheme.as_str().to_string()), url)
+                            })
+                            .collect()
+                    }
+                })
                 .map(|(i, scheme, url)| Line {
                     row: i,
                     url: Data::Raw { scheme, url },

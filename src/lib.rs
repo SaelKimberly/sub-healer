@@ -16,7 +16,7 @@ pub use utils::permissive_json::{permissive_json, permissive_json_core};
 pub(crate) use utils::unescaper::Unescaper;
 // exported
 
-pub use urlx::{SchemeX, UrlX};
+pub use urlx::SchemeX;
 pub use utils::line::{Line, Lines};
 
 pub(crate) use urlx::PortSpec;

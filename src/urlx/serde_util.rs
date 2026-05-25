@@ -1,31 +1,4 @@
-use super::{HostSpec, PortSpec, TinyText};
-
-pub(crate) mod host_opt_serde {
-
-    use serde::{Deserialize, Serialize};
-
-    pub fn deserialize<'de, D>(d: D) -> Result<Option<super::HostSpec>, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let Some(s) = Option::<super::TinyText>::deserialize(d)? else {
-            return Ok(None);
-        };
-
-        let s = rustls::pki_types::ServerName::try_from(s.as_str())
-            .map_err(|e| serde::de::Error::custom(format!("invalid server name: {e}")))?;
-
-        Ok(Some(s.to_owned()))
-    }
-
-    #[allow(clippy::ref_option, reason = "serde requires this")]
-    pub fn serialize<S>(v: &Option<super::HostSpec>, s: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        v.as_ref().map(|v| v.to_str()).serialize(s)
-    }
-}
+use super::{HostSpec, PortSpec};
 
 pub(crate) mod host_serde {
     use serde::Deserialize;
@@ -48,35 +21,7 @@ pub(crate) mod host_serde {
     }
 }
 
-pub(crate) mod port_opt_serde {
-    use serde::{Deserialize, Serialize};
-
-    pub fn deserialize<'de, D>(d: D) -> Result<Option<super::PortSpec>, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let Some(s) = Option::<super::TinyText>::deserialize(d)? else {
-            return Ok(None);
-        };
-        let s = s
-            .parse()
-            .map_err(|e| serde::de::Error::custom(format!("invalid port spec: {e}")))?;
-        Ok(Some(s))
-    }
-
-    #[allow(clippy::ref_option, reason = "serde requires this")]
-    pub fn serialize<S>(v: &Option<super::PortSpec>, s: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        v.as_ref()
-            .map(std::string::ToString::to_string)
-            .serialize(s)
-    }
-}
-
 pub(crate) mod port_serde {
-
     pub fn deserialize<'de, D>(d: D) -> Result<u16, D::Error>
     where
         D: serde::Deserializer<'de>,
