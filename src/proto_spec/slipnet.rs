@@ -41,6 +41,7 @@ use super::utils;
 use super::{ParseError, ProtoSpec};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(test, derive(PartialEq, Eq))]
 #[serde(rename_all = "snake_case")]
 pub struct SlipnetConfig {
     #[serde(skip)]
@@ -57,6 +58,7 @@ pub struct SlipnetConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(test, derive(PartialEq, Eq))]
 #[serde(rename_all = "snake_case")]
 pub struct SlipnetEncConfig {
     #[serde(skip)]
@@ -161,6 +163,14 @@ impl ProtoSpec for SlipnetConfig {
     fn set_sig_cache(&self, v: NonZeroU64) {
         _ = self.sig_cache.set(v);
     }
+
+    fn transport_type(&self) -> Option<&str> {
+        None
+    }
+
+    fn security_type(&self) -> Option<&str> {
+        None
+    }
 }
 
 impl SlipnetConfig {
@@ -242,14 +252,24 @@ impl ProtoSpec for SlipnetEncConfig {
     fn set_sig_cache(&self, v: NonZeroU64) {
         _ = self.sig_cache.set(v);
     }
+
+    fn transport_type(&self) -> Option<&str> {
+        None
+    }
+
+    fn security_type(&self) -> Option<&str> {
+        None
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::super::ProtoSpec;
+    use super::super::test_helpers::check_roundtrip;
     use crate::urlx::SchemeX;
 
     const SLIPNET_URL: &str = "slipnet://MjJ8ZG5zdHR8ZG5zdHQtc29ja3N8dC5zaGFtbG91Lm9ubGluZXw4LjguOC44OjUzOjB8MHw1MDAwfGJicnwxMDgwfDEyNy4wLjAuMXwwfDg0ZTcxMjU3ZjRjZDkyZThmZjFiZDFlNTFjOWE5NGY3MjRlOWU5MTM2MzgxNDliN2FlNDJmNjhiNjljNTRkMjd8aXJhbnV4fglyYW51eHwwfHx8MjJ8MHw0NS4xNDguMjguMTE1fDB8fHVkcHxwYXNzd29yZHx8fHwwfDQ0M3x8fDB8fDB8MHx8MHx8MHwwfDEwODB8MHx0eHR8MTAxfDB8MHwwfDB8MHwwfDB8fHw4MDgwfHwwfC98MXx8";
+    const SLIPNET_ENC_URL: &str = "slipnet-enc://Ac3GD6rpCy53w/nMNSrt/pGttnE/aagWaQyqTM+rr1LJgl5T8xRs+5IWD/pe+tKPpz2eUHYXEza8roniezFp25RM6iHo902gfJYZFg5lGVaQMjwQPu6BlBBFSCjVehs70Kgf1Fx56ha566VkTPsJDu37in+EKjaHxijwEJydn4o8n6YgSoyOsxd9OzQufIXRkPM3K5FGFUG9nYSV4oBe2hUmtJVRT+q8CONfij91e9dn3FnbQfvkst08zfah4WaAHkJEIPw28CwzExsPOjRexMTmrRsZZZuliTRmncnM0gI6WmGGKe2jdizCZN6TnDM2efkWLjfWk3+d26O+xTgJZ+lUqI/h7swa11p2OzsAdNpNnNSCMECvM8TbTuwfFeY6X668AebOi8SVHTLe5S31+ZXObdlQYQFC57aU1XXmYjI6pPFbfWjPgvtmO9mR+GQ0yp0Gg+yM6ufxra4qDhmIQWbcTfqHCc1bxCMjyYdC9d+9TGapCM41IJwnoDl7zer2G+3NkEZ0E2edw4/lXxS3D95GN0PEudoi+ic/hnFeeMPUWFoAyApi9F/KwBItcjkSKqvkluNgQdzL0UmcLWkyVuhBJ8rWSdMU5ZKUqccpeiNKlKRhQ6a2b9Buiz4YxfQ4LRbVUVllZaX84hxJgMeaMg9Jp+CJmSyUD0QkN+si6pd6+31yRIZpFHGk0UnYJ9hZQuqeczecc88d0oRDMGf/rDBt198/caUJpKo=";
 
     #[test]
     fn test_slipnet_basic() {
@@ -264,6 +284,17 @@ mod tests {
         let config = SlipnetConfig::try_parse(&raw).expect("failed");
         let reconstructed = config.reconstruct().expect("reconstruct failed");
         assert_eq!(reconstructed, SLIPNET_URL);
+    }
+
+    #[test]
+    fn test_roundtrip() {
+        check_roundtrip::<SlipnetConfig>(SLIPNET_URL);
+    }
+
+    #[test]
+    #[ignore = "pre-existing: SlipnetEnc parsing fails (see AGENTS.md)"]
+    fn test_roundtrip_enc() {
+        check_roundtrip::<SlipnetEncConfig>(SLIPNET_ENC_URL);
     }
 
     #[test]

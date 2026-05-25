@@ -217,14 +217,9 @@ fn tokens_to_new_json(tokens: Vec<JsonToken>) -> PResult<serde_json::Value> {
                 cursor.add_new_container(key.take(), false)?;
             }
             JsonToken::Colon | JsonToken::Comma => {}
-            JsonToken::Val(v) => match v {
-                serde_json::Value::String(s) => {
-                    cursor.push_kv(key.take(), serde_json::Value::String(s))?;
-                }
-                other => {
-                    cursor.push_kv(key.take(), other)?;
-                }
-            },
+            JsonToken::Val(v) => {
+                cursor.push_kv(key.take(), v)?;
+            }
         }
     }
     cursor.finalize()
@@ -450,12 +445,8 @@ impl<'a> Tokenizer<'a> {
         let mut opens = Opens(0);
 
         if self.test_ctrl().is_none() {
-            return match (self.last_c, self.iter.remaining()) {
-                (
-                    'N' | 'n',
-                    [b'O' | b'o', b'N' | b'n', b'E' | b'e', tail @ ..]
-                    | [b'U' | b'u', b'L' | b'l', b'L' | b'l', tail @ ..],
-                ) => Ok((tail, serde_json::Value::Null)),
+            return match (self.last_c, self.iter.remaining().split_at_checked(3)) {
+                ('N' | 'n', Some((b"one" | b"ull", tail))) => Ok((tail, serde_json::Value::Null)),
                 _ => Err(PermissiveJsonError::InvalidSyntax),
             };
         }

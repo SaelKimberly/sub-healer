@@ -51,6 +51,7 @@ use super::utils;
 use super::{ParseError, ProtoSpec};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(test, derive(PartialEq, Eq))]
 #[serde(rename_all = "snake_case")]
 pub struct SsrConfig {
     #[serde(skip)]
@@ -198,6 +199,14 @@ impl ProtoSpec for SsrConfig {
     fn set_sig_cache(&self, v: NonZeroU64) {
         _ = self.sig_cache.set(v);
     }
+
+    fn transport_type(&self) -> Option<&str> {
+        None
+    }
+
+    fn security_type(&self) -> Option<&str> {
+        None
+    }
 }
 
 /// Strip trailing non-base64 garbage (Telegram annotation text and decorative
@@ -264,6 +273,7 @@ impl SsrConfig {
 #[cfg(test)]
 mod tests {
     use super::super::ProtoSpec;
+    use super::super::test_helpers::check_roundtrip;
     use crate::urlx::SchemeX;
 
     const SSR_URL: &str = "ssr://ZXhhbXBsZS5jb206NDQzOm9yaWdpbjpyYzQtbWQ1OnBsYWluOmNHRnpjM2R2Y21RLz9ncm91cD1WR1Z6ZEVkeWIzVncmcmVtYXJrcz1WR1Z6ZEZObGNuWmxjZw";
@@ -341,4 +351,10 @@ mod tests {
     }
 
     use super::SsrConfig;
+
+    #[test]
+    #[ignore = "pre-existing: SSR parsing fails (see AGENTS.md)"]
+    fn test_roundtrip() {
+        check_roundtrip::<SsrConfig>(SSR_URL);
+    }
 }

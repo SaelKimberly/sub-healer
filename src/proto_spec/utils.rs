@@ -108,7 +108,8 @@ pub fn parse_query(query: Option<&str>) -> std::collections::HashMap<String, Str
     }
     for pair in query_str.split('&') {
         if let Some((k, v)) = pair.split_once('=') {
-            map.insert(k.to_string(), v.to_string());
+            let decoded = urlencoding::decode(v).unwrap_or(Cow::Borrowed(v));
+            map.insert(k.to_string(), decoded.into_owned());
         }
     }
     map

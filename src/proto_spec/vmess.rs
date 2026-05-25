@@ -63,6 +63,7 @@ use super::utils;
 use super::{ParseError, ProtoSpec};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(test, derive(PartialEq, Eq))]
 #[serde(rename_all = "snake_case")]
 pub struct VmessConfig {
     #[serde(skip)]
@@ -299,6 +300,14 @@ impl ProtoSpec for VmessConfig {
     fn set_sig_cache(&self, v: NonZeroU64) {
         _ = self.sig_cache.set(v);
     }
+
+    fn transport_type(&self) -> Option<&str> {
+        self.transport.as_deref()
+    }
+
+    fn security_type(&self) -> Option<&str> {
+        self.security.as_deref()
+    }
 }
 
 impl VmessConfig {
@@ -359,7 +368,13 @@ mod tests {
         assert_eq!(parsed.host, deserialized.host);
     }
 
+    use super::super::test_helpers::check_roundtrip;
     use super::VmessConfig;
+
+    #[test]
+    fn test_roundtrip() {
+        check_roundtrip::<VmessConfig>("vmess://eyJhZGQiOiIxOTIuMjAwLjE2MC4xNiIsImFpZCI6IjAiLCJhbHBuIjoiIiwiZnAiOiIiLCJob3N0IjoiIiwiaWQiOiI5YjRjMmVkYS0zNDFlLTQ4OGYtYTNiMi0xZGM3MTZiOWYzNmEiLCJpbnNlY3VyZSI6IjEiLCJuZXQiOiJ3cyIsInBhdGgiOiIvIiwicG9ydCI6Ijg0NDMiLCJwcyI6IkBDbG91ZENpdHl5Iiwic2N5IjoiYXV0byIsInNuaSI6InN0ZWFtLmF2YWFhYWwuaXIiLCJ0bHMiOiJ0bHMiLCJ0eXBlIjoiLS0tIiwidiI6IjIifQ==");
+    }
 
     #[test]
     fn test_trailing_emoji() {

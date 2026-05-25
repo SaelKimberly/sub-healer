@@ -10,7 +10,8 @@ use scraper::{ElementRef, Node};
 use tokio::sync::mpsc::Receiver;
 use tokio::task::JoinSet;
 
-use crate::urlx::{RawUrlX, TinyText, UrlX, try_accept_raw};
+use crate::proto_spec::{ProtocolConfig, ProtoSpec};
+use crate::urlx::{RawUrlX, TinyText};
 
 /// Selector for outer message container
 static TG_WEB_MESSAGE_SELECTOR: LazyLock<scraper::Selector> =
@@ -39,7 +40,7 @@ pub struct TgWebMessage {
     pub time: DateTime<Utc>,
     pub msg_id: u32,
     pub source_url: TinyText,
-    pub msg_urls: Option<Box<[UrlX]>>,
+    pub msg_urls: Option<Box<[ProtocolConfig]>>,
     pub unparseable_urls: Option<Box<[UnparseableRecord]>>,
 }
 
@@ -98,7 +99,7 @@ fn parse_message(
     fn extract_urls(
         channel_id: &str,
         msg: ElementRef<'_>,
-    ) -> (Option<Box<[UrlX]>>, Option<Box<[UnparseableRecord]>>) {
+    ) -> (Option<Box<[ProtocolConfig]>>, Option<Box<[UnparseableRecord]>>) {
         let mut msg_text = match msg.select(&TG_WEB_TEXT_SELECTOR).next() {
             Some(t) => t.traverse(),
             None => return (None, None),
@@ -204,7 +205,7 @@ fn parse_message(
             }
         }
 
-        let mut parsed: Vec<UrlX> = Vec::new();
+        let mut parsed: Vec<ProtocolConfig> = Vec::new();
         let mut unparseable: Vec<UnparseableRecord> = Vec::new();
 
         for s in msg_urls
@@ -220,8 +221,8 @@ fn parse_message(
             };
             let raw: RawUrlX = clean.into();
             let raw_scheme = raw.schema.to_string();
-            match try_accept_raw(&raw) {
-                Ok(urlx) => parsed.push(urlx),
+            match ProtocolConfig::try_parse(&raw) {
+                Ok(config) => parsed.push(config),
                 Err(e) => {
                     tracing::warn!(
                         target: "mining::tg_channel",
@@ -526,9 +527,7 @@ where
 mod tests {
     use std::collections::BTreeMap;
     use std::fs::OpenOptions;
-    use std::io::{BufWriter, Write};
-    use std::path::{Path, PathBuf};
-    use std::sync::{Arc, Mutex};
+    use std::path::PathBuf;
 
     use chrono::Local;
     use futures::StreamExt;
@@ -538,45 +537,11 @@ mod tests {
     use tracing_subscriber::prelude::*;
     use tracing_subscriber::registry;
 
+    use crate::mining::PipelineLogWriter;
     use crate::mining::UnparseableLayer;
     use crate::mining::registry::{SourceRegistry, SourceType};
 
     use super::*;
-
-    /// Mutex-guarded file writer shared across tracing layer clones.
-    #[derive(Clone)]
-    struct SharedLogWriter {
-        writer: Arc<Mutex<BufWriter<std::fs::File>>>,
-    }
-
-    impl SharedLogWriter {
-        fn new(path: &Path) -> Self {
-            let file = OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(path)
-                .expect("Failed to open pipeline log file");
-            Self {
-                writer: Arc::new(Mutex::new(BufWriter::new(file))),
-            }
-        }
-    }
-
-    impl Write for SharedLogWriter {
-        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-            self.writer.lock().unwrap().write(buf)
-        }
-        fn flush(&mut self) -> std::io::Result<()> {
-            self.writer.lock().unwrap().flush()
-        }
-    }
-
-    impl<'a> fmt::MakeWriter<'a> for SharedLogWriter {
-        type Writer = Self;
-        fn make_writer(&'a self) -> Self::Writer {
-            self.clone()
-        }
-    }
 
     #[tokio::test]
     #[ignore = "fetches real Telegram data; run manually to diagnose parsing warnings"]
@@ -596,7 +561,7 @@ mod tests {
         };
 
         // --- Tracing layers ---
-        let pipeline_writer = SharedLogWriter::new(out_dir.join("tg-pipeline.log").as_path());
+        let pipeline_writer = PipelineLogWriter::new(out_dir.join("tg-pipeline.log").as_path());
 
         registry()
             .with(
@@ -687,7 +652,7 @@ mod tests {
         );
 
         // --- Collect ---
-        let mut per_channel = BTreeMap::<TinyText, Vec<(DateTime<Utc>, TinyText, String)>>::new();
+        let mut per_channel = BTreeMap::<TinyText, Vec<(DateTime<Utc>, String, String)>>::new();
 
         while let Some(msg) = tg_messages.next().await {
             // Emit unparseable events (feeds UnparseableLayer → unparseable.ndjson)
@@ -716,7 +681,7 @@ mod tests {
             per_channel.entry(msg.source_url).or_default().extend(
                 msg_urls
                     .iter()
-                    .map(|urlx| (msg.time, urlx.schema.as_str().into(), urlx.reconstruct())),
+                    .map(|config| (msg.time, config.schema().to_string(), config.reconstruct().unwrap_or_default())),
             );
         }
 

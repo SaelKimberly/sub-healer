@@ -80,9 +80,12 @@ pub trait ProtoSpec: Serialize + DeserializeOwned + std::fmt::Debug + Clone {
     fn uid(&self) -> u64 {
         self.sig() ^ self.cred_hash()
     }
+    fn transport_type(&self) -> Option<&str>;
+    fn security_type(&self) -> Option<&str>;
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(test, derive(PartialEq, Eq))]
 #[serde(tag = "schema")]
 pub enum ProtocolConfig {
     Vless(VlessConfig),
@@ -286,5 +289,59 @@ impl ProtoSpec for ProtocolConfig {
             Self::Tuic(c) => c.set_sig_cache(v),
             Self::Wireguard(c) => c.set_sig_cache(v),
         }
+    }
+
+    fn transport_type(&self) -> Option<&str> {
+        match self {
+            Self::Vless(c) => Some(c.transport.type_str()),
+            Self::Vmess(c) => c.transport.as_deref(),
+            Self::Trojan(c) => Some(c.transport.type_str()),
+            Self::Hysteria2(_) => None,
+            Self::Ss(_) => None,
+            Self::Ssr(_) => None,
+            Self::Tg(c) => Some(c.transport.as_str()),
+            Self::Slipnet(_) => None,
+            Self::SlipnetEnc(_) => None,
+            Self::Stormdns(_) => None,
+            Self::Tuic(_) => None,
+            Self::Wireguard(_) => None,
+        }
+    }
+
+    fn security_type(&self) -> Option<&str> {
+        match self {
+            Self::Vless(c) => Some(c.security.as_str()),
+            Self::Vmess(c) => c.security.as_deref(),
+            Self::Trojan(c) => Some(c.security.as_str()),
+            Self::Hysteria2(c) => Some(c.security.as_str()),
+            Self::Ss(_) => None,
+            Self::Ssr(_) => None,
+            Self::Tg(_) => None,
+            Self::Slipnet(_) => None,
+            Self::SlipnetEnc(_) => None,
+            Self::Stormdns(_) => None,
+            Self::Tuic(_) => None,
+            Self::Wireguard(_) => None,
+        }
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod test_helpers {
+    use crate::urlx::RawUrlX;
+    use super::ProtoSpec;
+
+    pub fn check_roundtrip<T>(url: &str)
+    where
+        T: ProtoSpec + std::fmt::Debug + PartialEq,
+    {
+        let raw = RawUrlX::from(url);
+        let parsed = T::try_parse(&raw).unwrap_or_else(|e| panic!("parse failed for {url}: {e}"));
+        parsed.sig();
+        let reconstructed = parsed.reconstruct().unwrap_or_else(|e| panic!("reconstruct failed for {url}: {e}"));
+        let re_raw = RawUrlX::from(reconstructed.as_str());
+        let reparsed = T::try_parse(&re_raw).unwrap_or_else(|e| panic!("reparse failed for {reconstructed}: {e}"));
+        reparsed.sig();
+        assert_eq!(parsed, reparsed, "roundtrip failed for: {url}");
     }
 }

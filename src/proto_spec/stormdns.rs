@@ -43,6 +43,7 @@ use super::utils;
 use super::{ParseError, ProtoSpec};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(test, derive(PartialEq, Eq))]
 #[serde(rename_all = "snake_case")]
 pub struct StormdnsConfig {
     #[serde(skip)]
@@ -205,6 +206,14 @@ impl ProtoSpec for StormdnsConfig {
     fn set_sig_cache(&self, v: NonZeroU64) {
         _ = self.sig_cache.set(v);
     }
+
+    fn transport_type(&self) -> Option<&str> {
+        None
+    }
+
+    fn security_type(&self) -> Option<&str> {
+        None
+    }
 }
 
 impl StormdnsConfig {
@@ -243,5 +252,11 @@ mod tests {
         assert_eq!(parsed.host, deserialized.host);
     }
 
+    use super::super::test_helpers::check_roundtrip;
     use super::StormdnsConfig;
+
+    #[test]
+    fn test_roundtrip() {
+        check_roundtrip::<StormdnsConfig>("stormdns://eyJzY2hlbWEiOiJ3aGl0ZWRucy5wcm9maWxlIiwidmVyc2lvbiI6MSwicHJvZmlsZSI6eyJuYW1lIjoiQ2xvdWRmbGFyZSIsInNlcnZlciI6eyJkb21haW4iOiJleGFtcGxlLmNvbSIsImVuY3J5cHRpb25fa2V5Ijoic29tZS1rZXkiLCJlbmNyeXB0aW9uX21ldGhvZCI6MX19fQ==");
+    }
 }

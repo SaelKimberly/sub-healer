@@ -58,6 +58,7 @@ use super::utils;
 use super::{ParseError, ProtoSpec};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(test, derive(PartialEq, Eq))]
 #[serde(rename_all = "snake_case")]
 pub struct SsConfig {
     #[serde(skip)]
@@ -174,6 +175,14 @@ impl ProtoSpec for SsConfig {
     fn set_sig_cache(&self, v: NonZeroU64) {
         _ = self.sig_cache.set(v);
     }
+
+    fn transport_type(&self) -> Option<&str> {
+        None
+    }
+
+    fn security_type(&self) -> Option<&str> {
+        None
+    }
 }
 
 impl SsConfig {
@@ -224,5 +233,11 @@ mod tests {
         assert_eq!(parsed.method, deserialized.method);
     }
 
+    use super::super::test_helpers::check_roundtrip;
     use super::SsConfig;
+
+    #[test]
+    fn test_roundtrip() {
+        check_roundtrip::<SsConfig>("ss://Y2xlb2Y6cGFzc3dvcmRAMTwzMC4wLjE2MDo4MDgw@127.0.0.1:8080");
+    }
 }

@@ -60,6 +60,7 @@ use super::utils;
 use super::{ParseError, ProtoSpec};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(test, derive(PartialEq, Eq))]
 #[serde(rename_all = "snake_case")]
 pub struct Hysteria2Config {
     #[serde(skip)]
@@ -227,6 +228,14 @@ impl ProtoSpec for Hysteria2Config {
     fn set_sig_cache(&self, v: NonZeroU64) {
         _ = self.sig_cache.set(v);
     }
+
+    fn transport_type(&self) -> Option<&str> {
+        None
+    }
+
+    fn security_type(&self) -> Option<&str> {
+        Some(self.security.as_str())
+    }
 }
 
 impl Hysteria2Config {
@@ -308,5 +317,11 @@ mod tests {
         assert_eq!(parsed.auth, deserialized.auth);
     }
 
+    use super::super::test_helpers::check_roundtrip;
     use super::Hysteria2Config;
+
+    #[test]
+    fn test_roundtrip() {
+        check_roundtrip::<Hysteria2Config>("hysteria2://b4bd0613-ff7c-4f2f-954d-185915e6ddad@206.71.158.41:35000?security=tls&obfs=salamander&obfs-password=password123&insecure=1&sni=jnir.pichondan.com");
+    }
 }

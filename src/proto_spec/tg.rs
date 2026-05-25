@@ -48,6 +48,7 @@ use super::utils;
 use super::{ParseError, ProtoSpec};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(test, derive(PartialEq, Eq))]
 #[serde(rename_all = "snake_case")]
 pub struct TgConfig {
     #[serde(skip)]
@@ -173,6 +174,14 @@ impl ProtoSpec for TgConfig {
     fn set_sig_cache(&self, v: NonZeroU64) {
         _ = self.sig_cache.set(v);
     }
+
+    fn transport_type(&self) -> Option<&str> {
+        Some(self.transport.as_str())
+    }
+
+    fn security_type(&self) -> Option<&str> {
+        None
+    }
 }
 
 impl TgConfig {
@@ -228,5 +237,11 @@ mod tests {
         assert_eq!(parsed.port, deserialized.port);
     }
 
+    use super::super::test_helpers::check_roundtrip;
     use super::TgConfig;
+
+    #[test]
+    fn test_roundtrip() {
+        check_roundtrip::<TgConfig>("https://t.me/proxy?server=146.185.211.126&port=443&secret=ee1e36377253a29133d290f3d14ae0163873756e342d32302e757365726170692e636f6d");
+    }
 }

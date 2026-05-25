@@ -3,6 +3,7 @@ mod registry;
 mod sub;
 pub mod telegram;
 mod unparseable_log;
+mod writer;
 
 use std::path::Path;
 use std::time::Duration;
@@ -19,6 +20,7 @@ pub use config::{load_config, load_subscriptions};
 pub use registry::{SourceMetadata, SourceRegistry, SourceType, TimestampedProxy};
 pub use sub::{download_sub_data, process_sub_lines};
 pub use unparseable_log::UnparseableLayer;
+pub use writer::PipelineLogWriter;
 
 /// # Panics
 ///

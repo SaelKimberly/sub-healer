@@ -1,7 +1,8 @@
 use rusqlite::{Connection, Result, params};
 use serde::{Deserialize, Serialize};
 
-use crate::urlx::UrlX;
+use crate::proto_spec::ProtocolConfig;
+use crate::proto_spec::ProtoSpec;
 
 pub const SCHEMA_SOURCES: &str = r"
 CREATE TABLE IF NOT EXISTS sources (
@@ -131,14 +132,14 @@ pub fn upsert_source(conn: &Connection, url: &str) -> Result<i64> {
 ///
 /// # Panics
 ///
-/// Will panic if the `urlx` is not a server URL.
+/// Will panic if the `config` is not a server URL.
 pub fn upsert_server(
     conn: &Connection,
-    urlx: &UrlX,
+    config: &ProtocolConfig,
     source_id: i64,
     incoming_ts: i64,
 ) -> Result<()> {
-    let server_id = urlx.uid.cast_signed();
+    let server_id = config.uid() as i64;
 
     let existing: Option<ServerRecord> = conn
         .query_row(
@@ -163,20 +164,19 @@ pub fn upsert_server(
 
     match existing {
         None => {
-            let schema = urlx.schema.as_str().to_string();
-            let host = urlx.host_str();
-            let port = urlx
-                .port
-                .as_ref()
-                .map(std::string::ToString::to_string)
+            let schema = config.schema().as_str().to_string();
+            let host = config
+                .host()
+                .map(|h| h.to_str().into_owned())
                 .unwrap_or_default();
-            let transport = urlx
-                .transport
-                .as_ref()
-                .map(std::string::ToString::to_string);
-            let security = urlx.security.as_ref().map(std::string::ToString::to_string);
-            let remarks = urlx.fragment.as_ref().map(std::string::ToString::to_string);
-            let raw_config = serde_json::to_string(urlx).expect("Failed to serialize UrlX");
+            let port = config
+                .port()
+                .map(|p| p.to_string())
+                .unwrap_or_default();
+            let transport = config.transport_type().map(std::string::ToString::to_string);
+            let security = config.security_type().map(std::string::ToString::to_string);
+            let remarks = config.remarks().map(std::string::ToString::to_string);
+            let raw_config = serde_json::to_string(config).expect("Failed to serialize ProtocolConfig");
 
             conn.execute(
                 "INSERT INTO servers (id, schema, host, port, transport, security, remarks, raw_config, first_seen_ts, first_seen_source_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
@@ -189,7 +189,7 @@ pub fn upsert_server(
             )?;
         }
         Some(existing) => {
-            let incoming_remarks = urlx.fragment.as_ref().map(std::string::ToString::to_string);
+            let incoming_remarks = config.remarks().map(std::string::ToString::to_string);
 
             if incoming_ts < existing.first_seen_ts {
                 conn.execute(

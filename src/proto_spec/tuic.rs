@@ -43,6 +43,7 @@ use super::utils;
 use super::{ParseError, ProtoSpec};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(test, derive(PartialEq, Eq))]
 #[serde(rename_all = "snake_case")]
 pub struct TuicConfig {
     #[serde(skip)]
@@ -216,6 +217,14 @@ impl ProtoSpec for TuicConfig {
     fn set_sig_cache(&self, v: NonZeroU64) {
         _ = self.sig_cache.set(v);
     }
+
+    fn transport_type(&self) -> Option<&str> {
+        None
+    }
+
+    fn security_type(&self) -> Option<&str> {
+        None
+    }
 }
 
 impl TuicConfig {
@@ -324,5 +333,11 @@ mod tests {
         assert_eq!(parsed.password, deserialized.password, "password mismatch");
     }
 
+    use super::super::test_helpers::check_roundtrip;
     use super::TuicConfig;
+
+    #[test]
+    fn test_roundtrip() {
+        check_roundtrip::<TuicConfig>("tuic://36106e0f-4d9a-470b-a3fd-535f3b7a1e92:dongtaiwang.com@5.178.101.117:30006?congestion_control=cubic&udp_relay_mode=native&alpn=h3");
+    }
 }

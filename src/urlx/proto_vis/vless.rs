@@ -94,10 +94,6 @@ impl super::ProtoVisitor for VlessProto {
         )
         .map_err(|e| super::ParseError::Unknown(e.into()))?;
 
-        if let Some(ref path) = url.path {
-            base.set_path(path.as_str());
-        }
-
         if !url.query.is_empty() {
             let mut filtered_query: Vec<_> = url
                 .query

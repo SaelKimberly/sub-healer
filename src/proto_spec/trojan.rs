@@ -49,6 +49,7 @@ use super::utils;
 use super::{ParseError, ProtoSpec};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(test, derive(PartialEq, Eq))]
 #[serde(rename_all = "snake_case")]
 pub struct TrojanConfig {
     #[serde(skip)]
@@ -225,6 +226,14 @@ impl ProtoSpec for TrojanConfig {
     fn set_sig_cache(&self, v: NonZeroU64) {
         _ = self.sig_cache.set(v);
     }
+
+    fn transport_type(&self) -> Option<&str> {
+        Some(self.transport.type_str())
+    }
+
+    fn security_type(&self) -> Option<&str> {
+        Some(self.security.as_str())
+    }
 }
 
 impl TrojanConfig {
@@ -291,5 +300,11 @@ mod tests {
         assert_eq!(parsed.password, deserialized.password, "password mismatch");
     }
 
+    use super::super::test_helpers::check_roundtrip;
     use super::TrojanConfig;
+
+    #[test]
+    fn test_roundtrip() {
+        check_roundtrip::<TrojanConfig>("trojan://humanity@172.64.152.23:443?security=tls&type=ws&path=/assignment&sni=www.creationlong.org");
+    }
 }

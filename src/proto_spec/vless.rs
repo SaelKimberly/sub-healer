@@ -54,6 +54,7 @@ use super::utils;
 use super::{ParseError, ProtoSpec};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(test, derive(PartialEq, Eq))]
 #[serde(rename_all = "snake_case")]
 pub struct VlessConfig {
     #[serde(skip)]
@@ -180,10 +181,6 @@ impl ProtoSpec for VlessConfig {
         let mut base = url::Url::parse(format!("vless://{}@{hostport}", self.uuid).as_str())
             .map_err(|e| ParseError::Unknown(e.into()))?;
 
-        if let Some(ref path) = self.path {
-            base.set_path(path);
-        }
-
         {
             let mut q = base.query_pairs_mut();
             if self.security != "none" {
@@ -267,6 +264,14 @@ impl ProtoSpec for VlessConfig {
 
     fn set_sig_cache(&self, v: NonZeroU64) {
         _ = self.sig_cache.set(v);
+    }
+
+    fn transport_type(&self) -> Option<&str> {
+        Some(self.transport.type_str())
+    }
+
+    fn security_type(&self) -> Option<&str> {
+        Some(self.security.as_str())
     }
 }
 
@@ -360,5 +365,13 @@ mod tests {
         assert_eq!(parsed.uuid, deserialized.uuid, "uuid mismatch");
     }
 
+    use super::super::test_helpers::check_roundtrip;
     use super::VlessConfig;
+
+    #[test]
+    fn test_roundtrip() {
+        check_roundtrip::<VlessConfig>("vless://6202b230-417c-4d8e-b624-0f71afa9c75d@159.223.24.65:443?path=/?ed=2560&security=tls&encryption=none&sni=test.ir&type=ws");
+        check_roundtrip::<VlessConfig>("vless://6202b230-417c-4d8e-b624-0f71afa9c75d@host:443?type=ws&path=%2F");
+        check_roundtrip::<VlessConfig>("vless://6202b230-417c-4d8e-b624-0f71afa9c75d@host:443");
+    }
 }

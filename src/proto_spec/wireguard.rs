@@ -42,6 +42,7 @@ use super::utils;
 use super::{ParseError, ProtoSpec};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(test, derive(PartialEq, Eq))]
 #[serde(rename_all = "snake_case")]
 pub struct WireguardConfig {
     #[serde(skip)]
@@ -82,34 +83,31 @@ impl ProtoSpec for WireguardConfig {
 
         let query = utils::parse_query(raw.query);
 
-        let decode_val = |v: &str| -> String {
-            urlencoding::decode(v).map_or_else(|_| v.to_string(), std::borrow::Cow::into_owned)
-        };
-
         // address: interface address in CIDR notation (required)
         let address = query
             .get("address")
             .ok_or_else(|| ParseError::MissingConf("address".into()))
-            .map(|s| decode_val(s))?;
+            .cloned()?;
 
         // publickey/public_key: peer's base64-encoded public key (required)
         let public_key = query
             .get("publickey")
             .or_else(|| query.get("public_key"))
             .ok_or_else(|| ParseError::MissingConf("publickey".into()))
-            .map(|s| decode_val(s))?;
+            .cloned()?;
 
         // presharedkey/psk: optional pre-shared key
         let preshared_key = query
             .get("presharedkey")
             .or_else(|| query.get("psk"))
-            .map(|s| decode_val(s));
+            .cloned()
+            .filter(|s| !s.is_empty());
 
         // reserved: 3 bytes, comma-separated decimal or base64
-        let reserved = query.get("reserved").map(|s| decode_val(s));
+        let reserved = query.get("reserved").cloned();
 
         // mtu: interface MTU (defaults vary: 1420 Xray, 1280 WireGuard-go)
-        let mtu = query.get("mtu").map(|s| decode_val(s));
+        let mtu = query.get("mtu").cloned();
 
         let remarks = utils::decode_fragment(raw)?;
 
@@ -207,6 +205,14 @@ impl ProtoSpec for WireguardConfig {
 
     fn set_sig_cache(&self, v: NonZeroU64) {
         _ = self.sig_cache.set(v);
+    }
+
+    fn transport_type(&self) -> Option<&str> {
+        None
+    }
+
+    fn security_type(&self) -> Option<&str> {
+        None
     }
 }
 
@@ -327,5 +333,11 @@ mod tests {
         );
     }
 
+    use super::super::test_helpers::check_roundtrip;
     use super::WireguardConfig;
+
+    #[test]
+    fn test_roundtrip() {
+        check_roundtrip::<WireguardConfig>("wireguard://eERuOncn22jnY3uYp8WLcy0SCuOkEbSDa0j%2BwAPSEH4%3D@162.159.192.1:2408?address=172.16.0.2%2F32&presharedkey=&reserved=236%2C163%2C162&publickey=bmXOC%2BF1FxEMF9dyiK2H5%2F1SUtzH0JuVo51h2wPfgyo%3D&mtu=1280#%40V2rayBaaz");
+    }
 }

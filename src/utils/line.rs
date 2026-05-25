@@ -4,8 +4,8 @@ use std::sync::Arc;
 
 use rayon::iter::{IntoParallelIterator, ParallelBridge, ParallelIterator};
 
-use crate::urlx::try_accept_raw;
-use crate::urlx::{RawUrlX, SchemeX, UrlX};
+use crate::proto_spec::{ProtocolConfig, ProtoSpec};
+use crate::urlx::{RawUrlX, SchemeX};
 
 static KNOWN_SCHEMAS: &[&str] = &[
     "vless://",
@@ -26,14 +26,14 @@ static KNOWN_SCHEMAS: &[&str] = &[
     "wireguard://",
 ];
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 #[allow(clippy::large_enum_variant)]
 pub enum Data<'a> {
     Raw {
         scheme: Cow<'static, str>,
         url: Cow<'a, str>,
     },
-    Url(UrlX),
+    Url(ProtocolConfig),
 }
 
 #[derive(Debug, Clone)]
@@ -95,10 +95,10 @@ impl<'a> Line<'a> {
         }
 
         let raw: RawUrlX = url.as_ref().into();
-        match try_accept_raw(&raw) {
-            Ok(urlx) => Self {
+        match ProtocolConfig::try_parse(&raw) {
+            Ok(config) => Self {
                 row,
-                url: Data::Url(urlx),
+                url: Data::Url(config),
                 wrn,
                 err: None,
             },
@@ -293,9 +293,9 @@ impl<'a> Lines<'a> {
         let Line { row, url, wrn, err } = line;
 
         match url {
-            Data::Url(urlx) => VisitResult::Visited(Line {
+            Data::Url(config) => VisitResult::Visited(Line {
                 row,
-                url: Data::Url(urlx),
+                url: Data::Url(config),
                 wrn,
                 err: None,
             }),
