@@ -1,7 +1,6 @@
 use std::collections::BTreeMap;
 use std::fs::OpenOptions;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -102,11 +101,12 @@ async fn main() -> anyhow::Result<()> {
         "MsV2ray",
     ];
 
-    // --- Registry (aligned with production: https://t.me/s/{name}) ---
+    // --- Registry (canonical https://t.me/s/{name}) ---
     let mut registry = SourceRegistry::new();
     for name in &channels {
         registry.pre_populate(&format!("https://t.me/s/{name}"), SourceType::Telegram);
     }
+    let registry = Arc::new(registry);
 
     // --- Client ---
     let client = reqwest::Client::builder()
@@ -116,70 +116,33 @@ async fn main() -> anyhow::Result<()> {
         )
         .build()?;
 
-    // --- Fetch ---
-    let mut tg_messages = fetch_tg_channels(
+    // --- Fetch (flattened stream: one TracedProtocolConfig per item) ---
+    let mut tg_stream = fetch_tg_channels(
         client,
         16,
         channels.into_iter(),
         Duration::from_secs(10),
         Some(Backfill::Last(TimeDelta::hours(5))),
+        registry.clone(),
     );
 
     // --- Collect ---
-    let mut per_channel = BTreeMap::<String, Vec<(chrono::DateTime<Utc>, String, String)>>::new();
+    let mut per_channel =
+        BTreeMap::<String, Vec<(chrono::DateTime<Utc>, String, String)>>::new();
+    let mut by_scheme_ok = BTreeMap::<String, u64>::new();
 
-    let stats = Arc::new(AggregateStats {
-        total_ok: AtomicU64::new(0),
-        total_fail: AtomicU64::new(0),
-        by_scheme_ok: std::sync::Mutex::new(BTreeMap::new()),
-        by_scheme_fail: std::sync::Mutex::new(BTreeMap::new()),
-    });
+    while let Some(item) = tg_stream.next().await {
+        let schema = item.config.schema().to_string();
+        *by_scheme_ok.entry(schema.clone()).or_insert(0) += 1;
 
-    while let Some(msg) = tg_messages.next().await {
-        // Emit unparseable events (feeds UnparseableLayer → unparseable.ndjson)
-        if let Some(ref unparseable) = msg.unparseable_urls {
-            let source_url = format!("https://t.me/s/{}", msg.source_url);
-            let source = registry.lookup(&source_url);
-            let source_id = source.as_ref().map_or(0i64, |s| s.id);
-            let ts = msg.time.timestamp();
-            for u in unparseable {
-                stats.total_fail.fetch_add(1, Ordering::Relaxed);
-                let mut map = stats.by_scheme_fail.lock().unwrap();
-                *map.entry(u.scheme.clone()).or_insert(0) += 1;
-                tracing::warn!(
-                    target: "mining::unparseable",
-                    raw_url = %u.raw_url,
-                    scheme = %u.scheme,
-                    error = %u.error,
-                    source_id = source_id,
-                    source_type = "telegram",
-                    timestamp = ts,
-                );
-            }
-        }
-
-        let Some(msg_urls) = msg.msg_urls.as_deref() else {
-            continue;
-        };
-
-        for config in msg_urls {
-            stats.total_ok.fetch_add(1, Ordering::Relaxed);
-            let schema = config.schema().to_string();
-            let mut map = stats.by_scheme_ok.lock().unwrap();
-            *map.entry(schema.clone()).or_insert(0) += 1;
-        }
-
-        per_channel.entry(msg.source_url.to_string()).or_default().extend(
-            msg_urls
-                .iter()
-                .map(|config| {
-                    (
-                        msg.time,
-                        config.schema().to_string(),
-                        config.reconstruct().unwrap_or_default(),
-                    )
-                }),
-        );
+        per_channel
+            .entry(item.source.url.clone())
+            .or_default()
+            .push((
+                item.timestamp,
+                schema,
+                item.config.reconstruct().unwrap_or_default(),
+            ));
     }
 
     // --- Sort per channel ---
@@ -188,7 +151,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // --- Write tg-results.json ---
-    let total: usize = per_channel.values().map(Vec::len).sum();
+    let total_ok: usize = per_channel.values().map(Vec::len).sum();
     let channels_map: serde_json::Map<String, serde_json::Value> = per_channel
         .iter()
         .map(|(channel, entries)| {
@@ -209,7 +172,7 @@ async fn main() -> anyhow::Result<()> {
     let tg_results = json!({
         "generated_at": Utc::now().to_rfc3339(),
         "total_channels": per_channel.len(),
-        "total_urls": total,
+        "total_urls": total_ok,
         "channels": channels_map,
     });
 
@@ -221,40 +184,21 @@ async fn main() -> anyhow::Result<()> {
     serde_json::to_writer_pretty(results_file, &tg_results)?;
 
     // --- Write summary.json ---
-    let ok = stats.total_ok.load(Ordering::Relaxed);
-    let fail = stats.total_fail.load(Ordering::Relaxed);
-    let total_urls = ok + fail;
-    let by_scheme_ok = stats.by_scheme_ok.lock().unwrap();
-    let by_scheme_fail = stats.by_scheme_fail.lock().unwrap();
-
-    let mut seen_schemes: BTreeMap<String, bool> = BTreeMap::new();
-    for s in by_scheme_ok.keys() {
-        seen_schemes.entry(s.clone()).or_insert(true);
-    }
-    for s in by_scheme_fail.keys() {
-        seen_schemes.entry(s.clone()).or_insert(true);
-    }
-
     let mut all_schemes: BTreeMap<String, serde_json::Value> = BTreeMap::new();
-    for s in seen_schemes.keys() {
-        let ok_count = by_scheme_ok.get(s).copied().unwrap_or(0);
-        let fail_count = by_scheme_fail.get(s).copied().unwrap_or(0);
+    for (s, ok_count) in &by_scheme_ok {
         all_schemes.insert(
             s.clone(),
             json!({
                 "ok": ok_count,
-                "fail": fail_count,
-                "total": ok_count + fail_count,
+                "total": ok_count,
             }),
         );
     }
 
     let summary = json!({
         "generated_at": Utc::now().to_rfc3339(),
-        "total_urls": total_urls,
-        "ok": ok,
-        "fail": fail,
-        "success_rate_pct": format!("{:.1}", if total_urls > 0 { ok as f64 / total_urls as f64 * 100.0 } else { 0.0 }),
+        "total_urls": total_ok,
+        "ok": total_ok,
         "by_scheme": all_schemes,
     });
 
@@ -268,24 +212,8 @@ async fn main() -> anyhow::Result<()> {
 
     // --- Print summary to stderr ---
     eprintln!("Logs written to: {}/", out_dir.display());
-    eprintln!(
-        "Results: {}/{} OK ({:.1}%), {} FAIL",
-        ok,
-        total_urls,
-        if total_urls > 0 {
-            ok as f64 / total_urls as f64 * 100.0
-        } else {
-            0.0
-        },
-        fail,
-    );
+    eprintln!("Results: {} OK", total_ok);
+    eprintln!("Unparseable URLs logged to: {}", unparseable_path.display());
 
     Ok(())
-}
-
-struct AggregateStats {
-    total_ok: AtomicU64,
-    total_fail: AtomicU64,
-    by_scheme_ok: std::sync::Mutex<BTreeMap<String, u64>>,
-    by_scheme_fail: std::sync::Mutex<BTreeMap<String, u64>>,
 }

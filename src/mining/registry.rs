@@ -4,8 +4,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use chrono::{DateTime, Utc};
-
 use crate::db::hash_source_url;
 
 #[cfg(test)]
@@ -45,35 +43,6 @@ mod tests {
         // Non-existent source should return None
         let source3 = registry.lookup("https://nonexistent.com/test");
         assert!(source3.is_none());
-    }
-
-    #[test]
-    fn test_timestamped_proxy_creation() {
-        let mut registry = SourceRegistry::new();
-        registry.pre_populate("https://t.me/channel1", SourceType::Telegram);
-        let source = registry.lookup("https://t.me/channel1").unwrap();
-
-        // Create a simple UrlX by parsing a basic URL
-        // This tests that TimestampedProxy can work with real UrlX instances
-        let simple_url = "https://example.com";
-        let urlx = simple_url
-            .parse::<crate::UrlX>()
-            .expect("Should parse simple URL");
-
-        let timestamp = Utc::now();
-        let raw_content = Some("vless://test@example.com".to_string());
-
-        // Create the timestamped proxy
-        let proxy = TimestampedProxy::new(urlx, timestamp, source, raw_content);
-
-        // Verify all fields are properly set
-        assert_eq!(proxy.source.url, "https://t.me/channel1");
-        assert_eq!(proxy.timestamp, timestamp);
-        assert!(proxy.raw_content.is_some());
-        assert_eq!(proxy.raw_content.unwrap(), "vless://test@example.com");
-
-        // Verify source metadata is correctly shared via Arc
-        assert_eq!(std::sync::Arc::strong_count(&proxy.source), 2); // registry + proxy
     }
 
     #[test]
@@ -177,35 +146,4 @@ impl SourceRegistry {
     }
 }
 
-/// Proxy configuration with timestamp and source information
-#[derive(Debug, Clone)]
-pub struct TimestampedProxy {
-    /// Parsed proxy URL
-    pub urlx: crate::UrlX,
-    /// When this proxy was observed
-    /// For Telegram: message timestamp
-    /// For subscriptions: download time or Last-Modified header
-    pub timestamp: DateTime<Utc>,
-    /// Source metadata (shared via Arc for efficiency)
-    pub source: Arc<SourceMetadata>,
-    /// Original content for debugging (optional)
-    pub raw_content: Option<String>,
-}
 
-impl TimestampedProxy {
-    /// Create new timestamped proxy
-    #[must_use]
-    pub const fn new(
-        urlx: crate::UrlX,
-        timestamp: DateTime<Utc>,
-        source: Arc<SourceMetadata>,
-        raw_content: Option<String>,
-    ) -> Self {
-        Self {
-            urlx,
-            timestamp,
-            source,
-            raw_content,
-        }
-    }
-}

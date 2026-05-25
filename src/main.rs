@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context;
@@ -19,6 +20,26 @@ fn extract_channel_name(url: &url::Url) -> Option<String> {
     } else {
         Some(channel.to_string())
     }
+}
+
+/// Process a stream of traced configs, writing each to the database.
+/// Fatal on DB error (aborts pipeline).
+async fn process_stream(
+    mut stream: impl StreamExt<Item = mining::TracedProtocolConfig> + std::marker::Unpin,
+    conn: &rusqlite::Connection,
+) -> Result<usize, anyhow::Error> {
+    let mut count = 0usize;
+    while let Some(item) = stream.next().await {
+        v2ray_heal::db::upsert_server(
+            &conn,
+            &item.config,
+            item.source.id,
+            item.timestamp.timestamp(),
+        )
+        .context("upsert failed (aborting)")?;
+        count += 1;
+    }
+    Ok(count)
 }
 
 #[derive(Debug, clap::Subcommand)]
@@ -68,10 +89,14 @@ async fn main() -> anyhow::Result<()> {
             registry.pre_populate("stdin://local", mining::SourceType::Other);
             registry.upsert_all(&conn)?;
 
-            let source = registry.lookup("stdin://local").unwrap();
             let lines = v2ray_heal::parse_sub(&source_url, &buf);
-            let ts = mining::get_current_timestamp();
-            let count = mining::process_sub_lines(&lines, &source, &conn, "stdin", ts)?;
+            let items = mining::lines_to_traced(
+                &lines,
+                &registry,
+                "stdin://local",
+                mining::get_current_timestamp(),
+            );
+            let count = process_stream(futures::stream::iter(items), &conn).await?;
             tracing::info!(count, "Stdin mining completed");
         }
         Commands::Remote { url } => {
@@ -88,98 +113,65 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
 
-            if !tg_urls.is_empty() {
-                let mut registry = mining::SourceRegistry::new();
-                let mut channel_names = Vec::new();
-                for u in &tg_urls {
-                    let Some(name) = extract_channel_name(u) else {
-                        tracing::error!(url = %u, "Cannot extract channel name from Telegram URL");
-                        continue;
-                    };
-                    registry.pre_populate(&name, mining::SourceType::Telegram);
-                    channel_names.push(name);
-                }
-                registry.upsert_all(&conn)?;
+            let mut registry = mining::SourceRegistry::new();
 
-                let tg_stream = mining::telegram::fetch_tg_channels(
-                    client.clone(),
-                    1,
-                    channel_names.into_iter(),
-                    Duration::from_secs(30),
-                    None,
-                );
+            let mut channel_names = Vec::new();
+            for u in &tg_urls {
+                let Some(name) = extract_channel_name(u) else {
+                    tracing::error!(url = %u, "Cannot extract channel name from Telegram URL");
+                    continue;
+                };
+                let canonical = format!("https://t.me/s/{name}");
+                registry.pre_populate(&canonical, mining::SourceType::Telegram);
+                channel_names.push(name);
+            }
+            for u in &sub_urls {
+                registry.pre_populate(u.as_str(), mining::SourceType::Subscription);
+            }
+            registry.upsert_all(&conn)?;
+            let registry = Arc::new(registry);
 
-                let mut tg_count = 0usize;
-                tokio::pin!(tg_stream);
-                while let Some(msg) = tg_stream.next().await {
-                    let Some(source) = registry.lookup(&msg.source_url) else {
-                        tracing::warn!(url = %msg.source_url, "Source not found in registry");
-                        continue;
-                    };
-                    let ts = msg.time.timestamp();
+            // Build streams for each source type
+            let tg_stream = if !channel_names.is_empty() {
+                Some(
+                    mining::telegram::fetch_tg_channels(
+                        client.clone(),
+                        1,
+                        channel_names.into_iter(),
+                        Duration::from_secs(30),
+                        None,
+                        registry.clone(),
+                    )
+                    .boxed(),
+                )
+            } else {
+                None::<futures::stream::BoxStream<'static, mining::TracedProtocolConfig>>
+            };
 
-                    if let Some(ref unparseable) = msg.unparseable_urls {
-                        for u in unparseable {
-                            if u.error.contains("promotion") {
-                                continue;
-                            }
-                            tracing::warn!(
-                                target: "mining::unparseable",
-                                raw_url = %u.raw_url,
-                                scheme = %u.scheme,
-                                error = %u.error,
-                                source_id = source.id,
-                                source_type = "telegram",
-                                timestamp = ts,
-                            );
-                        }
+            let sub_stream = if !sub_urls.is_empty() {
+                let sub_strings: Vec<String> = sub_urls.iter().map(|u| u.to_string()).collect();
+                Some(
+                    mining::fetch_subscriptions(client.clone(), registry.clone(), sub_strings)
+                        .boxed(),
+                )
+            } else {
+                None::<futures::stream::BoxStream<'static, mining::TracedProtocolConfig>>
+            };
+
+            // Merge all available streams
+            let merged: futures::stream::BoxStream<'static, mining::TracedProtocolConfig> =
+                match (tg_stream, sub_stream) {
+                    (Some(tg), Some(sub)) => futures::stream::select(tg, sub).boxed(),
+                    (Some(tg), None) => tg,
+                    (None, Some(sub)) => sub,
+                    (None, None) => {
+                        tracing::warn!("No valid URLs provided for remote command");
+                        return Ok(());
                     }
+                };
 
-                    if let Some(ref msg_urls) = msg.msg_urls {
-                        for urlx in msg_urls {
-                            v2ray_heal::db::upsert_server(&conn, urlx, source.id, ts)
-                                .context("Telegram upsert failed (aborting)")?;
-                            tg_count += 1;
-                        }
-                    }
-                }
-                tracing::info!(count = tg_count, "Remote Telegram mining completed");
-            }
-
-            if !sub_urls.is_empty() {
-                let mut registry = mining::SourceRegistry::new();
-                for u in &sub_urls {
-                    registry.pre_populate(u.as_str(), mining::SourceType::Subscription);
-                }
-                registry.upsert_all(&conn)?;
-
-                let ts = mining::get_current_timestamp();
-                let mut total = 0usize;
-
-                for u in &sub_urls {
-                    let url_str = u.as_str();
-                    let data = match mining::download_sub_data(&client, u).await {
-                        Ok(d) => d,
-                        Err(e) => {
-                            tracing::warn!(url = %url_str, error = %e, "Failed to download remote subscription");
-                            continue;
-                        }
-                    };
-                    let lines = v2ray_heal::parse_sub(u, &data);
-                    let Some(source) = registry.lookup(url_str) else {
-                        tracing::warn!(url = %url_str, "Source not found in registry");
-                        continue;
-                    };
-                    let count =
-                        mining::process_sub_lines(&lines, &source, &conn, "subscription", ts)?;
-                    total += count;
-                }
-                tracing::info!(count = total, "Remote subscription mining completed");
-            }
-
-            if tg_urls.is_empty() && sub_urls.is_empty() {
-                tracing::warn!("No valid URLs provided for remote command");
-            }
+            let count = process_stream(merged, &conn).await?;
+            tracing::info!(count, "Remote mining completed");
         }
         Commands::Local { file } => {
             if file.is_empty() {
@@ -203,20 +195,17 @@ async fn main() -> anyhow::Result<()> {
             registry.upsert_all(&conn)?;
 
             let ts = mining::get_current_timestamp();
-            let mut total = 0usize;
-
+            let mut items = Vec::new();
             for (abs_path, source_url, url_str) in &resolved {
                 let data = std::fs::read(abs_path)
                     .with_context(|| format!("Failed to read file: {}", abs_path.display()))?;
                 let lines = v2ray_heal::parse_sub(source_url, &data);
-                let Some(source) = registry.lookup(url_str) else {
-                    tracing::warn!(url = %url_str, "Source not found in registry");
-                    continue;
-                };
-                let count = mining::process_sub_lines(&lines, &source, &conn, "local", ts)?;
-                total += count;
+                let traced = mining::lines_to_traced(&lines, &registry, url_str, ts);
+                items.extend(traced);
             }
-            tracing::info!(count = total, "Local file mining completed");
+
+            let count = process_stream(futures::stream::iter(items), &conn).await?;
+            tracing::info!(count, "Local file mining completed");
         }
     }
 

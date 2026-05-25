@@ -2,10 +2,12 @@ mod config;
 mod registry;
 mod sub;
 pub mod telegram;
+mod traced_config;
 mod unparseable_log;
 mod writer;
 
 use std::path::Path;
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context;
@@ -17,8 +19,9 @@ pub const SEMAPHORE_PERMITS: usize = 64;
 pub const USER_AGENT: &str = "clash-verge/v2.0.2";
 
 pub use config::{load_config, load_subscriptions};
-pub use registry::{SourceMetadata, SourceRegistry, SourceType, TimestampedProxy};
-pub use sub::{download_sub_data, process_sub_lines};
+pub use registry::{SourceMetadata, SourceRegistry, SourceType};
+pub use sub::{download_sub_data, fetch_subscriptions, lines_to_traced};
+pub use traced_config::TracedProtocolConfig;
 pub use unparseable_log::UnparseableLayer;
 pub use writer::PipelineLogWriter;
 
@@ -54,6 +57,27 @@ pub fn build_client() -> Result<reqwest::Client, anyhow::Error> {
         .build()?)
 }
 
+/// Process a stream of traced configs, writing each to the database.
+/// Returns the number of successfully processed items.
+/// Fatal on DB error (aborts pipeline).
+async fn process_config_stream(
+    mut stream: impl StreamExt<Item = TracedProtocolConfig> + std::marker::Unpin,
+    conn: &rusqlite::Connection,
+) -> Result<usize, anyhow::Error> {
+    let mut count = 0usize;
+    while let Some(item) = stream.next().await {
+        crate::db::upsert_server(
+            &conn,
+            &item.config,
+            item.source.id,
+            item.timestamp.timestamp(),
+        )
+        .context("upsert failed (aborting)")?;
+        count += 1;
+    }
+    Ok(count)
+}
+
 /// # Errors
 ///
 /// Will return `Err` if the config file is invalid or the database cannot be opened.
@@ -79,66 +103,31 @@ pub async fn run_with_config(config_path: &Path, db_path: &Path) -> Result<(), a
     for sub in &subscriptions {
         registry.pre_populate(sub, SourceType::Subscription);
     }
+    let registry = Arc::new(registry);
 
     registry
         .upsert_all(&conn)
         .context("Failed to upsert sources to database")?;
 
-    // Telegram phase
-    info!("Running telegram mining");
+    info!("Running mining pipeline");
     let tg_stream = telegram::fetch_tg_channels(
         client.clone(),
         8,
         channels.into_iter(),
         Duration::from_secs(30),
         None,
+        registry.clone(),
     );
 
-    let mut tg_count = 0usize;
-    tokio::pin!(tg_stream);
-    while let Some(msg) = tg_stream.next().await {
-        let Some(source) = registry.lookup(&msg.source_url) else {
-            tracing::warn!(
-                url = %msg.source_url,
-                "Source not found in registry for Telegram message"
-            );
-            continue;
-        };
-        let ts = msg.time.timestamp();
+    let sub_stream = sub::fetch_subscriptions(
+        client.clone(),
+        registry.clone(),
+        subscriptions,
+    );
 
-        if let Some(ref unparseable) = msg.unparseable_urls {
-            for u in unparseable {
-                if u.error.contains("promotion") {
-                    continue;
-                }
-                tracing::warn!(
-                    target: "mining::unparseable",
-                    raw_url = %u.raw_url,
-                    scheme = %u.scheme,
-                    error = %u.error,
-                    source_id = source.id,
-                    source_type = "telegram",
-                    timestamp = ts,
-                );
-            }
-        }
-
-        if let Some(ref msg_urls) = msg.msg_urls {
-            for urlx in msg_urls {
-                crate::db::upsert_server(&conn, urlx, source.id, ts)
-                    .context("Telegram upsert failed (aborting)")?;
-                tg_count += 1;
-            }
-        }
-    }
-    info!(count = tg_count, "Telegram mining completed");
-
-    // Subscription phase
-    info!("Running subscription mining");
-    let sub_count =
-        sub::fetch_timestamped_subs(client.clone(), &registry, config_path, conn).await?;
-    info!(count = sub_count, "Subscription mining completed");
-
+    let merged = futures::stream::select(tg_stream, sub_stream);
+    let total = process_config_stream(merged, &conn).await?;
+    info!(count = total, "Mining pipeline completed");
     info!("Done");
     Ok(())
 }

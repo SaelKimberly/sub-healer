@@ -10,8 +10,11 @@ use scraper::{ElementRef, Node};
 use tokio::sync::mpsc::Receiver;
 use tokio::task::JoinSet;
 
-use crate::proto_spec::{ProtocolConfig, ProtoSpec};
+use crate::proto_spec::{ProtoSpec, ProtocolConfig};
 use crate::urlx::{RawUrlX, TinyText};
+
+use super::registry::{SourceMetadata, SourceRegistry};
+use super::traced_config::TracedProtocolConfig;
 
 /// Selector for outer message container
 static TG_WEB_MESSAGE_SELECTOR: LazyLock<scraper::Selector> =
@@ -51,23 +54,85 @@ enum TgEvent {
     Failure(TinyText, reqwest::Error),
 }
 
-struct TgWebMessageStream {
+struct TracedConfigStream {
     receiver: Receiver<TgEvent>,
     join_set: JoinSet<()>,
+    registry: Arc<SourceRegistry>,
+    pending_iter: std::vec::IntoIter<ProtocolConfig>,
+    pending_source: Option<Arc<SourceMetadata>>,
+    pending_time: Option<DateTime<Utc>>,
 }
 
-impl Stream for TgWebMessageStream {
-    type Item = TgWebMessage;
+impl Stream for TracedConfigStream {
+    type Item = TracedProtocolConfig;
 
     fn poll_next(
         self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Option<Self::Item>> {
         let this = self.get_mut();
+
+        // Drain any remaining configs from a previous message first
+        if let Some(config) = this.pending_iter.next() {
+            let source = this
+                .pending_source
+                .clone()
+                .expect("pending_source must be set when pending_iter is non-empty");
+            let timestamp = this
+                .pending_time
+                .expect("pending_time must be set when pending_iter is non-empty");
+            return std::task::Poll::Ready(Some(TracedProtocolConfig {
+                config,
+                timestamp,
+                source,
+            }));
+        }
+        this.pending_source = None;
+        this.pending_time = None;
+
         loop {
             match this.receiver.poll_recv(cx) {
                 std::task::Poll::Ready(Some(TgEvent::Message(msg))) => {
-                    return std::task::Poll::Ready(Some(msg));
+                    let Some(source) = this.registry.lookup(&msg.source_url) else {
+                        tracing::warn!(
+                            url = %msg.source_url,
+                            "Source not found in registry for Telegram message"
+                        );
+                        continue;
+                    };
+                    let ts = msg.time.timestamp();
+
+                    if let Some(ref unparseable) = msg.unparseable_urls {
+                        for u in unparseable {
+                            if u.error.contains("promotion") {
+                                continue;
+                            }
+                            tracing::warn!(
+                                target: "mining::unparseable",
+                                raw_url = %u.raw_url,
+                                scheme = %u.scheme,
+                                error = %u.error,
+                                source_id = source.id,
+                                source_type = "telegram",
+                                timestamp = ts,
+                            );
+                        }
+                    }
+
+                    if let Some(msg_urls) = msg.msg_urls {
+                        let mut iter = msg_urls.into_vec().into_iter();
+                        if let Some(first) = iter.next() {
+                            this.pending_iter = iter;
+                            this.pending_source = Some(source.clone());
+                            this.pending_time = Some(msg.time);
+                            return std::task::Poll::Ready(Some(TracedProtocolConfig {
+                                config: first,
+                                timestamp: msg.time,
+                                source,
+                            }));
+                        }
+                    }
+                    // No parseable configs — continue to next message
                 }
                 std::task::Poll::Ready(Some(TgEvent::Timeout(t))) => {
                     tracing::info!(target: "mining::tg_channel", id=t.as_str(), "Timeout");
@@ -99,7 +164,10 @@ fn parse_message(
     fn extract_urls(
         channel_id: &str,
         msg: ElementRef<'_>,
-    ) -> (Option<Box<[ProtocolConfig]>>, Option<Box<[UnparseableRecord]>>) {
+    ) -> (
+        Option<Box<[ProtocolConfig]>>,
+        Option<Box<[UnparseableRecord]>>,
+    ) {
         let mut msg_text = match msg.select(&TG_WEB_TEXT_SELECTOR).next() {
             Some(t) => t.traverse(),
             None => return (None, None),
@@ -489,7 +557,8 @@ pub fn fetch_tg_channels<I, S>(
     channels: I,
     timeout: Duration,
     backfill: Option<Backfill>,
-) -> impl Stream<Item = TgWebMessage>
+    registry: Arc<SourceRegistry>,
+) -> impl Stream<Item = TracedProtocolConfig>
 where
     S: AsRef<str> + Send + 'static,
     I: Iterator<Item = S> + Send + 'static,
@@ -497,15 +566,22 @@ where
     let limit = Arc::new(tokio::sync::Semaphore::new(parallel));
     let (tx, rx) = tokio::sync::mpsc::channel(1024);
 
-    let channels = channels.into_iter().map(|s| s.as_ref().to_owned());
-
     let mut task_group = JoinSet::new();
 
     for channel in channels {
+        let raw = channel.as_ref();
+        // Normalize to canonical source URL: https://t.me/s/{name}
+        let channel_id = raw
+            .strip_prefix("https://t.me/s/")
+            .or_else(|| raw.strip_prefix("https://t.me/"))
+            .unwrap_or(raw)
+            .trim_start_matches('@');
+        let source_url: TinyText = format!("https://t.me/s/{channel_id}").into();
+
         let task = Box::pin(TgChannelFetch {
             client: client.clone(),
-            channel: channel.as_str().into(),
-            source_url: channel.as_str().into(),
+            channel: channel_id.into(),
+            source_url,
             sender: tx.clone(),
             limit: limit.clone(),
             timeout,
@@ -517,9 +593,13 @@ where
     }
     drop(tx);
 
-    TgWebMessageStream {
+    TracedConfigStream {
         receiver: rx,
         join_set: task_group,
+        registry,
+        pending_iter: Vec::new().into_iter(),
+        pending_source: None,
+        pending_time: None,
     }
 }
 
@@ -628,11 +708,16 @@ mod tests {
             "MsV2ray",
         ];
 
-        // --- Registry (aligned with production: https://t.me/s/{name}) ---
+        // --- Registry (aligned with canonical https://t.me/s/{name}) ---
         let mut registry = SourceRegistry::new();
-        for name in &channels {
-            registry.pre_populate(&format!("https://t.me/s/{name}"), SourceType::Telegram);
+        let canonical_urls: Vec<String> = channels
+            .iter()
+            .map(|name| format!("https://t.me/s/{name}"))
+            .collect();
+        for url in &canonical_urls {
+            registry.pre_populate(url, SourceType::Telegram);
         }
+        let registry = Arc::new(registry);
 
         // --- Client ---
         let client = reqwest::Client::builder()
@@ -642,47 +727,28 @@ mod tests {
             )
             .build()?;
 
-        // --- Fetch ---
-        let mut tg_messages = fetch_tg_channels(
+        // --- Fetch (registry handles flattening + unparseable emission) ---
+        let mut tg_stream = fetch_tg_channels(
             client,
             16,
             channels.into_iter(),
             Duration::from_secs(10),
             Some(Backfill::Last(TimeDelta::hours(5))),
+            registry.clone(),
         );
 
         // --- Collect ---
         let mut per_channel = BTreeMap::<TinyText, Vec<(DateTime<Utc>, String, String)>>::new();
 
-        while let Some(msg) = tg_messages.next().await {
-            // Emit unparseable events (feeds UnparseableLayer → unparseable.ndjson)
-            if let Some(ref unparseable) = msg.unparseable_urls {
-                let source_url = format!("https://t.me/s/{}", msg.source_url);
-                let source = registry.lookup(&source_url);
-                let source_id = source.as_ref().map_or(0i64, |s| s.id);
-                let ts = msg.time.timestamp();
-                for u in unparseable {
-                    tracing::warn!(
-                        target: "mining::unparseable",
-                        raw_url = %u.raw_url,
-                        scheme = %u.scheme,
-                        error = %u.error,
-                        source_id = source_id,
-                        source_type = "telegram",
-                        timestamp = ts,
-                    );
-                }
-            }
-
-            let Some(msg_urls) = msg.msg_urls.as_deref() else {
-                continue;
-            };
-
-            per_channel.entry(msg.source_url).or_default().extend(
-                msg_urls
-                    .iter()
-                    .map(|config| (msg.time, config.schema().to_string(), config.reconstruct().unwrap_or_default())),
-            );
+        while let Some(item) = tg_stream.next().await {
+            per_channel
+                .entry(item.source.url.as_str().into())
+                .or_default()
+                .push((
+                    item.timestamp,
+                    item.config.schema().to_string(),
+                    item.config.reconstruct().unwrap_or_default(),
+                ));
         }
 
         // --- Sort per channel ---

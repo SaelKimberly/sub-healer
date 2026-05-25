@@ -1,21 +1,162 @@
-use std::path::Path;
+use std::pin::Pin;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
+use chrono::Utc;
+use futures::Stream;
+use tokio::task::JoinSet;
 
-use crate::mining::registry::{SourceMetadata, SourceRegistry};
-use crate::utils::line::{Data, Line, Lines};
+use crate::mining::registry::SourceRegistry;
+use crate::mining::traced_config::TracedProtocolConfig;
+use crate::utils::line::{Data, Lines};
 
-/// # Errors
+/// Events emitted by subscription fetching tasks.
+enum SubEvent {
+    /// A successfully parsed proxy config.
+    Item(TracedProtocolConfig),
+    /// A non-fatal error (logged, stream continues).
+    Error { url: String, error: String },
+}
+
+/// A single subscription fetch task, mirroring `TgChannelFetch`.
+struct SubFetcher {
+    client: reqwest::Client,
+    url: url::Url,
+    url_str: String,
+    sender: tokio::sync::mpsc::Sender<SubEvent>,
+    registry: Arc<SourceRegistry>,
+}
+
+impl SubFetcher {
+    fn spawn(
+        mut self: Pin<Box<Self>>,
+    ) -> Pin<Box<dyn std::future::Future<Output = ()> + Send + Sync + 'static>> {
+        Box::pin(async move {
+            let this = self.as_mut();
+            let Self {
+                client,
+                url,
+                url_str,
+                sender,
+                registry,
+            } = this.get_mut();
+
+            // Download or read file
+            let data = match url.scheme() {
+                "https" | "http" => match download_sub_data(client, url).await {
+                    Ok(d) => d,
+                    Err(e) => {
+                        _ = sender
+                            .send(SubEvent::Error {
+                                url: url_str.clone(),
+                                error: e.to_string(),
+                            })
+                            .await;
+                        return;
+                    }
+                },
+                "file" => {
+                    let Ok(path) = url.to_file_path() else {
+                        tracing::error!(url = %url_str, "Invalid file URL: not an absolute path");
+                        return;
+                    };
+                    match std::fs::read(&path) {
+                        Ok(d) => d,
+                        Err(e) => {
+                            _ = sender
+                                .send(SubEvent::Error {
+                                    url: url_str.clone(),
+                                    error: e.to_string(),
+                                })
+                                .await;
+                            return;
+                        }
+                    }
+                }
+                other => {
+                    tracing::error!(scheme = %other, url = %url_str, "Unsupported subscription URL scheme");
+                    return;
+                }
+            };
+
+            let download_ts = Utc::now();
+
+            // Clone fields needed inside spawn_blocking
+            let url_clone = url.clone();
+            let url_str_clone = url_str.clone();
+            let registry_clone = registry.clone();
+
+            let result = tokio::task::spawn_blocking(move || {
+                let lines = crate::parse_sub(&url_clone, &data);
+                let source = registry_clone.lookup(&url_str_clone);
+                (lines, source)
+            })
+            .await;
+
+            let Ok((lines, Some(source))) = result else {
+                _ = sender
+                    .send(SubEvent::Error {
+                        url: url_str.clone(),
+                        error: "Source not found in registry".into(),
+                    })
+                    .await;
+                return;
+            };
+
+            let ts = download_ts.timestamp();
+
+            // Emit unparseable entries via tracing
+            for line in lines.raw_entries() {
+                if let Data::Raw { scheme, url } = &line.url {
+                    if line.err.as_deref().is_some_and(|e| e.contains("promotion")) {
+                        continue;
+                    }
+                    tracing::warn!(
+                        target: "mining::unparseable",
+                        raw_url = %url.as_ref(),
+                        scheme = %scheme.as_ref(),
+                        error = line.err.as_deref().unwrap_or("unknown"),
+                        source_id = source.id,
+                        source_type = "subscription",
+                        timestamp = ts,
+                    );
+                }
+            }
+
+            // Send parsed configs
+            for line in lines.iter() {
+                let Data::Url(config) = &line.url else {
+                    continue;
+                };
+                let item = SubEvent::Item(TracedProtocolConfig {
+                    config: config.clone(),
+                    timestamp: download_ts,
+                    source: source.clone(),
+                });
+                if sender.send(item).await.is_err() {
+                    break;
+                }
+            }
+        })
+    }
+}
+
+/// Convert parsed subscription lines into [`TracedProtocolConfig`] items,
+/// emitting unparseable entries via the tracing layer.
 ///
-/// - If the database upsert fails
-pub fn process_sub_lines(
+/// Returns an empty vec if the source URL is not found in the registry.
+pub fn lines_to_traced(
     lines: &Lines,
-    source: &Arc<SourceMetadata>,
-    conn: &rusqlite::Connection,
-    source_type_label: &str,
+    registry: &SourceRegistry,
+    url_str: &str,
     ts: i64,
-) -> Result<usize> {
+) -> Vec<TracedProtocolConfig> {
+    let Some(source) = registry.lookup(url_str) else {
+        tracing::warn!(url = %url_str, "Source not found in registry (should not happen)");
+        return Vec::new();
+    };
+    let timestamp = Utc::now();
+
     for line in lines.raw_entries() {
         if let Data::Raw { scheme, url } = &line.url {
             if line.err.as_deref().is_some_and(|e| e.contains("promotion")) {
@@ -27,95 +168,25 @@ pub fn process_sub_lines(
                 scheme = %scheme.as_ref(),
                 error = line.err.as_deref().unwrap_or("unknown"),
                 source_id = source.id,
-                source_type = source_type_label,
+                source_type = "local",
                 timestamp = ts,
             );
         }
     }
 
-    let mut count = 0usize;
-    for line in lines.iter() {
-        let Line {
-            url: Data::Url(urlx),
-            err: None,
-            ..
-        } = line
-        else {
-            continue;
-        };
-        crate::db::upsert_server(conn, urlx, source.id, ts)
-            .context("Subscription upsert failed (aborting)")?;
-        count += 1;
-    }
-
-    Ok(count)
-}
-
-pub async fn fetch_timestamped_subs(
-    client: reqwest::Client,
-    registry: &SourceRegistry,
-    config_path: &Path,
-    conn: rusqlite::Connection,
-) -> Result<usize> {
-    let subscriptions = super::config::load_subscriptions(config_path)?;
-
-    if subscriptions.is_empty() {
-        tracing::info!("No subscriptions configured");
-        return Ok(0);
-    }
-
-    let current_ts = super::get_current_timestamp();
-    let mut total = 0usize;
-
-    for sub_url_str in &subscriptions {
-        let url = match url::Url::parse(sub_url_str) {
-            Ok(u) => u,
-            Err(e) => {
-                tracing::error!(url = %sub_url_str, error = %e, "Invalid subscription URL");
-                continue;
-            }
-        };
-
-        let data = match url.scheme() {
-            "https" | "http" => match download_sub_data(&client, &url).await {
-                Ok(d) => d,
-                Err(e) => {
-                    tracing::warn!(url = %sub_url_str, error = %e, "Failed to download subscription");
-                    continue;
-                }
-            },
-            "file" => {
-                let Ok(path) = url.to_file_path() else {
-                    tracing::error!(url = %sub_url_str, "Invalid file URL: not an absolute path");
-                    continue;
-                };
-                match std::fs::read(&path) {
-                    Ok(d) => d,
-                    Err(e) => {
-                        tracing::warn!(path = %path.display(), error = %e, "Failed to read subscription file");
-                        continue;
-                    }
-                }
-            }
-            other => {
-                tracing::error!(scheme = %other, url = %sub_url_str, "Unsupported subscription URL scheme");
-                continue;
-            }
-        };
-
-        let lines = crate::parse_sub(&url, &data);
-
-        let Some(source) = registry.lookup(sub_url_str) else {
-            tracing::warn!(url = %sub_url_str, "Source not found in registry (should not happen)");
-            continue;
-        };
-
-        let count = process_sub_lines(&lines, &source, &conn, "subscription", current_ts)?;
-        total += count;
-    }
-
-    tracing::info!(count = total, "Fetched subscription proxies");
-    Ok(total)
+    lines
+        .iter()
+        .filter_map(|line| {
+            let Data::Url(config) = &line.url else {
+                return None;
+            };
+            Some(TracedProtocolConfig {
+                config: config.clone(),
+                timestamp,
+                source: source.clone(),
+            })
+        })
+        .collect()
 }
 
 /// # Errors
@@ -144,4 +215,67 @@ pub async fn download_sub_data(client: &reqwest::Client, url: &url::Url) -> Resu
         .await
         .context("Failed to read subscription response body")?
         .to_vec())
+}
+
+/// Fetch all subscriptions as a stream of traced protocol configs.
+/// Each subscription URL is spawned as a separate [`SubFetcher`] task.
+pub fn fetch_subscriptions(
+    client: reqwest::Client,
+    registry: Arc<SourceRegistry>,
+    subscriptions: Vec<String>,
+) -> impl Stream<Item = TracedProtocolConfig> {
+    let (tx, rx) = tokio::sync::mpsc::channel::<SubEvent>(1024);
+    let mut join_set = JoinSet::new();
+
+    for sub_url_str in subscriptions {
+        let Ok(url) = url::Url::parse(&sub_url_str) else {
+            tracing::error!(url = %sub_url_str, "Invalid subscription URL");
+            continue;
+        };
+
+        let task = Box::pin(SubFetcher {
+            client: client.clone(),
+            url,
+            url_str: sub_url_str,
+            sender: tx.clone(),
+            registry: registry.clone(),
+        });
+
+        join_set.spawn(task.spawn());
+    }
+    drop(tx);
+
+    SubscriptionStream {
+        receiver: rx,
+        join_set,
+    }
+}
+
+#[allow(dead_code, reason = "Drop cancels in-flight tasks")]
+struct SubscriptionStream {
+    receiver: tokio::sync::mpsc::Receiver<SubEvent>,
+    join_set: JoinSet<()>,
+}
+
+impl Stream for SubscriptionStream {
+    type Item = TracedProtocolConfig;
+
+    fn poll_next(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        let this = self.get_mut();
+        match this.receiver.poll_recv(cx) {
+            std::task::Poll::Ready(Some(SubEvent::Item(item))) => {
+                std::task::Poll::Ready(Some(item))
+            }
+            std::task::Poll::Ready(Some(SubEvent::Error { url, error })) => {
+                tracing::warn!(url, error, "Subscription download error");
+                cx.waker().wake_by_ref();
+                std::task::Poll::Pending
+            }
+            std::task::Poll::Ready(None) => std::task::Poll::Ready(None),
+            std::task::Poll::Pending => std::task::Poll::Pending,
+        }
+    }
 }
