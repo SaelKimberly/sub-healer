@@ -1,5 +1,6 @@
 use super::{HostSpec, PortSpec};
 
+#[allow(clippy::redundant_pub_crate)]
 pub(crate) mod host_serde {
     use serde::Deserialize;
 
@@ -21,13 +22,14 @@ pub(crate) mod host_serde {
     }
 }
 
+#[allow(clippy::redundant_pub_crate, reason = "serde requires this")]
 pub(crate) mod port_serde {
     pub fn deserialize<'de, D>(d: D) -> Result<u16, D::Error>
     where
         D: serde::Deserializer<'de>,
     {
         struct PortVisitor;
-        impl<'de> serde::de::Visitor<'de> for PortVisitor {
+        impl serde::de::Visitor<'_> for PortVisitor {
             type Value = u16;
 
             fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -51,6 +53,7 @@ pub(crate) mod port_serde {
         d.deserialize_any(PortVisitor)
     }
 
+    #[allow(clippy::trivially_copy_pass_by_ref, reason = "serde requires this")]
     pub fn serialize<S>(v: &u16, s: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
@@ -59,6 +62,7 @@ pub(crate) mod port_serde {
     }
 }
 
+#[allow(clippy::redundant_pub_crate)]
 pub(crate) mod port_spec_serde {
     use serde::Deserialize;
 

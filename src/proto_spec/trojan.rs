@@ -40,9 +40,7 @@ use std::num::NonZeroU64;
 
 use serde::{Deserialize, Serialize};
 
-use crate::urlx::{
-    host_serde, port_serde, HostSpec, RawUrlX, SchemeX,
-};
+use crate::urlx::{HostSpec, RawUrlX, SchemeX, host_serde, port_serde};
 
 use super::common::TransportConfig;
 use super::utils;
@@ -100,10 +98,7 @@ impl ProtoSpec for TrojanConfig {
             .map_or("tls", |s| s.as_str())
             .to_string();
         // Transport type: tcp (default), ws, grpc, http, quic, kcp
-        let transport_type = query
-            .get("type")
-            .map_or("tcp", |s| s.as_str())
-            .to_string();
+        let transport_type = query.get("type").map_or("tcp", |s| s.as_str()).to_string();
         let path = query.get("path").cloned();
         // SNI fallback order: peer → sni → URL hostname (outbound/dialer compat)
         let sni = query.get("sni").cloned();
@@ -112,16 +107,20 @@ impl ProtoSpec for TrojanConfig {
 
         let remarks = utils::decode_fragment(raw)?;
 
-        let transport =
+        let host = query.get("host").cloned();
+        let server_addr = Some(parsed_host.to_str().into_owned());
+
+        let mut transport =
             TransportConfig::from_type_and_path(Some(&transport_type), path.as_deref())
-                .ok_or_else(|| {
-                    ParseError::InvalidConf("type".into(), transport_type.into())
-                })?;
+                .ok_or_else(|| ParseError::InvalidConf("type".into(), transport_type.into()))?;
+        transport = transport.with_host(host, sni.clone(), server_addr);
 
         let path = match transport {
             TransportConfig::Ws(ref ws) => ws.path.clone(),
             TransportConfig::Grpc(ref g) => g.path.clone(),
             TransportConfig::Http(ref h) => h.path.clone(),
+            TransportConfig::HttpUpgrade(ref cfg) => cfg.path.clone(),
+            TransportConfig::XHttp(ref cfg) => cfg.path.clone(),
             _ => path,
         };
 
@@ -155,6 +154,19 @@ impl ProtoSpec for TrojanConfig {
             }
             if self.transport.type_str() != "tcp" {
                 parts.push(format!("type={}", self.transport.type_str()));
+            }
+            match &self.transport {
+                TransportConfig::HttpUpgrade(cfg) => {
+                    if let Some(ref host) = cfg.host {
+                        parts.push(format!("host={}", urlencoding::encode(host)));
+                    }
+                }
+                TransportConfig::XHttp(cfg) => {
+                    if let Some(ref host) = cfg.host {
+                        parts.push(format!("host={}", urlencoding::encode(host)));
+                    }
+                }
+                _ => {}
             }
             if let Some(ref path) = self.path {
                 parts.push(format!("path={}", urlencoding::encode(path)));
@@ -214,12 +226,10 @@ impl ProtoSpec for TrojanConfig {
     }
 
     fn sig(&self) -> u64 {
-        let v = self
-            .sig_cache
-            .get_or_init(|| {
-                let val = self.compute_sig();
-                NonZeroU64::new(val).unwrap_or(NonZeroU64::MIN)
-            });
+        let v = self.sig_cache.get_or_init(|| {
+            let val = self.compute_sig();
+            NonZeroU64::new(val).unwrap_or(NonZeroU64::MIN)
+        });
         v.get()
     }
 
@@ -241,6 +251,19 @@ impl TrojanConfig {
         let mut parts: Vec<&[u8]> = vec![b"trojan"];
         parts.push(self.security.as_bytes());
         parts.push(self.transport.type_str().as_bytes());
+        match &self.transport {
+            TransportConfig::HttpUpgrade(cfg) => {
+                if let Some(ref v) = cfg.host {
+                    parts.push(v.as_bytes());
+                }
+            }
+            TransportConfig::XHttp(cfg) => {
+                if let Some(ref v) = cfg.host {
+                    parts.push(v.as_bytes());
+                }
+            }
+            _ => {}
+        }
         if let Some(ref path) = self.path {
             parts.push(path.as_bytes());
         }
@@ -268,7 +291,10 @@ mod tests {
         let raw = crate::urlx::RawUrlX::from(url);
         let config = TrojanConfig::try_parse(&raw).expect("failed");
         assert_eq!(config.schema(), SchemeX::Trojan);
-        assert_eq!(config.host().map(|h| h.to_str()), Some("172.64.152.23".into()));
+        assert_eq!(
+            config.host().map(|h| h.to_str()),
+            Some("172.64.152.23".into())
+        );
         assert_eq!(config.password, "humanity");
     }
 
@@ -305,6 +331,8 @@ mod tests {
 
     #[test]
     fn test_roundtrip() {
-        check_roundtrip::<TrojanConfig>("trojan://humanity@172.64.152.23:443?security=tls&type=ws&path=/assignment&sni=www.creationlong.org");
+        check_roundtrip::<TrojanConfig>(
+            "trojan://humanity@172.64.152.23:443?security=tls&type=ws&path=/assignment&sni=www.creationlong.org",
+        );
     }
 }

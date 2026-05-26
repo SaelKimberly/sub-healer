@@ -11,6 +11,7 @@ use crate::mining::traced_config::TracedProtocolConfig;
 use crate::utils::line::{Data, Lines};
 
 /// Events emitted by subscription fetching tasks.
+#[allow(clippy::large_enum_variant, reason = "todo: refactor")]
 enum SubEvent {
     /// A successfully parsed proxy config.
     Item(TracedProtocolConfig),
@@ -192,7 +193,7 @@ pub fn lines_to_traced(
 /// # Errors
 ///
 /// Will return `Err` if the request fails.
-pub async fn download_sub_data(client: &reqwest::Client, url: &url::Url) -> Result<Vec<u8>> {
+async fn download_sub_data(client: &reqwest::Client, url: &url::Url) -> Result<Vec<u8>> {
     let req = if matches!(
         url.host_str(),
         Some("raw.githubusercontent.com" | "github.com")
@@ -219,7 +220,8 @@ pub async fn download_sub_data(client: &reqwest::Client, url: &url::Url) -> Resu
 
 /// Fetch all subscriptions as a stream of traced protocol configs.
 /// Each subscription URL is spawned as a separate [`SubFetcher`] task.
-pub fn fetch_subscriptions(
+#[allow(clippy::needless_pass_by_value, reason = "Should be owned by Future")]
+pub(super) fn fetch_subscriptions(
     client: reqwest::Client,
     registry: Arc<SourceRegistry>,
     subscriptions: Vec<String>,

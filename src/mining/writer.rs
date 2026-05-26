@@ -17,6 +17,7 @@ impl PipelineLogWriter {
     /// # Panics
     ///
     /// Panics if the file cannot be opened or created.
+    #[must_use]
     pub fn new(path: &Path) -> Self {
         let file = OpenOptions::new()
             .create(true)

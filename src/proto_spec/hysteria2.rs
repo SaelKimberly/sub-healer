@@ -85,7 +85,7 @@ impl ProtoSpec for Hysteria2Config {
     /// Parse a Hysteria2 URL.
     ///
     /// Auth token is the userinfo (single token or user:pass pair).
-    /// Port supports Hysteria's extended PortSpec (ranges, lists, mixed).
+    /// Port supports Hysteria's extended `PortSpec` (ranges, lists, mixed).
     /// Security defaults to "tls" (QUIC always uses TLS).
     fn try_parse(raw: &RawUrlX<'_>) -> Result<Self, ParseError> {
         let (auth, hostport) = if let Some(hostport) = raw.hostport {
@@ -322,6 +322,8 @@ mod tests {
 
     #[test]
     fn test_roundtrip() {
-        check_roundtrip::<Hysteria2Config>("hysteria2://b4bd0613-ff7c-4f2f-954d-185915e6ddad@206.71.158.41:35000?security=tls&obfs=salamander&obfs-password=password123&insecure=1&sni=jnir.pichondan.com");
+        check_roundtrip::<Hysteria2Config>(
+            "hysteria2://b4bd0613-ff7c-4f2f-954d-185915e6ddad@206.71.158.41:35000?security=tls&obfs=salamander&obfs-password=password123&insecure=1&sni=jnir.pichondan.com",
+        );
     }
 }

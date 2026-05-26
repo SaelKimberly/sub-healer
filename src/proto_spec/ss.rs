@@ -41,7 +41,7 @@
 //!
 //! # References
 //! - shadowsocks-rust: `src/config.rs` SIP002 `from_url()`/`to_url()`
-//! - SIP002 spec: https://github.com/shadowsocks/shadowsocks-org/issues/27
+//! - SIP002 spec: <https://github.com/shadowsocks/shadowsocks-org/issues/27>
 //! - subconverter: `subparser.cpp` `explodeSS()`
 //! - go-shadowsocks2: `parseURL()` (plain format)
 
@@ -50,9 +50,7 @@ use std::num::NonZeroU64;
 use base64::Engine;
 use serde::{Deserialize, Serialize};
 
-use crate::urlx::{
-    host_serde, port_serde, HostSpec, RawUrlX, SchemeX,
-};
+use crate::urlx::{HostSpec, RawUrlX, SchemeX, host_serde, port_serde};
 
 use super::utils;
 use super::{ParseError, ProtoSpec};
@@ -86,17 +84,21 @@ impl ProtoSpec for SsConfig {
     fn try_parse(raw: &RawUrlX<'_>) -> Result<Self, ParseError> {
         let (userinfo, hostport) = if let Some(hostport) = raw.hostport {
             // SIP002 format: base64(method:password)@host:port
-            let decoded = utils::decode_base64(raw.userinfo)
-                .map_err(|e| ParseError::InvalidUserInfo(format!("{}: {e}", raw.userinfo).into()))?;
-            let text = String::from_utf8(decoded)
-                .map_err(|e| ParseError::InvalidUserInfo(format!("{}: {e}", raw.userinfo).into()))?;
+            let decoded = utils::decode_base64(raw.userinfo).map_err(|e| {
+                ParseError::InvalidUserInfo(format!("{}: {e}", raw.userinfo).into())
+            })?;
+            let text = String::from_utf8(decoded).map_err(|e| {
+                ParseError::InvalidUserInfo(format!("{}: {e}", raw.userinfo).into())
+            })?;
             (text, hostport.to_string())
         } else {
             // Legacy QR format: base64(method:password@host:port) — no @ in URL
-            let decoded = utils::decode_base64(raw.userinfo)
-                .map_err(|e| ParseError::InvalidUserInfo(format!("{}: {e}", raw.userinfo).into()))?;
-            let text = String::from_utf8(decoded)
-                .map_err(|e| ParseError::InvalidUserInfo(format!("{}: {e}", raw.userinfo).into()))?;
+            let decoded = utils::decode_base64(raw.userinfo).map_err(|e| {
+                ParseError::InvalidUserInfo(format!("{}: {e}", raw.userinfo).into())
+            })?;
+            let text = String::from_utf8(decoded).map_err(|e| {
+                ParseError::InvalidUserInfo(format!("{}: {e}", raw.userinfo).into())
+            })?;
             let (ui, hp) = text.split_once('@').ok_or_else(|| {
                 ParseError::InvalidUserInfo(format!("{}: missing hostport", raw.userinfo).into())
             })?;

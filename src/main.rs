@@ -1,6 +1,5 @@
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
 
 use anyhow::Context;
 use clap::Parser;
@@ -12,16 +11,6 @@ fn is_telegram_url(url: &url::Url) -> bool {
     url.host_str() == Some("t.me")
 }
 
-fn extract_channel_name(url: &url::Url) -> Option<String> {
-    let path = url.path().trim_start_matches('/');
-    let channel = path.rsplit_once('/').map_or(path, |(_, name)| name);
-    if channel.is_empty() {
-        None
-    } else {
-        Some(channel.to_string())
-    }
-}
-
 /// Process a stream of traced configs, writing each to the database.
 /// Fatal on DB error (aborts pipeline).
 async fn process_stream(
@@ -31,7 +20,7 @@ async fn process_stream(
     let mut count = 0usize;
     while let Some(item) = stream.next().await {
         v2ray_heal::db::upsert_server(
-            &conn,
+            conn,
             &item.config,
             item.source.id,
             item.timestamp.timestamp(),
@@ -103,74 +92,17 @@ async fn main() -> anyhow::Result<()> {
             let conn = mining::open_db(&cli.db)?;
             let client = mining::build_client()?;
 
-            let mut tg_urls = Vec::new();
-            let mut sub_urls = Vec::new();
-            for u in url {
-                if is_telegram_url(&u) {
-                    tg_urls.push(u);
+            let mut registry = mining::SourceRegistry::new();
+            for u in &url {
+                if is_telegram_url(u) {
+                    registry.add_telegram_channel(u.as_str());
                 } else {
-                    sub_urls.push(u);
+                    registry.add_subscription(u.as_str());
                 }
             }
 
-            let mut registry = mining::SourceRegistry::new();
-
-            let mut channel_names = Vec::new();
-            for u in &tg_urls {
-                let Some(name) = extract_channel_name(u) else {
-                    tracing::error!(url = %u, "Cannot extract channel name from Telegram URL");
-                    continue;
-                };
-                registry.add_telegram_channel(u.as_str());
-                channel_names.push(name);
-            }
-            for u in &sub_urls {
-                registry.add_subscription(u.as_str());
-            }
-            registry.upsert_all(&conn)?;
             let registry = Arc::new(registry);
-
-            // Build streams for each source type
-            let tg_stream = if !channel_names.is_empty() {
-                Some(
-                    mining::telegram::fetch_tg_channels(
-                        client.clone(),
-                        1,
-                        channel_names.into_iter(),
-                        Duration::from_secs(30),
-                        None,
-                        registry.clone(),
-                    )
-                    .boxed(),
-                )
-            } else {
-                None::<futures::stream::BoxStream<'static, mining::TracedProtocolConfig>>
-            };
-
-            let sub_stream = if !sub_urls.is_empty() {
-                let sub_strings: Vec<String> = sub_urls.iter().map(|u| u.to_string()).collect();
-                Some(
-                    mining::fetch_subscriptions(client.clone(), registry.clone(), sub_strings)
-                        .boxed(),
-                )
-            } else {
-                None::<futures::stream::BoxStream<'static, mining::TracedProtocolConfig>>
-            };
-
-            // Merge all available streams
-            let merged: futures::stream::BoxStream<'static, mining::TracedProtocolConfig> =
-                match (tg_stream, sub_stream) {
-                    (Some(tg), Some(sub)) => futures::stream::select(tg, sub).boxed(),
-                    (Some(tg), None) => tg,
-                    (None, Some(sub)) => sub,
-                    (None, None) => {
-                        tracing::warn!("No valid URLs provided for remote command");
-                        return Ok(());
-                    }
-                };
-
-            let count = process_stream(merged, &conn).await?;
-            tracing::info!(count, "Remote mining completed");
+            registry.run_pipeline(&client, &conn).await?;
         }
         Commands::Local { file } => {
             if file.is_empty() {

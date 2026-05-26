@@ -512,6 +512,7 @@ impl TgChannelFetch {
     }
 }
 
+#[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub enum Backfill {
     Upto(DateTime<Utc>),
@@ -529,7 +530,7 @@ impl Backfill {
 }
 
 #[allow(clippy::needless_pass_by_value, reason = "Should be owned by task")]
-pub fn fetch_tg_channels<I, S>(
+pub(crate) fn fetch_tg_channels<I, S>(
     client: reqwest::Client,
     parallel: usize,
     channels: I,

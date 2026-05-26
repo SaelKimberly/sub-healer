@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use criterion::{criterion_group, criterion_main, Criterion, SamplingMode, Throughput};
+use criterion::{Criterion, SamplingMode, Throughput, criterion_group, criterion_main};
 use v2ray_heal::urlx::RawUrlX;
 
 macro_rules! bench_protocol {

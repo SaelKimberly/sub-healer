@@ -35,9 +35,7 @@ use std::num::NonZeroU64;
 
 use serde::{Deserialize, Serialize};
 
-use crate::urlx::{
-    host_serde, port_serde, HostSpec, RawUrlX, SchemeX,
-};
+use crate::urlx::{HostSpec, RawUrlX, SchemeX, host_serde, port_serde};
 
 use super::utils;
 use super::{ParseError, ProtoSpec};
@@ -192,7 +190,13 @@ impl ProtoSpec for StormdnsConfig {
     }
 
     fn cred_hash(&self) -> u64 {
-        utils::compute_cred_hash(Some(&self.host), Some(self.port), None, "", &self.encryption_key)
+        utils::compute_cred_hash(
+            Some(&self.host),
+            Some(self.port),
+            None,
+            "",
+            &self.encryption_key,
+        )
     }
 
     fn sig(&self) -> u64 {
@@ -257,6 +261,8 @@ mod tests {
 
     #[test]
     fn test_roundtrip() {
-        check_roundtrip::<StormdnsConfig>("stormdns://eyJzY2hlbWEiOiJ3aGl0ZWRucy5wcm9maWxlIiwidmVyc2lvbiI6MSwicHJvZmlsZSI6eyJuYW1lIjoiQ2xvdWRmbGFyZSIsInNlcnZlciI6eyJkb21haW4iOiJleGFtcGxlLmNvbSIsImVuY3J5cHRpb25fa2V5Ijoic29tZS1rZXkiLCJlbmNyeXB0aW9uX21ldGhvZCI6MX19fQ==");
+        check_roundtrip::<StormdnsConfig>(
+            "stormdns://eyJzY2hlbWEiOiJ3aGl0ZWRucy5wcm9maWxlIiwidmVyc2lvbiI6MSwicHJvZmlsZSI6eyJuYW1lIjoiQ2xvdWRmbGFyZSIsInNlcnZlciI6eyJkb21haW4iOiJleGFtcGxlLmNvbSIsImVuY3J5cHRpb25fa2V5Ijoic29tZS1rZXkiLCJlbmNyeXB0aW9uX21ldGhvZCI6MX19fQ==",
+        );
     }
 }

@@ -35,9 +35,7 @@ use std::{fmt::Write, num::NonZeroU64};
 
 use serde::{Deserialize, Serialize};
 
-use crate::urlx::{
-    host_serde, port_serde, HostSpec, RawUrlX, SchemeX,
-};
+use crate::urlx::{HostSpec, RawUrlX, SchemeX, host_serde, port_serde};
 
 use super::utils;
 use super::{ParseError, ProtoSpec};
@@ -260,7 +258,10 @@ mod tests {
         let raw = crate::urlx::RawUrlX::from(url);
         let config = TuicConfig::try_parse(&raw).expect("failed");
         assert_eq!(config.schema(), SchemeX::TUIC);
-        assert_eq!(config.host().map(|h| h.to_str()), Some("5.178.101.117".into()));
+        assert_eq!(
+            config.host().map(|h| h.to_str()),
+            Some("5.178.101.117".into())
+        );
         assert_eq!(config.port(), Some(30006_u16));
         assert_eq!(config.uuid, "36106e0f-4d9a-470b-a3fd-535f3b7a1e92");
         assert_eq!(config.password, "dongtaiwang.com");
@@ -275,7 +276,10 @@ mod tests {
         let raw = crate::urlx::RawUrlX::from(url);
         let config = TuicConfig::try_parse(&raw).expect("failed");
         assert_eq!(config.schema(), SchemeX::TUIC);
-        assert_eq!(config.host().map(|h| h.to_str()), Some("ip1.758733.xyz".into()));
+        assert_eq!(
+            config.host().map(|h| h.to_str()),
+            Some("ip1.758733.xyz".into())
+        );
         assert_eq!(config.allow_insecure, Some(false));
         assert_eq!(config.sni.as_deref(), Some("apple.com"));
         assert_eq!(config.congestion_control.as_deref(), Some("bbr"));
@@ -295,7 +299,10 @@ mod tests {
         let raw = crate::urlx::RawUrlX::from(url);
         let config = ProtocolConfig::try_parse(&raw).expect("failed");
         assert_eq!(config.schema(), SchemeX::TUIC);
-        assert_eq!(config.host().map(|h| h.to_str()), Some("5.178.101.117".into()));
+        assert_eq!(
+            config.host().map(|h| h.to_str()),
+            Some("5.178.101.117".into())
+        );
     }
 
     #[test]
@@ -338,6 +345,8 @@ mod tests {
 
     #[test]
     fn test_roundtrip() {
-        check_roundtrip::<TuicConfig>("tuic://36106e0f-4d9a-470b-a3fd-535f3b7a1e92:dongtaiwang.com@5.178.101.117:30006?congestion_control=cubic&udp_relay_mode=native&alpn=h3");
+        check_roundtrip::<TuicConfig>(
+            "tuic://36106e0f-4d9a-470b-a3fd-535f3b7a1e92:dongtaiwang.com@5.178.101.117:30006?congestion_control=cubic&udp_relay_mode=native&alpn=h3",
+        );
     }
 }

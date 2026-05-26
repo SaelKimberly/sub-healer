@@ -6,11 +6,10 @@ use std::sync::Arc;
 use chrono::{Local, Utc};
 use futures::StreamExt;
 use serde_json::json;
-use tracing_subscriber::filter::filter_fn;
 use tracing_subscriber::fmt;
 use tracing_subscriber::prelude::*;
 
-use v2ray_heal::mining::{SourceRegistry, SourceType, UnparseableLayer, fetch_subscriptions};
+use v2ray_heal::mining::{LiveFetcher, SourceRegistry, UnparseableLayer};
 use v2ray_heal::proto_spec::ProtoSpec;
 
 fn discover_txt_files(dir: &PathBuf) -> Vec<PathBuf> {
@@ -48,9 +47,7 @@ async fn main() -> anyhow::Result<()> {
                 .compact()
                 .with_target(true)
                 .with_level(true)
-                .with_filter(filter_fn(|metadata| {
-                    *metadata.level() >= tracing::Level::WARN
-                })),
+                .with_filter(tracing_subscriber::filter::EnvFilter::new("warn")),
         )
         .init();
 
@@ -62,28 +59,24 @@ async fn main() -> anyhow::Result<()> {
         .join("thirdparty")
         .join("v2ray-configs");
 
-    let mut urls = Vec::new();
     let mut registry = SourceRegistry::new();
-
     for file_path in discover_txt_files(&goida_dir)
         .into_iter()
         .chain(discover_txt_files(&v2ray_dir))
     {
         let file_url = url::Url::from_file_path(&file_path)
             .expect("valid file path");
-        let url_str = file_url.to_string();
-        registry.pre_populate(&url_str, SourceType::Other);
-        urls.push(url_str);
+        registry.add_subscription(file_url.as_str());
     }
 
-    eprintln!("Total files discovered: {}", urls.len());
+    eprintln!("Total files discovered: {}", registry.sources().len());
 
     let registry = Arc::new(registry);
     let client = reqwest::Client::builder()
         .user_agent("v2ray-heal/1.0")
         .build()?;
 
-    let mut stream = fetch_subscriptions(client, registry, urls);
+    let mut stream = registry.run_fetcher_stream(&client, LiveFetcher::default());
     let mut by_scheme_ok = BTreeMap::<String, u64>::new();
 
     while let Some(item) = stream.next().await {

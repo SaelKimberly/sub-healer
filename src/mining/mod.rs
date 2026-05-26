@@ -12,15 +12,34 @@ use std::time::Duration;
 use anyhow::Context;
 use tracing::info;
 
-pub use registry::{SourceFetcher, SourceMetadata, SourceRegistry, SourceType};
-pub use sub::{download_sub_data, fetch_subscriptions, lines_to_traced};
+pub use registry::{LiveFetcher, SourceFetcher, SourceMetadata, SourceRegistry, SourceType};
+pub use sub::lines_to_traced;
 pub use traced_config::TracedProtocolConfig;
 pub use unparseable_log::UnparseableLayer;
 pub use writer::PipelineLogWriter;
 
+pub use self::telegram::Backfill;
+
 pub const PROXY_URL: &str = "http://127.0.0.1:20172";
 pub const SEMAPHORE_PERMITS: usize = 64;
 pub const USER_AGENT: &str = "clash-verge/v2.0.2";
+
+#[derive(Debug, Clone)]
+pub struct TgConfig {
+    pub concurrency: usize,
+    pub timeout: Duration,
+    pub backfill: Option<Backfill>,
+}
+
+impl Default for TgConfig {
+    fn default() -> Self {
+        Self {
+            concurrency: 8,
+            timeout: Duration::from_secs(30),
+            backfill: None,
+        }
+    }
+}
 
 /// # Panics
 ///
@@ -68,8 +87,8 @@ pub async fn run_with_config(config_path: &Path, db_path: &Path) -> Result<(), a
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::proto_spec::ProtocolConfig;
     use crate::proto_spec::ProtoSpec;
+    use crate::proto_spec::ProtocolConfig;
     use crate::urlx::RawUrlX;
     use chrono::DateTime;
     use futures::StreamExt;
@@ -97,14 +116,15 @@ mod tests {
     }
 
     fn make_in_memory_conn() -> rusqlite::Connection {
-        let conn = rusqlite::Connection::open_in_memory()
-            .expect("in-memory db");
+        let conn = rusqlite::Connection::open_in_memory().expect("in-memory db");
         crate::db::init_db(&conn).expect("init schema");
         conn
     }
 
     fn make_vmess_config() -> ProtocolConfig {
-        let raw = RawUrlX::from("vmess://eyJhZGQiOiIxMjcuMC4wLjEiLCJwb3J0Ijo4MCwiaWQiOiJhYmNkZS0xMjM0NS02Nzg5MCIsIm5ldCI6InRjcCIsInR5cGUiOiJub25lIn0=");
+        let raw = RawUrlX::from(
+            "vmess://eyJhZGQiOiIxMjcuMC4wLjEiLCJwb3J0Ijo4MCwiaWQiOiJhYmNkZS0xMjM0NS02Nzg5MCIsIm5ldCI6InRjcCIsInR5cGUiOiJub25lIn0=",
+        );
         ProtocolConfig::try_parse(&raw).expect("valid vmess")
     }
 
@@ -113,7 +133,10 @@ mod tests {
     }
 
     fn make_traced_config(source_id: i64, source_url: &str, ts: i64) -> TracedProtocolConfig {
-        let source = Arc::new(SourceMetadata::new(source_url.to_string(), SourceType::Other));
+        let source = Arc::new(SourceMetadata::new(
+            source_url.to_string(),
+            SourceType::Other,
+        ));
         // override id since SourceMetadata::new computes hash from url, but test wants specific id
         let source = Arc::new(SourceMetadata {
             id: source_id,
@@ -139,12 +162,18 @@ mod tests {
 
     #[tokio::test]
     async fn test_pipeline_registry_upserts_sources() {
-        let registry = Arc::new(SourceRegistry::from_sources(&[], &["https://example.com/sub".to_string()]));
+        let registry = Arc::new(SourceRegistry::from_sources(
+            &[],
+            &["https://example.com/sub".to_string()],
+        ));
         let fetcher = StubFetcher::new(vec![]);
         let conn = make_in_memory_conn();
 
         let client = reqwest::Client::new();
-        registry.run_pipeline_with(&client, &conn, fetcher).await.unwrap();
+        registry
+            .run_pipeline_with(&client, &conn, fetcher)
+            .await
+            .unwrap();
 
         let sid = source_id_for("https://example.com/sub");
         let server = crate::db::get_server(&conn, sid).unwrap();
@@ -163,7 +192,10 @@ mod tests {
         let conn = make_in_memory_conn();
 
         let client = reqwest::Client::new();
-        registry.run_pipeline_with(&client, &conn, fetcher).await.unwrap();
+        registry
+            .run_pipeline_with(&client, &conn, fetcher)
+            .await
+            .unwrap();
 
         let server_id = config.uid() as i64;
         let server = crate::db::get_server(&conn, server_id).unwrap();
@@ -187,10 +219,16 @@ mod tests {
         let conn = make_in_memory_conn();
 
         let client = reqwest::Client::new();
-        registry.run_pipeline_with(&client, &conn, fetcher).await.unwrap();
+        registry
+            .run_pipeline_with(&client, &conn, fetcher)
+            .await
+            .unwrap();
 
         let server_id = make_vmess_config().uid() as i64;
         let sightings = crate::db::get_sightings(&conn, server_id).unwrap();
-        assert!(sightings.len() >= 2, "should have 2+ sightings for same server");
+        assert!(
+            sightings.len() >= 2,
+            "should have 2+ sightings for same server"
+        );
     }
 }

@@ -40,9 +40,7 @@ use std::num::NonZeroU64;
 
 use serde::{Deserialize, Serialize};
 
-use crate::urlx::{
-    host_serde, port_serde, HostSpec, RawUrlX, SchemeX,
-};
+use crate::urlx::{HostSpec, RawUrlX, SchemeX, host_serde, port_serde};
 
 use super::utils;
 use super::{ParseError, ProtoSpec};
@@ -121,13 +119,21 @@ impl ProtoSpec for TgConfig {
             host,
             port,
             secret,
-            transport: if is_socks { "socks".into() } else { "mtproto".into() },
+            transport: if is_socks {
+                "socks".into()
+            } else {
+                "mtproto".into()
+            },
             remarks,
         })
     }
 
     fn reconstruct(&self) -> Result<String, ParseError> {
-        let userinfo = if self.transport == "socks" { "socks" } else { "proxy" };
+        let userinfo = if self.transport == "socks" {
+            "socks"
+        } else {
+            "proxy"
+        };
 
         let tg_url = url::Url::parse(
             format!(
@@ -160,7 +166,13 @@ impl ProtoSpec for TgConfig {
     }
 
     fn cred_hash(&self) -> u64 {
-        utils::compute_cred_hash(Some(&self.host), Some(self.port), None, &self.secret, &self.secret)
+        utils::compute_cred_hash(
+            Some(&self.host),
+            Some(self.port),
+            None,
+            &self.secret,
+            &self.secret,
+        )
     }
 
     fn sig(&self) -> u64 {
@@ -221,9 +233,15 @@ mod tests {
         let parsed = TgConfig::try_parse(&raw).expect("failed to parse");
         let reconstructed = parsed.reconstruct().expect("failed to reconstruct");
 
-        assert!(reconstructed.contains("server="), "should contain server param");
+        assert!(
+            reconstructed.contains("server="),
+            "should contain server param"
+        );
         assert!(reconstructed.contains("port="), "should contain port param");
-        assert!(reconstructed.contains("secret="), "should contain secret param");
+        assert!(
+            reconstructed.contains("secret="),
+            "should contain secret param"
+        );
     }
 
     #[test]
@@ -242,6 +260,8 @@ mod tests {
 
     #[test]
     fn test_roundtrip() {
-        check_roundtrip::<TgConfig>("https://t.me/proxy?server=146.185.211.126&port=443&secret=ee1e36377253a29133d290f3d14ae0163873756e342d32302e757365726170692e636f6d");
+        check_roundtrip::<TgConfig>(
+            "https://t.me/proxy?server=146.185.211.126&port=443&secret=ee1e36377253a29133d290f3d14ae0163873756e342d32302e757365726170692e636f6d",
+        );
     }
 }

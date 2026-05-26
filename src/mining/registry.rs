@@ -1,12 +1,10 @@
+use anyhow::Context;
+use futures::StreamExt;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
-use std::time::Duration;
-
-use anyhow::Context;
-use futures::StreamExt;
-use yaml_rust2::{Yaml, YamlLoader};
 use tracing::info;
+use yaml_rust2::{Yaml, YamlLoader};
 
 use crate::db::hash_source_url;
 
@@ -30,7 +28,11 @@ impl SourceMetadata {
     #[must_use]
     pub fn new(url: String, source_type: SourceType) -> Self {
         let id = hash_source_url(&url);
-        Self { url, id, source_type }
+        Self {
+            url,
+            id,
+            source_type,
+        }
     }
 }
 
@@ -44,7 +46,9 @@ pub struct SourceRegistry {
 impl SourceRegistry {
     #[must_use]
     pub fn new() -> Self {
-        Self { sources: HashMap::new() }
+        Self {
+            sources: HashMap::new(),
+        }
     }
 
     /// Pre-populate registry with a source
@@ -75,6 +79,10 @@ impl SourceRegistry {
     }
 
     /// Upsert all registered sources to the database
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database operation fails.
     pub fn upsert_all(&self, conn: &rusqlite::Connection) -> rusqlite::Result<()> {
         for source in self.sources() {
             crate::db::upsert_source(conn, &source.url)?;
@@ -109,6 +117,12 @@ impl SourceRegistry {
     }
 
     /// Load config from YAML file, normalize channels, pre-populate registry
+    ///
+    /// # Errors
+    /// - Failed to read config file
+    /// - Failed to parse YAML
+    /// - Invalid or empty config file
+    /// - Invalid or missing tgchannel in config file
     pub fn from_config(path: &Path) -> Result<Self, anyhow::Error> {
         let content = std::fs::read_to_string(path).context("Failed to read config file")?;
         let docs = YamlLoader::load_from_str(&content).context("Failed to parse YAML")?;
@@ -119,7 +133,9 @@ impl SourceRegistry {
 
         let channels: Vec<String> = {
             let Some(Yaml::Array(list)) = h.get(&Yaml::String("tgchannel".into())) else {
-                return Err(anyhow::anyhow!("Invalid or missing tgchannel in config file"));
+                return Err(anyhow::anyhow!(
+                    "Invalid or missing tgchannel in config file"
+                ));
             };
             list.iter()
                 .filter_map(|v| match v {
@@ -146,6 +162,10 @@ impl SourceRegistry {
     }
 
     /// Run the full mining pipeline with the given fetcher
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the pipeline fails
     pub(crate) async fn run_pipeline_with<F: SourceFetcher>(
         self: Arc<Self>,
         client: &reqwest::Client,
@@ -164,13 +184,28 @@ impl SourceRegistry {
         Ok(())
     }
 
-    /// Run the full mining pipeline with the default LiveFetcher
+    /// Run the full mining pipeline with the default `LiveFetcher`
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the pipeline fails
     pub async fn run_pipeline(
         self: Arc<Self>,
         client: &reqwest::Client,
         conn: &rusqlite::Connection,
     ) -> Result<(), anyhow::Error> {
-        self.run_pipeline_with(client, conn, LiveFetcher).await
+        self.run_pipeline_with(client, conn, LiveFetcher::default())
+            .await
+    }
+
+    /// Run a fetcher stream from the registry sources, returning a boxed stream of traced configs
+    pub fn run_fetcher_stream<F: SourceFetcher>(
+        self: Arc<Self>,
+        client: &reqwest::Client,
+        fetcher: F,
+    ) -> futures::stream::BoxStream<'static, TracedProtocolConfig> {
+        let (channels, subscriptions) = self.partition_sources();
+        fetcher.fetch(client, self, channels, subscriptions)
     }
 }
 
@@ -193,7 +228,10 @@ pub trait SourceFetcher {
     ) -> futures::stream::BoxStream<'static, TracedProtocolConfig>;
 }
 
-pub struct LiveFetcher;
+#[derive(Default)]
+pub struct LiveFetcher {
+    pub tg_config: super::TgConfig,
+}
 
 impl SourceFetcher for LiveFetcher {
     fn fetch(
@@ -203,27 +241,26 @@ impl SourceFetcher for LiveFetcher {
         channels: Vec<String>,
         subscriptions: Vec<String>,
     ) -> futures::stream::BoxStream<'static, TracedProtocolConfig> {
-        let tg_stream = if !channels.is_empty() {
-            Some(super::telegram::fetch_tg_channels(
-                client.clone(),
-                8,
-                channels.into_iter(),
-                Duration::from_secs(30),
-                None,
-                registry.clone(),
-            ).boxed())
-        } else {
+        let tg_stream = if channels.is_empty() {
             None
+        } else {
+            Some(
+                super::telegram::fetch_tg_channels(
+                    client.clone(),
+                    self.tg_config.concurrency,
+                    channels.into_iter(),
+                    self.tg_config.timeout,
+                    self.tg_config.backfill.clone(),
+                    registry.clone(),
+                )
+                .boxed(),
+            )
         };
 
-        let sub_stream = if !subscriptions.is_empty() {
-            Some(super::sub::fetch_subscriptions(
-                client.clone(),
-                registry.clone(),
-                subscriptions,
-            ).boxed())
-        } else {
+        let sub_stream = if subscriptions.is_empty() {
             None
+        } else {
+            Some(super::sub::fetch_subscriptions(client.clone(), registry, subscriptions).boxed())
         };
 
         match (tg_stream, sub_stream) {
@@ -237,6 +274,10 @@ impl SourceFetcher for LiveFetcher {
 
 /// Process a stream of traced configs, writing each source and server to the database.
 /// Sources are upserted lazily on first encounter. Fatal on DB error (aborts pipeline).
+///
+/// # Errors
+///
+/// Returns an error if the database connection fails.
 async fn process_config_stream(
     mut stream: impl StreamExt<Item = TracedProtocolConfig> + std::marker::Unpin,
     conn: &rusqlite::Connection,
@@ -249,7 +290,7 @@ async fn process_config_stream(
                 .context("source upsert failed (aborting)")?;
         }
         crate::db::upsert_server(
-            &conn,
+            conn,
             &item.config,
             item.source.id,
             item.timestamp.timestamp(),
@@ -317,10 +358,22 @@ mod tests {
 
     #[test]
     fn test_normalize_channel_url() {
-        assert_eq!(normalize_channel_url("MyChannel"), "https://t.me/s/MyChannel");
-        assert_eq!(normalize_channel_url("@MyChannel"), "https://t.me/s/MyChannel");
-        assert_eq!(normalize_channel_url("https://t.me/MyChannel"), "https://t.me/s/MyChannel");
-        assert_eq!(normalize_channel_url("https://t.me/s/MyChannel"), "https://t.me/s/MyChannel");
+        assert_eq!(
+            normalize_channel_url("MyChannel"),
+            "https://t.me/s/MyChannel"
+        );
+        assert_eq!(
+            normalize_channel_url("@MyChannel"),
+            "https://t.me/s/MyChannel"
+        );
+        assert_eq!(
+            normalize_channel_url("https://t.me/MyChannel"),
+            "https://t.me/s/MyChannel"
+        );
+        assert_eq!(
+            normalize_channel_url("https://t.me/s/MyChannel"),
+            "https://t.me/s/MyChannel"
+        );
     }
 
     #[test]
@@ -343,7 +396,11 @@ mod tests {
 
     #[test]
     fn test_from_sources() {
-        let channels = vec!["Chan1".to_string(), "@Chan2".to_string(), "https://t.me/Chan3".to_string()];
+        let channels = vec![
+            "Chan1".to_string(),
+            "@Chan2".to_string(),
+            "https://t.me/Chan3".to_string(),
+        ];
         let subs = vec!["https://example.com/sub".to_string()];
         let registry = SourceRegistry::from_sources(&channels, &subs);
 

@@ -1,8 +1,8 @@
 use rusqlite::{Connection, Result, params};
 use serde::{Deserialize, Serialize};
 
-use crate::proto_spec::ProtocolConfig;
 use crate::proto_spec::ProtoSpec;
+use crate::proto_spec::ProtocolConfig;
 
 pub const SCHEMA_SOURCES: &str = r"
 CREATE TABLE IF NOT EXISTS sources (
@@ -138,7 +138,7 @@ pub fn upsert_server(
     source_id: i64,
     incoming_ts: i64,
 ) -> Result<()> {
-    let server_id = config.uid() as i64;
+    let server_id = config.uid().cast_signed();
 
     let existing: Option<ServerRecord> = conn
         .query_row(
@@ -168,14 +168,14 @@ pub fn upsert_server(
                 .host()
                 .map(|h| h.to_str().into_owned())
                 .unwrap_or_default();
-            let port = config
-                .port()
-                .map(|p| p.to_string())
-                .unwrap_or_default();
-            let transport = config.transport_type().map(std::string::ToString::to_string);
+            let port = config.port().map(|p| p.to_string()).unwrap_or_default();
+            let transport = config
+                .transport_type()
+                .map(std::string::ToString::to_string);
             let security = config.security_type().map(std::string::ToString::to_string);
             let remarks = config.remarks().map(std::string::ToString::to_string);
-            let raw_config = serde_json::to_string(config).expect("Failed to serialize ProtocolConfig");
+            let raw_config =
+                serde_json::to_string(config).expect("Failed to serialize ProtocolConfig");
 
             conn.execute(
                 "INSERT INTO servers (id, schema, host, port, transport, security, remarks, raw_config, first_seen_ts, first_seen_source_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
@@ -292,7 +292,7 @@ mod tests {
     }
 
     fn server_id(config: &ProtocolConfig) -> i64 {
-        config.uid() as i64
+        config.uid().cast_signed()
     }
 
     const CONFIG_A: &str = "vmess://eyJhZGQiOiIxMjcuMC4wLjEiLCJwb3J0Ijo4MCwiaWQiOiJhYmNkZS0xMjM0NS02Nzg5MCIsIm5ldCI6InRjcCIsInR5cGUiOiJub25lIn0=";
@@ -307,7 +307,9 @@ mod tests {
         upsert_server(&conn, &config, source_id, 100).unwrap();
 
         let sid = server_id(&config);
-        let server = get_server(&conn, sid).unwrap().expect("server should exist");
+        let server = get_server(&conn, sid)
+            .unwrap()
+            .expect("server should exist");
         assert_eq!(server.first_seen_ts, 100);
         assert_eq!(server.first_seen_source_id, source_id);
 
@@ -327,7 +329,9 @@ mod tests {
         upsert_server(&conn, &config, source_id, 100).unwrap();
 
         let sid = server_id(&config);
-        let server = get_server(&conn, sid).unwrap().expect("server should exist");
+        let server = get_server(&conn, sid)
+            .unwrap()
+            .expect("server should exist");
         assert_eq!(server.first_seen_ts, 50);
 
         let sightings = get_sightings(&conn, sid).unwrap();
@@ -345,15 +349,26 @@ mod tests {
         upsert_server(&conn, &config, source_b, 50).unwrap();
 
         let sid = server_id(&config);
-        let server = get_server(&conn, sid).unwrap().expect("server should exist");
+        let server = get_server(&conn, sid)
+            .unwrap()
+            .expect("server should exist");
         assert_eq!(server.first_seen_ts, 50);
         assert_eq!(server.first_seen_source_id, source_b);
 
         let sightings = get_sightings(&conn, sid).unwrap();
         assert_eq!(sightings.len(), 2, "original + backfill sighting");
-        assert!(sightings.iter().any(|s| s.seen_ts == 50), "should have sighting at ts=50");
-        assert!(sightings.iter().any(|s| s.seen_ts == 100), "should have sighting at ts=100");
-        assert!(sightings.iter().any(|s| s.source_id == source_b), "should have sighting from source_b");
+        assert!(
+            sightings.iter().any(|s| s.seen_ts == 50),
+            "should have sighting at ts=50"
+        );
+        assert!(
+            sightings.iter().any(|s| s.seen_ts == 100),
+            "should have sighting at ts=100"
+        );
+        assert!(
+            sightings.iter().any(|s| s.source_id == source_b),
+            "should have sighting from source_b"
+        );
     }
 
     #[test]
@@ -367,7 +382,9 @@ mod tests {
         upsert_server(&conn, &config, source_b, 100).unwrap();
 
         let sid = server_id(&config);
-        let server = get_server(&conn, sid).unwrap().expect("server should exist");
+        let server = get_server(&conn, sid)
+            .unwrap()
+            .expect("server should exist");
         assert_eq!(server.first_seen_ts, 100);
         assert_eq!(server.first_seen_source_id, source_a);
 
@@ -398,8 +415,14 @@ mod tests {
         let sid_b = server_id(&config_b);
         assert_ne!(sid_a, sid_b);
 
-        assert!(get_server(&conn, sid_a).unwrap().is_some(), "server A should exist");
-        assert!(get_server(&conn, sid_b).unwrap().is_some(), "server B should exist");
+        assert!(
+            get_server(&conn, sid_a).unwrap().is_some(),
+            "server A should exist"
+        );
+        assert!(
+            get_server(&conn, sid_b).unwrap().is_some(),
+            "server B should exist"
+        );
         assert_eq!(get_sightings(&conn, sid_a).unwrap().len(), 1);
         assert_eq!(get_sightings(&conn, sid_b).unwrap().len(), 1);
     }
@@ -415,7 +438,9 @@ mod tests {
         upsert_server(&conn, &config, source_b, 200).unwrap();
 
         let sid = server_id(&config);
-        let server = get_server(&conn, sid).unwrap().expect("server should exist");
+        let server = get_server(&conn, sid)
+            .unwrap()
+            .expect("server should exist");
         assert_eq!(server.first_seen_source_id, source_a);
 
         let sightings = get_sightings(&conn, sid).unwrap();

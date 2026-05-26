@@ -1,8 +1,8 @@
 use std::time::Duration;
 
-use criterion::{criterion_group, criterion_main, Criterion, SamplingMode, Throughput};
+use criterion::{Criterion, SamplingMode, Throughput, criterion_group, criterion_main};
 use v2ray_heal::proto_spec::{
-    Hysteria2Config, ProtocolConfig, ProtoSpec, SsConfig, SsrConfig, TrojanConfig, TuicConfig,
+    Hysteria2Config, ProtoSpec, ProtocolConfig, SsConfig, SsrConfig, TrojanConfig, TuicConfig,
     VlessConfig, VmessConfig, WireguardConfig,
 };
 use v2ray_heal::urlx::RawUrlX;
@@ -206,7 +206,10 @@ fn bench_proto_try_parse_wireguard(c: &mut Criterion) {
 }
 
 fn bench_proto_config_dispatch(c: &mut Criterion) {
-    let data = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/benches/data/mixed.txt"));
+    let data = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/benches/data/mixed.txt"
+    ));
     let urls: Vec<String> = data
         .lines()
         .map(|l| l.trim())

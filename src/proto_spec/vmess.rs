@@ -55,10 +55,9 @@ use std::num::NonZeroU64;
 
 use serde::{Deserialize, Serialize};
 
-use crate::urlx::{
-    host_serde, port_serde, HostSpec, RawUrlX, SchemeX,
-};
+use crate::urlx::{HostSpec, RawUrlX, SchemeX, host_serde, port_serde};
 
+use super::common::TransportConfig;
 use super::utils;
 use super::{ParseError, ProtoSpec};
 
@@ -75,14 +74,13 @@ pub struct VmessConfig {
     #[serde(with = "port_serde")]
     pub port: u16,
     pub security: Option<String>,
-    pub transport: Option<String>,
+    pub transport: TransportConfig,
     pub alter_id: Option<String>,
     pub path: Option<String>,
     pub sni: Option<String>,
     pub alpn: Option<String>,
     pub fp: Option<String>,
     pub tls: Option<String>,
-    pub net: Option<String>,
     pub remarks: Option<String>,
 }
 
@@ -92,6 +90,7 @@ impl ProtoSpec for VmessConfig {
     /// Decodes the base64 userinfo → parses lenient JSON with abbreviated v2rayN keys.
     /// Trailing non-base64 annotation (Telegram emoji, Persian text, etc.) is stripped
     /// by `decode_base64` before JSON parsing. Empty/null string fields are filtered.
+    #[allow(clippy::too_many_lines)]
     fn try_parse(raw: &RawUrlX<'_>) -> Result<Self, ParseError> {
         // VMess userinfo is base64-encoded JSON (v2rayN VmessQRCode format).
         // decode_base64 handles trailing annotation text/emoji and stray backticks.
@@ -136,9 +135,9 @@ impl ProtoSpec for VmessConfig {
             .or(Some("auto"))
             .map(String::from);
 
-        // "net" — transport network type (tcp, ws, kcp, grpc, http/h2, quic, etc.)
+        // "net" — transport network type (tcp, ws, kcp, grpc, http/h2, quic, httpupgrade, xhttp/splithttp)
         // Filters empty/null/"null" — absence means tcp
-        let net = json
+        let net_str = json
             .get("net")
             .and_then(|v| v.as_str())
             .filter(|s| !s.is_empty() && s != &"null")
@@ -195,11 +194,50 @@ impl ProtoSpec for VmessConfig {
             .filter(|s| !s.is_empty())
             .map(|s| s.trim_matches(['"', '\'']).to_string());
 
-        // "type" — header type (for TCP/KCP) or gRPC mode.
-        // Falls back to net value if type is absent.
-        let transport = net
-            .clone()
-            .or_else(|| json.get("type").and_then(|v| v.as_str()).map(String::from));
+        // Build typed TransportConfig from net field
+        let mut transport = TransportConfig::from_type_and_path(
+            net_str.as_deref(),
+            path.as_deref(),
+        )
+        .ok_or_else(|| {
+            ParseError::InvalidConf("net".into(), net_str.clone().unwrap_or_default().into())
+        })?;
+
+        // Resolve host for transport (HttpUpgrade/XHttp): host → sni → server address
+        let vmess_host = json
+            .get("host")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .map(String::from);
+        let server_addr = Some(parsed_host.to_str().into_owned());
+        transport = transport.with_host(vmess_host, sni.clone(), server_addr);
+
+        // For XHttp: mode comes from VMess JSON `type` field
+        if let TransportConfig::XHttp(ref mut xcfg) = transport
+            && let Some(mode) = json.get("type").and_then(|v| v.as_str())
+        {
+            match mode {
+                "auto" | "packet-up" | "stream-up" | "stream-one" => {
+                    xcfg.mode = Some(mode.to_string());
+                }
+                other => {
+                    return Err(ParseError::InvalidConf(
+                        "type".into(),
+                        other.to_string().into(),
+                    ));
+                }
+            }
+        }
+
+        // Post-process path: if host starts with "/" and path is empty (v2rayN compat)
+        let path = if path.is_none() {
+            json.get("host")
+                .and_then(|v| v.as_str())
+                .filter(|s| s.starts_with('/'))
+                .map(String::from)
+        } else {
+            path
+        };
 
         Ok(Self {
             sig_cache: std::sync::OnceLock::new(),
@@ -214,7 +252,6 @@ impl ProtoSpec for VmessConfig {
             alpn,
             fp,
             tls,
-            net,
             remarks,
         })
     }
@@ -236,10 +273,11 @@ impl ProtoSpec for VmessConfig {
         if let Some(ref v) = self.security {
             map.insert("scy".into(), serde_json::Value::String(v.clone()));
         }
-        if let Some(ref v) = self.net {
-            map.insert("net".into(), serde_json::Value::String(v.clone()));
-        } else if let Some(ref v) = self.transport {
-            map.insert("net".into(), serde_json::Value::String(v.clone()));
+        if self.transport.type_str() != "tcp" {
+            map.insert(
+                "net".into(),
+                serde_json::Value::String(self.transport.type_str().to_string()),
+            );
         }
         if let Some(ref v) = self.path {
             map.insert("path".into(), serde_json::Value::String(v.clone()));
@@ -286,7 +324,13 @@ impl ProtoSpec for VmessConfig {
     }
 
     fn cred_hash(&self) -> u64 {
-        utils::compute_cred_hash(Some(&self.host), Some(self.port), None, &self.uuid, &self.uuid)
+        utils::compute_cred_hash(
+            Some(&self.host),
+            Some(self.port),
+            None,
+            &self.uuid,
+            &self.uuid,
+        )
     }
 
     fn sig(&self) -> u64 {
@@ -302,7 +346,7 @@ impl ProtoSpec for VmessConfig {
     }
 
     fn transport_type(&self) -> Option<&str> {
-        self.transport.as_deref()
+        Some(self.transport.type_str())
     }
 
     fn security_type(&self) -> Option<&str> {
@@ -316,8 +360,19 @@ impl VmessConfig {
         if let Some(ref v) = self.security {
             parts.push(v.as_bytes());
         }
-        if let Some(ref v) = self.transport {
-            parts.push(v.as_bytes());
+        parts.push(self.transport.type_str().as_bytes());
+        match &self.transport {
+            TransportConfig::HttpUpgrade(cfg) => {
+                if let Some(ref v) = cfg.host {
+                    parts.push(v.as_bytes());
+                }
+            }
+            TransportConfig::XHttp(cfg) => {
+                if let Some(ref v) = cfg.host {
+                    parts.push(v.as_bytes());
+                }
+            }
+            _ => {}
         }
         if let Some(ref v) = self.alter_id {
             parts.push(v.as_bytes());
@@ -373,7 +428,27 @@ mod tests {
 
     #[test]
     fn test_roundtrip() {
-        check_roundtrip::<VmessConfig>("vmess://eyJhZGQiOiIxOTIuMjAwLjE2MC4xNiIsImFpZCI6IjAiLCJhbHBuIjoiIiwiZnAiOiIiLCJob3N0IjoiIiwiaWQiOiI5YjRjMmVkYS0zNDFlLTQ4OGYtYTNiMi0xZGM3MTZiOWYzNmEiLCJpbnNlY3VyZSI6IjEiLCJuZXQiOiJ3cyIsInBhdGgiOiIvIiwicG9ydCI6Ijg0NDMiLCJwcyI6IkBDbG91ZENpdHl5Iiwic2N5IjoiYXV0byIsInNuaSI6InN0ZWFtLmF2YWFhYWwuaXIiLCJ0bHMiOiJ0bHMiLCJ0eXBlIjoiLS0tIiwidiI6IjIifQ==");
+        check_roundtrip::<VmessConfig>(
+            "vmess://eyJhZGQiOiIxOTIuMjAwLjE2MC4xNiIsImFpZCI6IjAiLCJhbHBuIjoiIiwiZnAiOiIiLCJob3N0IjoiIiwiaWQiOiI5YjRjMmVkYS0zNDFlLTQ4OGYtYTNiMi0xZGM3MTZiOWYzNmEiLCJpbnNlY3VyZSI6IjEiLCJuZXQiOiJ3cyIsInBhdGgiOiIvIiwicG9ydCI6Ijg0NDMiLCJwcyI6IkBDbG91ZENpdHl5Iiwic2N5IjoiYXV0byIsInNuaSI6InN0ZWFtLmF2YWFhYWwuaXIiLCJ0bHMiOiJ0bHMiLCJ0eXBlIjoiLS0tIiwidiI6IjIifQ==",
+        );
+    }
+
+    #[test]
+    fn test_vmess_httpupgrade() {
+        let b64 = "eyJhZGQiOiIxOTIuMjAwLjE2MC4xNiIsImFpZCI6IjAiLCJob3N0Ijoid3MuZXhhbXBsZS5jb20iLCJpZCI6Ijk5OTk5OTk5LTk5OTktOTk5OS05OTk5LTk5OTk5OTk5OTk5OSIsIm5ldCI6Imh0dHB1cGdyYWRlIiwicGF0aCI6Ii92MnJheSIsInBvcnQiOiI4NDQzIiwicHMiOiJ0ZXN0aHR0cHVwZ3JhZGUiLCJzY3kiOiJhdXRvIiwic25pIjoiIiwidGxzIjoidGxzIiwidHlwZSI6IiIsInYiOiIyIn0=";
+        let url_str = format!("vmess://{b64}");
+        let raw = crate::urlx::RawUrlX::from(url_str.as_str());
+        let config = VmessConfig::try_parse(&raw).expect("vmess httpupgrade failed");
+        assert_eq!(config.transport.type_str(), "httpupgrade");
+    }
+
+    #[test]
+    fn test_vmess_splithttp() {
+        let b64 = "eyJhZGQiOiIxOTIuMjAwLjE2MC4xNiIsImFpZCI6IjAiLCJob3N0IjoieGh0dHAuZXhhbXBsZS5jb20iLCJpZCI6Ijk5OTk5OTk5LTk5OTktOTk5OS05OTk5LTk5OTk5OTk5OTk5OSIsIm5ldCI6InNwbGl0aHR0cCIsInBhdGgiOiIvIiwicG9ydCI6Ijg0NDMiLCJwcyI6InRlc3R4aHR0cCIsInNjeSI6ImF1dG8iLCJzbmkiOiIiLCJ0bHMiOiJ0bHMiLCJ0eXBlIjoiYXV0byIsInYiOiIyIn0=";
+        let url_str = format!("vmess://{b64}");
+        let raw = crate::urlx::RawUrlX::from(url_str.as_str());
+        let config = VmessConfig::try_parse(&raw).expect("vmess splithttp failed");
+        assert_eq!(config.transport.type_str(), "xhttp");
     }
 
     #[test]

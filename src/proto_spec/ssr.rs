@@ -43,9 +43,7 @@ use std::num::NonZeroU64;
 use base64::Engine;
 use serde::{Deserialize, Serialize};
 
-use crate::urlx::{
-    host_serde, port_serde, HostSpec, RawUrlX, SchemeX,
-};
+use crate::urlx::{HostSpec, RawUrlX, SchemeX, host_serde, port_serde};
 
 use super::utils;
 use super::{ParseError, ProtoSpec};

@@ -20,6 +20,7 @@ mod vless;
 mod vmess;
 mod wireguard;
 
+pub use common::{HttpUpgradeConfig, XHttpConfig};
 pub use hysteria2::Hysteria2Config;
 pub use slipnet::{SlipnetConfig, SlipnetEncConfig};
 pub use ss::SsConfig;

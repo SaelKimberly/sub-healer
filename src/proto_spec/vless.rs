@@ -45,9 +45,7 @@ use std::num::NonZeroU64;
 
 use serde::{Deserialize, Serialize};
 
-use crate::urlx::{
-    host_serde, port_serde, HostSpec, RawUrlX, SchemeX,
-};
+use crate::urlx::{HostSpec, RawUrlX, SchemeX, host_serde, port_serde};
 
 use super::common::TransportConfig;
 use super::utils;
@@ -122,7 +120,6 @@ impl ProtoSpec for VlessConfig {
         // flow: xtls-rprx-vision for XTLS direct transmission (TLS 1.3 required)
         let flow = query.get("flow").cloned();
         // sni: TLS SNI override (overrides host for TLS server name)
-        let sni = query.get("sni").cloned();
         // alpn: comma-separated ALPN list (e.g., "h2,http/1.1")
         let alpn = query.get("alpn").cloned();
         // fp: uTLS Client Hello fingerprint (chrome/firefox/safari/random/randomized)
@@ -140,13 +137,49 @@ impl ProtoSpec for VlessConfig {
 
         let remarks = utils::decode_fragment(raw)?;
 
-        let transport = TransportConfig::from_type_and_path(Some(&transport_type), path.as_deref())
-            .ok_or_else(|| ParseError::InvalidConf("type".into(), transport_type.into()))?;
+        let host = query.get("host").cloned();
+        let sni_from_query = query.get("sni").cloned();
+        let server_addr = Some(parsed_host.to_str().into_owned());
+
+        let mut transport =
+            TransportConfig::from_type_and_path(Some(&transport_type), path.as_deref())
+                .ok_or_else(|| ParseError::InvalidConf("type".into(), transport_type.into()))?;
+        transport = transport.with_host(host, sni_from_query, server_addr);
+
+        // Extract mode and extra for XHttp, validate mode
+        if let TransportConfig::XHttp(ref mut xcfg) = transport {
+            if let Some(mode) = query.get("mode") {
+                match mode.as_str() {
+                    "auto" | "packet-up" | "stream-up" | "stream-one" => {
+                        xcfg.mode = Some(mode.clone());
+                    }
+                    other => {
+                        return Err(ParseError::InvalidConf(
+                            "mode".into(),
+                            other.to_string().into(),
+                        ));
+                    }
+                }
+            }
+            if let Some(extra) = query.get("extra") {
+                match serde_json::from_str(extra) {
+                    Ok(v) => xcfg.extra = Some(v),
+                    Err(_) => {
+                        return Err(ParseError::InvalidConf(
+                            "extra".into(),
+                            extra.clone().into(),
+                        ));
+                    }
+                }
+            }
+        }
 
         let path = match transport {
             TransportConfig::Ws(ref ws) => ws.path.clone(),
             TransportConfig::Grpc(ref g) => g.path.clone(),
             TransportConfig::Http(ref h) => h.path.clone(),
+            TransportConfig::HttpUpgrade(ref cfg) => cfg.path.clone(),
+            TransportConfig::XHttp(ref cfg) => cfg.path.clone(),
             _ => path,
         };
 
@@ -160,7 +193,7 @@ impl ProtoSpec for VlessConfig {
             encryption,
             flow,
             path,
-            sni,
+            sni: query.get("sni").cloned(),
             alpn,
             fp,
             pbk,
@@ -188,6 +221,25 @@ impl ProtoSpec for VlessConfig {
             }
             if self.transport.type_str() != "tcp" {
                 q.append_pair("type", self.transport.type_str());
+            }
+            match &self.transport {
+                TransportConfig::HttpUpgrade(cfg) => {
+                    if let Some(ref host) = cfg.host {
+                        q.append_pair("host", host);
+                    }
+                }
+                TransportConfig::XHttp(cfg) => {
+                    if let Some(ref host) = cfg.host {
+                        q.append_pair("host", host);
+                    }
+                    if let Some(ref mode) = cfg.mode {
+                        q.append_pair("mode", mode);
+                    }
+                    if let Some(ref extra) = cfg.extra {
+                        q.append_pair("extra", &extra.to_string());
+                    }
+                }
+                _ => {}
             }
             if let Some(ref path) = self.path {
                 q.append_pair("path", path);
@@ -251,7 +303,13 @@ impl ProtoSpec for VlessConfig {
     }
 
     fn cred_hash(&self) -> u64 {
-        utils::compute_cred_hash(Some(&self.host), Some(self.port), None, &self.uuid, &self.uuid)
+        utils::compute_cred_hash(
+            Some(&self.host),
+            Some(self.port),
+            None,
+            &self.uuid,
+            &self.uuid,
+        )
     }
 
     fn sig(&self) -> u64 {
@@ -280,6 +338,19 @@ impl VlessConfig {
         let mut parts: Vec<&[u8]> = vec![b"vless"];
         parts.push(self.security.as_bytes());
         parts.push(self.transport.type_str().as_bytes());
+        match &self.transport {
+            TransportConfig::HttpUpgrade(cfg) => {
+                if let Some(ref v) = cfg.host {
+                    parts.push(v.as_bytes());
+                }
+            }
+            TransportConfig::XHttp(cfg) => {
+                if let Some(ref v) = cfg.host {
+                    parts.push(v.as_bytes());
+                }
+            }
+            _ => {}
+        }
         if let Some(ref path) = self.path {
             parts.push(path.as_bytes());
         }
@@ -322,7 +393,10 @@ mod tests {
         let raw = crate::urlx::RawUrlX::from(url);
         let config = VlessConfig::try_parse(&raw).expect("failed");
         assert_eq!(config.schema(), SchemeX::Vless);
-        assert_eq!(config.host().map(|h| h.to_str()), Some("159.223.24.65".into()));
+        assert_eq!(
+            config.host().map(|h| h.to_str()),
+            Some("159.223.24.65".into())
+        );
         assert_eq!(config.uuid, "6202b230-417c-4d8e-b624-0f71afa9c75d");
     }
 
@@ -370,8 +444,65 @@ mod tests {
 
     #[test]
     fn test_roundtrip() {
-        check_roundtrip::<VlessConfig>("vless://6202b230-417c-4d8e-b624-0f71afa9c75d@159.223.24.65:443?path=/?ed=2560&security=tls&encryption=none&sni=test.ir&type=ws");
-        check_roundtrip::<VlessConfig>("vless://6202b230-417c-4d8e-b624-0f71afa9c75d@host:443?type=ws&path=%2F");
+        check_roundtrip::<VlessConfig>(
+            "vless://6202b230-417c-4d8e-b624-0f71afa9c75d@159.223.24.65:443?path=/?ed=2560&security=tls&encryption=none&sni=test.ir&type=ws",
+        );
+        check_roundtrip::<VlessConfig>(
+            "vless://6202b230-417c-4d8e-b624-0f71afa9c75d@host:443?type=ws&path=%2F",
+        );
         check_roundtrip::<VlessConfig>("vless://6202b230-417c-4d8e-b624-0f71afa9c75d@host:443");
+    }
+
+    #[test]
+    fn test_vless_httpupgrade() {
+        let url = "vless://6202b230-417c-4d8e-b624-0f71afa9c75d@host.com:443?type=httpupgrade&path=/test&host=myhost.com";
+        let raw = crate::urlx::RawUrlX::from(url);
+        let config = VlessConfig::try_parse(&raw).expect("httpupgrade parse failed");
+        assert_eq!(config.transport.type_str(), "httpupgrade");
+        check_roundtrip::<VlessConfig>(url);
+    }
+
+    #[test]
+    fn test_vless_xhttp() {
+        let url = "vless://6202b230-417c-4d8e-b624-0f71afa9c75d@host.com:443?type=xhttp&mode=auto&path=/test&host=myhost.com";
+        let raw = crate::urlx::RawUrlX::from(url);
+        let config = VlessConfig::try_parse(&raw).expect("xhttp parse failed");
+        assert_eq!(config.transport.type_str(), "xhttp");
+        check_roundtrip::<VlessConfig>(url);
+    }
+
+    #[test]
+    fn test_vless_xhttp_bad_mode() {
+        let url =
+            "vless://6202b230-417c-4d8e-b624-0f71afa9c75d@host.com:443?type=xhttp&mode=badmode";
+        let raw = crate::urlx::RawUrlX::from(url);
+        assert!(VlessConfig::try_parse(&raw).is_err());
+    }
+
+    #[test]
+    fn test_vless_xhttp_extra() {
+        let url = "vless://6202b230-417c-4d8e-b624-0f71afa9c75d@host.com:443?type=xhttp&mode=auto&path=/test&extra=%7B%22xPaddingBytes%22%3A%22100-1000%22%7D";
+        let raw = crate::urlx::RawUrlX::from(url);
+        let config = VlessConfig::try_parse(&raw).expect("xhttp+extra parse failed");
+        assert_eq!(config.transport.type_str(), "xhttp");
+        if let super::TransportConfig::XHttp(ref xcfg) = config.transport {
+            assert!(xcfg.extra.is_some());
+        } else {
+            panic!("expected XHttp transport");
+        }
+    }
+
+    #[test]
+    fn test_vless_httpupgrade_host_fallback() {
+        let url =
+            "vless://6202b230-417c-4d8e-b624-0f71afa9c75d@host.com:443?type=httpupgrade&path=/test";
+        let raw = crate::urlx::RawUrlX::from(url);
+        let config = VlessConfig::try_parse(&raw).expect("httpupgrade no host parse failed");
+        assert_eq!(config.transport.type_str(), "httpupgrade");
+        if let super::TransportConfig::HttpUpgrade(ref cfg) = config.transport {
+            assert_eq!(cfg.host.as_deref(), Some("host.com"));
+        } else {
+            panic!("expected HttpUpgrade transport");
+        }
     }
 }

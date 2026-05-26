@@ -87,17 +87,17 @@ impl ProtoSpec for SlipnetConfig {
         }
 
         // Field index 3: domain (server address)
-        let domain = raw_fields.get(3).and_then(|s| {
-            if s.is_empty() { None } else { Some(s.as_str()) }
-        });
+        let domain = raw_fields
+            .get(3)
+            .and_then(|s| if s.is_empty() { None } else { Some(s.as_str()) });
         // Field index 11: public key (required for Noise protocol)
-        let public_key = raw_fields.get(11).and_then(|s| {
-            if s.is_empty() { None } else { Some(s.as_str()) }
-        });
+        let public_key = raw_fields
+            .get(11)
+            .and_then(|s| if s.is_empty() { None } else { Some(s.as_str()) });
         // Field index 1: tunnel type (sayedns, dnstt, ssh, socks5, vless)
-        let tunnel_type = raw_fields.get(1).and_then(|s| {
-            if s.is_empty() { None } else { Some(s.as_str()) }
-        });
+        let tunnel_type = raw_fields
+            .get(1)
+            .and_then(|s| if s.is_empty() { None } else { Some(s.as_str()) });
 
         let host = domain
             .map(|d| {
@@ -111,7 +111,11 @@ impl ProtoSpec for SlipnetConfig {
         let port = raw_fields
             .get(8)
             .and_then(|s| {
-                if s.is_empty() { None } else { s.parse::<u16>().ok() }
+                if s.is_empty() {
+                    None
+                } else {
+                    s.parse::<u16>().ok()
+                }
             })
             .ok_or(ParseError::MissingPort)?;
 
@@ -176,10 +180,10 @@ impl ProtoSpec for SlipnetConfig {
 impl SlipnetConfig {
     fn reconstruct_raw(&self) -> String {
         let mut fields = self.raw_fields.clone();
-        if let Some(ref tt) = self.tunnel_type {
-            if fields.len() > 1 {
-                fields[1] = TinyText::from(tt.as_str());
-            }
+        if let Some(ref tt) = self.tunnel_type
+            && fields.len() > 1
+        {
+            fields[1] = TinyText::from(tt.as_str());
         }
         if fields.len() > 3 {
             fields[3] = TinyText::from(self.host.to_str());
@@ -187,12 +191,16 @@ impl SlipnetConfig {
         if fields.len() > 8 {
             fields[8] = TinyText::from(self.port.to_string());
         }
-        if let Some(ref pk) = self.public_key {
-            if fields.len() > 11 {
-                fields[11] = TinyText::from(pk.as_str());
-            }
+        if let Some(ref pk) = self.public_key
+            && fields.len() > 11
+        {
+            fields[11] = TinyText::from(pk.as_str());
         }
-        let raw: String = fields.iter().map(|t| t.as_str()).collect::<Vec<&str>>().join("|");
+        let raw: String = fields
+            .iter()
+            .map(TinyText::as_str)
+            .collect::<Vec<&str>>()
+            .join("|");
         base64::prelude::BASE64_URL_SAFE_NO_PAD.encode(raw.as_bytes())
     }
 

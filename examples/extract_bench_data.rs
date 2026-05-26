@@ -107,7 +107,11 @@ fn main() {
                     }
                 }
             }
-            eprintln!("  {}: {} URLs", file_path.file_name().unwrap().to_string_lossy(), count);
+            eprintln!(
+                "  {}: {} URLs",
+                file_path.file_name().unwrap().to_string_lossy(),
+                count
+            );
         }
     }
 
@@ -139,8 +143,17 @@ fn main() {
     }
 
     let protocols: &[&str] = &[
-        "vless", "vmess", "trojan", "ss", "ssr", "hy2",
-        "tuic", "wireguard", "slipnet", "stormdns", "tg",
+        "vless",
+        "vmess",
+        "trojan",
+        "ss",
+        "ssr",
+        "hy2",
+        "tuic",
+        "wireguard",
+        "slipnet",
+        "stormdns",
+        "tg",
     ];
 
     let mut mixed_urls: Vec<String> = Vec::new();
