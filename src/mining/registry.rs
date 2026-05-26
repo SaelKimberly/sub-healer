@@ -131,19 +131,18 @@ impl SourceRegistry {
             return Err(anyhow::anyhow!("Invalid or empty config file"));
         };
 
-        let channels: Vec<String> = {
-            let Some(Yaml::Array(list)) = h.get(&Yaml::String("tgchannel".into())) else {
-                return Err(anyhow::anyhow!(
-                    "Invalid or missing tgchannel in config file"
-                ));
-            };
-            list.iter()
-                .filter_map(|v| match v {
-                    Yaml::String(s) => Some(s.clone()),
-                    _ => None,
-                })
-                .collect()
-        };
+        let channels: Vec<String> = h
+            .get(&Yaml::String("tgchannel".into()))
+            .and_then(|v| v.as_vec())
+            .map(|list| {
+                list.iter()
+                    .filter_map(|v| match v {
+                        Yaml::String(s) => Some(s.clone()),
+                        _ => None,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
 
         let subscriptions: Vec<String> = h
             .get(&Yaml::String("subscriptions".into()))
