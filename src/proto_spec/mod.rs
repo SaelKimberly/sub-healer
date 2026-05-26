@@ -1,5 +1,4 @@
 use std::borrow::Cow;
-use std::num::NonZeroU64;
 
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -102,7 +101,40 @@ pub enum ProtocolConfig {
     Wireguard(WireguardConfig),
 }
 
+macro_rules! dispatch {
+    ($self:expr, $method:ident $(, $arg:expr)*) => {
+        match $self {
+            ProtocolConfig::Vless(c) => c.$method($($arg),*),
+            ProtocolConfig::Vmess(c) => c.$method($($arg),*),
+            ProtocolConfig::Trojan(c) => c.$method($($arg),*),
+            ProtocolConfig::Hysteria2(c) => c.$method($($arg),*),
+            ProtocolConfig::Ss(c) => c.$method($($arg),*),
+            ProtocolConfig::Ssr(c) => c.$method($($arg),*),
+            ProtocolConfig::Tg(c) => c.$method($($arg),*),
+            ProtocolConfig::Slipnet(c) => c.$method($($arg),*),
+            ProtocolConfig::SlipnetEnc(c) => c.$method($($arg),*),
+            ProtocolConfig::Stormdns(c) => c.$method($($arg),*),
+            ProtocolConfig::Tuic(c) => c.$method($($arg),*),
+            ProtocolConfig::Wireguard(c) => c.$method($($arg),*),
+        }
+    };
+}
+
 impl ProtoSpec for ProtocolConfig {
+    fn reconstruct(&self) -> Result<String, ParseError> { dispatch!(self, reconstruct) }
+    fn schema(&self) -> SchemeX { dispatch!(self, schema) }
+    fn host(&self) -> Option<&HostSpec> { dispatch!(self, host) }
+    fn port(&self) -> Option<u16> { dispatch!(self, port) }
+    fn remarks(&self) -> Option<&str> { dispatch!(self, remarks) }
+    fn cred_hash(&self) -> u64 { dispatch!(self, cred_hash) }
+    fn sig(&self) -> u64 { dispatch!(self, sig) }
+    fn set_sig_cache(&self, v: std::num::NonZeroU64) { dispatch!(self, set_sig_cache, v) }
+    fn transport_type(&self) -> Option<&str> { dispatch!(self, transport_type) }
+    fn security_type(&self) -> Option<&str> { dispatch!(self, security_type) }
+
+    /// # Errors
+    ///
+    /// If the URL is not a valid proxy URL for any supported protocol.
     fn try_parse(raw: &RawUrlX<'_>) -> Result<Self, ParseError> {
         let r = match raw.schema {
             SchemeX::Vless => VlessConfig::try_parse(raw).map(Self::Vless),
@@ -124,7 +156,6 @@ impl ProtoSpec for ProtocolConfig {
             ref other => return Err(ParseError::UnsupportedScheme(other.clone())),
         };
 
-        // Decide to fallback or not
         let original_err = match r {
             Ok(r) => return Ok(r),
             Err(
@@ -153,176 +184,6 @@ impl ProtoSpec for ProtocolConfig {
 
         tracing::warn!(target: "visit::basic", "Schema fallback success: [{} => {}]", original_schema, v.schema());
         Ok(v)
-    }
-
-    fn reconstruct(&self) -> Result<String, ParseError> {
-        match self {
-            Self::Vless(c) => c.reconstruct(),
-            Self::Vmess(c) => c.reconstruct(),
-            Self::Trojan(c) => c.reconstruct(),
-            Self::Hysteria2(c) => c.reconstruct(),
-            Self::Ss(c) => c.reconstruct(),
-            Self::Ssr(c) => c.reconstruct(),
-            Self::Tg(c) => c.reconstruct(),
-            Self::Slipnet(c) => c.reconstruct(),
-            Self::SlipnetEnc(c) => c.reconstruct(),
-            Self::Stormdns(c) => c.reconstruct(),
-            Self::Tuic(c) => c.reconstruct(),
-            Self::Wireguard(c) => c.reconstruct(),
-        }
-    }
-
-    fn schema(&self) -> SchemeX {
-        match self {
-            Self::Vless(c) => c.schema(),
-            Self::Vmess(c) => c.schema(),
-            Self::Trojan(c) => c.schema(),
-            Self::Hysteria2(c) => c.schema(),
-            Self::Ss(c) => c.schema(),
-            Self::Ssr(c) => c.schema(),
-            Self::Tg(c) => c.schema(),
-            Self::Slipnet(c) => c.schema(),
-            Self::SlipnetEnc(c) => c.schema(),
-            Self::Stormdns(c) => c.schema(),
-            Self::Tuic(c) => c.schema(),
-            Self::Wireguard(c) => c.schema(),
-        }
-    }
-
-    fn host(&self) -> Option<&HostSpec> {
-        match self {
-            Self::Vless(c) => c.host(),
-            Self::Vmess(c) => c.host(),
-            Self::Trojan(c) => c.host(),
-            Self::Hysteria2(c) => c.host(),
-            Self::Ss(c) => c.host(),
-            Self::Ssr(c) => c.host(),
-            Self::Tg(c) => c.host(),
-            Self::Slipnet(c) => c.host(),
-            Self::SlipnetEnc(_) => None,
-            Self::Stormdns(c) => c.host(),
-            Self::Tuic(c) => c.host(),
-            Self::Wireguard(c) => c.host(),
-        }
-    }
-
-    fn port(&self) -> Option<u16> {
-        match self {
-            Self::Vless(c) => c.port(),
-            Self::Vmess(c) => c.port(),
-            Self::Trojan(c) => c.port(),
-            Self::Hysteria2(c) => c.port(),
-            Self::Ss(c) => c.port(),
-            Self::Ssr(c) => c.port(),
-            Self::Tg(c) => c.port(),
-            Self::Slipnet(c) => c.port(),
-            Self::SlipnetEnc(_) => None,
-            Self::Stormdns(c) => c.port(),
-            Self::Tuic(c) => c.port(),
-            Self::Wireguard(c) => c.port(),
-        }
-    }
-
-    fn remarks(&self) -> Option<&str> {
-        match self {
-            Self::Vless(c) => c.remarks(),
-            Self::Vmess(c) => c.remarks(),
-            Self::Trojan(c) => c.remarks(),
-            Self::Hysteria2(c) => c.remarks(),
-            Self::Ss(c) => c.remarks(),
-            Self::Ssr(c) => c.remarks(),
-            Self::Tg(c) => c.remarks.as_deref(),
-            Self::Slipnet(c) => c.remarks(),
-            Self::SlipnetEnc(_) => None,
-            Self::Stormdns(c) => c.name.as_deref(),
-            Self::Tuic(c) => c.remarks(),
-            Self::Wireguard(c) => c.remarks(),
-        }
-    }
-
-    fn cred_hash(&self) -> u64 {
-        match self {
-            Self::Vless(c) => c.cred_hash(),
-            Self::Vmess(c) => c.cred_hash(),
-            Self::Trojan(c) => c.cred_hash(),
-            Self::Hysteria2(c) => c.cred_hash(),
-            Self::Ss(c) => c.cred_hash(),
-            Self::Ssr(c) => c.cred_hash(),
-            Self::Tg(c) => c.cred_hash(),
-            Self::Slipnet(c) => c.cred_hash(),
-            Self::SlipnetEnc(c) => c.cred_hash(),
-            Self::Stormdns(c) => c.cred_hash(),
-            Self::Tuic(c) => c.cred_hash(),
-            Self::Wireguard(c) => c.cred_hash(),
-        }
-    }
-
-    fn sig(&self) -> u64 {
-        match self {
-            Self::Vless(c) => c.sig(),
-            Self::Vmess(c) => c.sig(),
-            Self::Trojan(c) => c.sig(),
-            Self::Hysteria2(c) => c.sig(),
-            Self::Ss(c) => c.sig(),
-            Self::Ssr(c) => c.sig(),
-            Self::Tg(c) => c.sig(),
-            Self::Slipnet(c) => c.sig(),
-            Self::SlipnetEnc(c) => c.sig(),
-            Self::Stormdns(c) => c.sig(),
-            Self::Tuic(c) => c.sig(),
-            Self::Wireguard(c) => c.sig(),
-        }
-    }
-
-    fn set_sig_cache(&self, v: NonZeroU64) {
-        match self {
-            Self::Vless(c) => c.set_sig_cache(v),
-            Self::Vmess(c) => c.set_sig_cache(v),
-            Self::Trojan(c) => c.set_sig_cache(v),
-            Self::Hysteria2(c) => c.set_sig_cache(v),
-            Self::Ss(c) => c.set_sig_cache(v),
-            Self::Ssr(c) => c.set_sig_cache(v),
-            Self::Tg(c) => c.set_sig_cache(v),
-            Self::Slipnet(c) => c.set_sig_cache(v),
-            Self::SlipnetEnc(c) => c.set_sig_cache(v),
-            Self::Stormdns(c) => c.set_sig_cache(v),
-            Self::Tuic(c) => c.set_sig_cache(v),
-            Self::Wireguard(c) => c.set_sig_cache(v),
-        }
-    }
-
-    fn transport_type(&self) -> Option<&str> {
-        match self {
-            Self::Vless(c) => Some(c.transport.type_str()),
-            Self::Vmess(c) => c.transport.as_deref(),
-            Self::Trojan(c) => Some(c.transport.type_str()),
-            Self::Hysteria2(_) => None,
-            Self::Ss(_) => None,
-            Self::Ssr(_) => None,
-            Self::Tg(c) => Some(c.transport.as_str()),
-            Self::Slipnet(_) => None,
-            Self::SlipnetEnc(_) => None,
-            Self::Stormdns(_) => None,
-            Self::Tuic(_) => None,
-            Self::Wireguard(_) => None,
-        }
-    }
-
-    fn security_type(&self) -> Option<&str> {
-        match self {
-            Self::Vless(c) => Some(c.security.as_str()),
-            Self::Vmess(c) => c.security.as_deref(),
-            Self::Trojan(c) => Some(c.security.as_str()),
-            Self::Hysteria2(c) => Some(c.security.as_str()),
-            Self::Ss(_) => None,
-            Self::Ssr(_) => None,
-            Self::Tg(_) => None,
-            Self::Slipnet(_) => None,
-            Self::SlipnetEnc(_) => None,
-            Self::Stormdns(_) => None,
-            Self::Tuic(_) => None,
-            Self::Wireguard(_) => None,
-        }
     }
 }
 
