@@ -148,153 +148,134 @@ impl Stream for TracedConfigStream {
     }
 }
 
+#[allow(clippy::type_complexity)]
+fn extract_urls(
+    channel_id: &str,
+    msg: ElementRef<'_>,
+) -> (
+    Option<Box<[ProtocolConfig]>>,
+    Option<Box<[UnparseableRecord]>>,
+) {
+    let mut msg_text = match msg.select(&TG_WEB_TEXT_SELECTOR).next() {
+        Some(t) => t.traverse(),
+        None => return (None, None),
+    };
+
+    let mut msg_tail = Option::<&str>::None;
+
+    let mut msg_urls = Vec::<String>::new();
+    {
+        let mut is_found: bool = false;
+
+        let mut curr_url = msg_urls.push_mut(String::new());
+        loop {
+            let chunk = if let Some(tail) = msg_tail {
+                tail
+            } else if let Some(edge) = msg_text.next() {
+                if let Edge::Open(node) = edge {
+                    match node.value() {
+                        Node::Text(t) => t.as_ref(),
+                        Node::Element(e) if e.name() == "br" => "\n",
+                        _ => {
+                            continue;
+                        }
+                    }
+                } else {
+                    continue;
+                }
+            } else {
+                break;
+            };
+            if is_found {
+                if let Some((eof, new_tail)) = chunk.split_once('\n') {
+                    if !new_tail.is_empty() {
+                        msg_tail = Some(new_tail);
+                    }
+                    is_found = false;
+                    if !eof.is_empty() {
+                        curr_url.push_str(eof);
+                    }
+                    curr_url = msg_urls.push_mut(String::new());
+                } else {
+                    curr_url.push_str(chunk);
+                }
+            } else if let Some((schema, rest)) = chunk.split_once("://") {
+                let schema = SchemeX::from_str(schema.trim_start()).unwrap().to_string();
+                curr_url.push_str(&schema);
+                curr_url.push_str("://");
+                if let Some((eof, new_tail)) = rest.split_once('\n') {
+                    if !new_tail.is_empty() {
+                        msg_tail = Some(new_tail);
+                    }
+                    is_found = false;
+                    if !eof.is_empty() {
+                        curr_url.push_str(eof);
+                    }
+                    curr_url = msg_urls.push_mut(String::new());
+                } else {
+                    is_found = true;
+                    curr_url.push_str(rest);
+                }
+            }
+        }
+    }
+
+    let mut parsed: Vec<ProtocolConfig> = Vec::new();
+    let mut unparseable: Vec<UnparseableRecord> = Vec::new();
+
+    for s in msg_urls
+        .into_iter()
+        .filter(|s| !s.is_empty() && !s.ends_with('…') && !s.ends_with("…»"))
+    {
+        let clean = if let Some((i, _)) =
+            s.char_indices().rev().take_while(|(_, c)| *c == '`').last()
+        {
+            &s[..i]
+        } else {
+            &s
+        };
+        let raw: RawUrlX = clean.into();
+        let raw_scheme = raw.schema.to_string();
+        match ProtocolConfig::try_parse(&raw) {
+            Ok(config) => parsed.push(config),
+            Err(e) => {
+                tracing::warn!(
+                    target: "mining::tg_channel",
+                    id = channel_id,
+                    "Failed to parse proxy URL: {} ({})",
+                    clean,
+                    e
+                );
+                unparseable.push(UnparseableRecord {
+                    raw_url: clean.to_string(),
+                    scheme: raw_scheme,
+                    error: e.to_string(),
+                });
+            }
+        }
+    }
+
+    let msg_urls = if parsed.is_empty() {
+        None
+    } else {
+        Some(parsed.into_boxed_slice())
+    };
+    let unparseable_urls = if unparseable.is_empty() {
+        None
+    } else {
+        Some(unparseable.into_boxed_slice())
+    };
+    (msg_urls, unparseable_urls)
+}
+
 /// Parse a single message
 #[inline]
-#[allow(clippy::too_many_lines, reason = "TODO")]
 fn parse_message(
     channel_id: &str,
     source_url: &str,
     msg_id: u32,
     msg: ElementRef<'_>,
 ) -> TgWebMessage {
-    #[allow(clippy::type_complexity)]
-    fn extract_urls(
-        channel_id: &str,
-        msg: ElementRef<'_>,
-    ) -> (
-        Option<Box<[ProtocolConfig]>>,
-        Option<Box<[UnparseableRecord]>>,
-    ) {
-        let mut msg_text = match msg.select(&TG_WEB_TEXT_SELECTOR).next() {
-            Some(t) => t.traverse(),
-            None => return (None, None),
-        };
-
-        let mut msg_tail = Option::<&str>::None;
-
-        let mut msg_urls = Vec::<String>::new();
-        {
-            let mut is_found: bool = false;
-
-            let mut curr_url = msg_urls.push_mut(String::new());
-            loop {
-                // while let Some(chunk) = msg_tail.or_else(|| msg_text.next()) {
-                let chunk = if let Some(tail) = msg_tail {
-                    tail
-                } else if let Some(edge) = msg_text.next() {
-                    if let Edge::Open(node) = edge {
-                        match node.value() {
-                            Node::Text(t) => t.as_ref(),
-                            Node::Element(e) if e.name() == "br" => "\n",
-                            _ => {
-                                continue;
-                            }
-                        }
-                    } else {
-                        continue;
-                    }
-                } else {
-                    break;
-                };
-                // 1: If we are already in URL, we should append to it
-                if is_found {
-                    if let Some((eof, new_tail)) = chunk.split_once('\n') {
-                        // 1.1 If we found a new line, there is an EOF
-                        // - Save the tail
-                        if !new_tail.is_empty() {
-                            msg_tail = Some(new_tail);
-                        }
-                        // - Set is_found to false
-                        is_found = false;
-                        // - Append eof to the current URL
-                        if !eof.is_empty() {
-                            curr_url.push_str(eof);
-                        }
-                        // - Start a new URL
-                        curr_url = msg_urls.push_mut(String::new());
-                    } else {
-                        // 1.2 If we did not found a new line, there is no EOF
-                        // - Append to the current URL
-                        curr_url.push_str(chunk);
-                    }
-                } else if let Some((schema, rest)) = chunk.split_once("://") {
-                    let schema = SchemeX::from_str(schema.trim_start()).unwrap().to_string();
-                    curr_url.push_str(&schema);
-                    curr_url.push_str("://");
-                    // 2: If we found a schema, we should start a new URL
-                    // - Set is_found to true
-                    if let Some((eof, new_tail)) = rest.split_once('\n') {
-                        // 2.1 If we found a new line, there is an EOF
-                        // - Save the tail
-                        if !new_tail.is_empty() {
-                            msg_tail = Some(new_tail);
-                        }
-                        // - Set is_found to false
-                        is_found = false;
-                        // - Append eof to the current URL
-                        curr_url.push_str(eof);
-                        // - Start a new URL
-                        curr_url = msg_urls.push_mut(String::new());
-                    } else {
-                        // 2.2 If we did not found a new line, there is a beginning of URL
-                        // - Set is_found to true
-                        is_found = true;
-
-                        // - Append schema and rest to the current URL
-                        curr_url.push_str(rest);
-                    }
-                }
-            }
-        }
-
-        let mut parsed: Vec<ProtocolConfig> = Vec::new();
-        let mut unparseable: Vec<UnparseableRecord> = Vec::new();
-
-        for s in msg_urls
-            .into_iter()
-            .filter(|s| !s.is_empty() && !s.ends_with('…') && !s.ends_with("…»"))
-        {
-            let clean = if let Some((i, _)) =
-                s.char_indices().rev().take_while(|(_, c)| *c == '`').last()
-            {
-                &s[..i]
-            } else {
-                &s
-            };
-            let raw: RawUrlX = clean.into();
-            let raw_scheme = raw.schema.to_string();
-            match ProtocolConfig::try_parse(&raw) {
-                Ok(config) => parsed.push(config),
-                Err(e) => {
-                    tracing::warn!(
-                        target: "mining::tg_channel",
-                        id = channel_id,
-                        "Failed to parse proxy URL: {} ({})",
-                        clean,
-                        e
-                    );
-                    unparseable.push(UnparseableRecord {
-                        raw_url: clean.to_string(),
-                        scheme: raw_scheme,
-                        error: e.to_string(),
-                    });
-                }
-            }
-        }
-
-        let msg_urls = if parsed.is_empty() {
-            None
-        } else {
-            Some(parsed.into_boxed_slice())
-        };
-        let unparseable_urls = if unparseable.is_empty() {
-            None
-        } else {
-            Some(unparseable.into_boxed_slice())
-        };
-        (msg_urls, unparseable_urls)
-    }
-
     let user = msg
         .select(&TG_WEB_USER_SELECTOR)
         .next()
@@ -341,38 +322,6 @@ struct TgChannelFetch {
 }
 
 impl TgChannelFetch {
-    // fn new(
-    //     client: reqwest::Client,
-    //     channel: &TinyText,
-    //     sender: tokio::sync::mpsc::Sender<TgEvent>,
-    //     limit: Arc<tokio::sync::Semaphore>,
-    //     timeout: Duration,
-    //     backfill: Option<DateTime<Utc>>,
-    // ) -> Option<Self> {
-    //     let channel_id = match channel.rsplit_once('/') {
-    //         // Accept both webview link, and raw telegram link
-    //         Some(("https://t.me/s" | "https://t.me", channel_id)) => channel_id.to_owned(),
-    //         // Another prefixes are not supported
-    //         Some((_, _)) => {
-    //             tracing::warn!("Unexpected url: {channel} (should be https://t.me/s/[channel_id])");
-    //             return None;
-    //         }
-    //         // When there is no slash in the url, trim the '@' prefix
-    //         None => channel.trim_start_matches('@').to_owned(),
-    //     };
-    //     let source_url = channel.clone();
-    //     Some(Self {
-    //         client,
-    //         channel: channel_id.into(),
-    //         source_url,
-    //         sender,
-    //         limit,
-    //         timeout,
-    //         before: None,
-    //         backfill,
-    //     })
-    // }
-
     #[allow(clippy::too_many_lines)]
     fn spawn(
         mut self: Pin<Box<Self>>,
