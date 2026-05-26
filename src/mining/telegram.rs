@@ -1,4 +1,5 @@
 use std::pin::Pin;
+use std::str::FromStr;
 use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
@@ -11,7 +12,7 @@ use tokio::sync::mpsc::Receiver;
 use tokio::task::JoinSet;
 
 use crate::proto_spec::{ProtoSpec, ProtocolConfig};
-use crate::urlx::{RawUrlX, TinyText};
+use crate::urlx::{RawUrlX, SchemeX, TinyText};
 
 use super::registry::{SourceMetadata, SourceRegistry};
 use super::traced_config::TracedProtocolConfig;
@@ -221,30 +222,7 @@ fn parse_message(
                         curr_url.push_str(chunk);
                     }
                 } else if let Some((schema, rest)) = chunk.split_once("://") {
-                    use std::borrow::Cow;
-                    let schema_lower = schema.trim_start().to_ascii_lowercase();
-                    let schema: Cow<'static, str> = match schema_lower.as_str() {
-                        "vless" => Cow::Borrowed("vless"),
-                        "vmess" => Cow::Borrowed("vmess"),
-                        "trojan" => Cow::Borrowed("trojan"),
-                        "warp" => Cow::Borrowed("warp"),
-                        "ss" | "shadowsocks" => Cow::Borrowed("ss"),
-                        "ssr" | "shadowsocksr" => Cow::Borrowed("ssr"),
-                        "anytls" => Cow::Borrowed("anytls"),
-                        "slipnet" => Cow::Borrowed("slipnet"),
-                        "slipnet-enc" => Cow::Borrowed("slipnet-enc"),
-                        "hy" | "hhy" | "hysteria" | "hhysteria" => Cow::Borrowed("hy"),
-                        "hy2" | "hhy2" | "hysteria2" | "hhysteria2" => Cow::Borrowed("hy2"),
-                        "https"
-                            if rest.starts_with("t.me/socks?")
-                                | rest.starts_with("t.me/proxy?") =>
-                        {
-                            Cow::Borrowed("https")
-                        }
-                        "tg" => Cow::Borrowed("tg"),
-                        "wireguard" => Cow::Borrowed("wireguard"),
-                        _ => Cow::Owned(schema_lower),
-                    };
+                    let schema = SchemeX::from_str(schema.trim_start()).unwrap().to_string();
                     curr_url.push_str(&schema);
                     curr_url.push_str("://");
                     // 2: If we found a schema, we should start a new URL
