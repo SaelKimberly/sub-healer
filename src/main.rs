@@ -3,32 +3,11 @@ use std::sync::Arc;
 
 use anyhow::Context;
 use clap::Parser;
-use futures::StreamExt;
 use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 use v2ray_heal::mining;
 
 fn is_telegram_url(url: &url::Url) -> bool {
     url.host_str() == Some("t.me")
-}
-
-/// Process a stream of traced configs, writing each to the database.
-/// Fatal on DB error (aborts pipeline).
-async fn process_stream(
-    mut stream: impl StreamExt<Item = mining::TracedProtocolConfig> + std::marker::Unpin,
-    conn: &rusqlite::Connection,
-) -> Result<usize, anyhow::Error> {
-    let mut count = 0usize;
-    while let Some(item) = stream.next().await {
-        v2ray_heal::db::upsert_server(
-            conn,
-            &item.config,
-            item.source.id,
-            item.timestamp.timestamp(),
-        )
-        .context("upsert failed (aborting)")?;
-        count += 1;
-    }
-    Ok(count)
 }
 
 #[derive(Debug, clap::Subcommand)]
@@ -85,7 +64,7 @@ async fn main() -> anyhow::Result<()> {
                 "stdin://local",
                 mining::get_current_timestamp(),
             );
-            let count = process_stream(futures::stream::iter(items), &conn).await?;
+            let count = mining::process_config_stream(futures::stream::iter(items), &conn).await?;
             tracing::info!(count, "Stdin mining completed");
         }
         Commands::Remote { url } => {
@@ -135,7 +114,7 @@ async fn main() -> anyhow::Result<()> {
                 items.extend(traced);
             }
 
-            let count = process_stream(futures::stream::iter(items), &conn).await?;
+            let count = mining::process_config_stream(futures::stream::iter(items), &conn).await?;
             tracing::info!(count, "Local file mining completed");
         }
     }

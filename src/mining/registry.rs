@@ -1,6 +1,6 @@
 use anyhow::Context;
 use futures::StreamExt;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 use tracing::info;
@@ -178,7 +178,7 @@ impl SourceRegistry {
             "Running mining pipeline"
         );
         let stream = fetcher.fetch(client, self, channels, subscriptions);
-        let total = process_config_stream(stream, conn).await?;
+        let total = super::process_config_stream(stream, conn).await?;
         info!(count = total, "Mining pipeline completed");
         Ok(())
     }
@@ -208,7 +208,7 @@ impl SourceRegistry {
     }
 }
 
-fn normalize_channel_url(raw: &str) -> String {
+pub(super) fn normalize_channel_url(raw: &str) -> String {
     let channel_id = raw
         .strip_prefix("https://t.me/s/")
         .or_else(|| raw.strip_prefix("https://t.me/"))
@@ -269,35 +269,6 @@ impl SourceFetcher for LiveFetcher {
             (None, None) => futures::stream::empty().boxed(),
         }
     }
-}
-
-/// Process a stream of traced configs, writing each source and server to the database.
-/// Sources are upserted lazily on first encounter. Fatal on DB error (aborts pipeline).
-///
-/// # Errors
-///
-/// Returns an error if the database connection fails.
-async fn process_config_stream(
-    mut stream: impl StreamExt<Item = TracedProtocolConfig> + std::marker::Unpin,
-    conn: &rusqlite::Connection,
-) -> Result<usize, anyhow::Error> {
-    let mut count = 0usize;
-    let mut seen_sources = HashSet::new();
-    while let Some(item) = stream.next().await {
-        if seen_sources.insert(item.source.id) {
-            crate::db::upsert_source(conn, &item.source.url)
-                .context("source upsert failed (aborting)")?;
-        }
-        crate::db::upsert_server(
-            conn,
-            &item.config,
-            item.source.id,
-            item.timestamp.timestamp(),
-        )
-        .context("upsert failed (aborting)")?;
-        count += 1;
-    }
-    Ok(count)
 }
 
 use super::TracedProtocolConfig;

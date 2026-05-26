@@ -109,17 +109,13 @@ impl SubFetcher {
             // Emit unparseable entries via tracing
             for line in lines.raw_entries() {
                 if let Data::Raw { scheme, url } = &line.url {
-                    if line.err.as_deref().is_some_and(|e| e.contains("promotion")) {
-                        continue;
-                    }
-                    tracing::warn!(
-                        target: "mining::unparseable",
-                        raw_url = %url.as_ref(),
-                        scheme = %scheme.as_ref(),
-                        error = line.err.as_deref().unwrap_or("unknown"),
-                        source_id = source.id,
-                        source_type = "subscription",
-                        timestamp = ts,
+                    super::emit_unparseable_entry(
+                        url.as_ref(),
+                        scheme.as_ref(),
+                        line.err.as_deref().unwrap_or("unknown"),
+                        source.id,
+                        "subscription",
+                        ts,
                     );
                 }
             }
@@ -160,17 +156,13 @@ pub fn lines_to_traced(
 
     for line in lines.raw_entries() {
         if let Data::Raw { scheme, url } = &line.url {
-            if line.err.as_deref().is_some_and(|e| e.contains("promotion")) {
-                continue;
-            }
-            tracing::warn!(
-                target: "mining::unparseable",
-                raw_url = %url.as_ref(),
-                scheme = %scheme.as_ref(),
-                error = line.err.as_deref().unwrap_or("unknown"),
-                source_id = source.id,
-                source_type = "local",
-                timestamp = ts,
+            super::emit_unparseable_entry(
+                url.as_ref(),
+                scheme.as_ref(),
+                line.err.as_deref().unwrap_or("unknown"),
+                source.id,
+                "local",
+                ts,
             );
         }
     }

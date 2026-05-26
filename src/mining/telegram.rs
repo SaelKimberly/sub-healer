@@ -105,17 +105,13 @@ impl Stream for TracedConfigStream {
 
                     if let Some(ref unparseable) = msg.unparseable_urls {
                         for u in unparseable {
-                            if u.error.contains("promotion") {
-                                continue;
-                            }
-                            tracing::warn!(
-                                target: "mining::unparseable",
-                                raw_url = %u.raw_url,
-                                scheme = %u.scheme,
-                                error = %u.error,
-                                source_id = source.id,
-                                source_type = "telegram",
-                                timestamp = ts,
+                            crate::mining::emit_unparseable_entry(
+                                &u.raw_url,
+                                &u.scheme,
+                                &u.error,
+                                source.id,
+                                "telegram",
+                                ts,
                             );
                         }
                     }
@@ -555,7 +551,7 @@ where
             .or_else(|| raw.strip_prefix("https://t.me/"))
             .unwrap_or(raw)
             .trim_start_matches('@');
-        let source_url: TinyText = format!("https://t.me/s/{channel_id}").into();
+        let source_url: TinyText = super::registry::normalize_channel_url(raw).into();
 
         let task = Box::pin(TgChannelFetch {
             client: client.clone(),

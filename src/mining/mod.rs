@@ -5,11 +5,13 @@ mod traced_config;
 mod unparseable_log;
 mod writer;
 
+use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context;
+use futures::StreamExt;
 use tracing::info;
 
 pub use registry::{LiveFetcher, SourceFetcher, SourceMetadata, SourceRegistry, SourceType};
@@ -71,6 +73,59 @@ pub fn build_client() -> Result<reqwest::Client, anyhow::Error> {
         .proxy(reqwest::Proxy::http(PROXY_URL)?)
         .timeout(Duration::from_secs(30))
         .build()?)
+}
+
+/// Process a stream of traced configs, writing each source and server to the database.
+/// Sources are upserted lazily on first encounter. Fatal on DB error (aborts pipeline).
+///
+/// # Errors
+///
+/// Returns an error if the database connection fails.
+pub async fn process_config_stream(
+    mut stream: impl StreamExt<Item = TracedProtocolConfig> + std::marker::Unpin,
+    conn: &rusqlite::Connection,
+) -> Result<usize, anyhow::Error> {
+    let mut count = 0usize;
+    let mut seen_sources = HashSet::new();
+    while let Some(item) = stream.next().await {
+        if seen_sources.insert(item.source.id) {
+            crate::db::upsert_source(conn, &item.source.url)
+                .context("source upsert failed (aborting)")?;
+        }
+        crate::db::upsert_server(
+            conn,
+            &item.config,
+            item.source.id,
+            item.timestamp.timestamp(),
+        )
+        .context("upsert failed (aborting)")?;
+        count += 1;
+    }
+    Ok(count)
+}
+
+/// Emit a single unparseable entry to the NDJSON tracing layer.
+/// Filters out promotion URLs. Used by telegram, subscription, and local paths.
+pub fn emit_unparseable_entry(
+    raw_url: &str,
+    scheme: &str,
+    error: &str,
+    source_id: i64,
+    source_type: &str,
+    ts: i64,
+) {
+    if error.contains("promotion") {
+        return;
+    }
+    tracing::warn!(
+        target: "mining::unparseable",
+        raw_url = %raw_url,
+        scheme = %scheme,
+        error = error,
+        source_id = source_id,
+        source_type = source_type,
+        timestamp = ts,
+    );
 }
 
 /// # Errors
