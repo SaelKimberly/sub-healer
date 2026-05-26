@@ -39,51 +39,8 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
 
-    let channels = [
-        "ARv2ray",
-        "Alfred_Config",
-        "Baraye_azadi_Info",
-        "BmFt1",
-        "Capital_NET",
-        "Capoit",
-        "CloudCityy",
-        "ConfigV2rayNG",
-        "Configforvpn01",
-        "ConfigsHUB2",
-        "v2ray_configs_pool",
-        "DailyV2RY",
-        "DigiV2ray",
-        "DirectVPN",
-        "Easy_Free_VPN",
-        "Eleven_vpn",
-        "EliV2ray",
-        "EuServer",
-        "EzNett",
-        "FOXNT",
-        "FProxies",
-        "FalconPolV2rayNG",
-        "FreakConfig",
-        "Free166",
-        "FreeV2rays",
-        "FreeVlessVpn",
-        "Free_HTTPCustom",
-        "Helix_Servers",
-        "Hope_Net",
-        "Kia_Net",
-        "IRANVPNNET",
-        "JiedianSsr",
-        "Jsnzk",
-        "Lockey_vpn",
-        "MTConfig",
-        "MrV2Ray",
-        "MsV2ray",
-    ];
-
-    let mut registry = SourceRegistry::new();
-    for name in &channels {
-        registry.add_telegram_channel(name);
-    }
-    let registry = Arc::new(registry);
+    let config_path = PathBuf::from("channels-collection-01.yaml");
+    let registry = Arc::new(SourceRegistry::from_config(&config_path)?);
 
     let client = reqwest::Client::builder()
         .user_agent(
@@ -96,15 +53,19 @@ async fn main() -> anyhow::Result<()> {
         tg_config: TgConfig {
             concurrency: 16,
             timeout: Duration::from_secs(10),
-            backfill: Some(Backfill::Last(TimeDelta::hours(5))),
+            backfill: Some(Backfill::Last(TimeDelta::hours(12))),
         },
     };
     let mut stream = registry.run_fetcher_stream(&client, fetcher);
     let mut by_scheme_ok = BTreeMap::<String, u64>::new();
+    let mut by_channel = BTreeMap::<String, u64>::new();
 
     while let Some(item) = stream.next().await {
         let schema = item.config.schema().to_string();
         *by_scheme_ok.entry(schema).or_default() += 1;
+        if !item.source.url.is_empty() {
+            *by_channel.entry(item.source.url.clone()).or_default() += 1;
+        }
     }
 
     let total_ok: u64 = by_scheme_ok.values().sum();
@@ -114,11 +75,17 @@ async fn main() -> anyhow::Result<()> {
         .map(|(s, count)| (s.clone(), json!({ "ok": count, "total": count })))
         .collect();
 
+    let all_channels: BTreeMap<String, serde_json::Value> = by_channel
+        .iter()
+        .map(|(ch, count)| (ch.clone(), json!({ "ok": count })))
+        .collect();
+
     let summary = json!({
         "generated_at": Utc::now().to_rfc3339(),
         "total_urls": total_ok,
         "ok": total_ok,
         "by_scheme": all_schemes,
+        "by_channel": all_channels,
     });
 
     let summary_path = out_dir.join("summary.json");
