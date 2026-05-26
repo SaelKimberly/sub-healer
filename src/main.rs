@@ -121,12 +121,11 @@ async fn main() -> anyhow::Result<()> {
                     tracing::error!(url = %u, "Cannot extract channel name from Telegram URL");
                     continue;
                 };
-                let canonical = format!("https://t.me/s/{name}");
-                registry.pre_populate(&canonical, mining::SourceType::Telegram);
+                registry.add_telegram_channel(u.as_str());
                 channel_names.push(name);
             }
             for u in &sub_urls {
-                registry.pre_populate(u.as_str(), mining::SourceType::Subscription);
+                registry.add_subscription(u.as_str());
             }
             registry.upsert_all(&conn)?;
             let registry = Arc::new(registry);

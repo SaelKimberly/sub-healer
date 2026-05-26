@@ -1,10 +1,266 @@
-// Copyright 2024 v2ray-heal authors
-// SPDX-License-Identifier: MIT OR Apache-2.0
-
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
+
+use anyhow::Context;
+use futures::StreamExt;
+use yaml_rust2::{Yaml, YamlLoader};
+use tracing::info;
 
 use crate::db::hash_source_url;
+
+/// Type of proxy source
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SourceType {
+    Telegram,
+    Subscription,
+    Other,
+}
+
+/// Metadata about a proxy source
+#[derive(Debug, Clone)]
+pub struct SourceMetadata {
+    pub url: String,
+    pub id: i64,
+    pub source_type: SourceType,
+}
+
+impl SourceMetadata {
+    #[must_use]
+    pub fn new(url: String, source_type: SourceType) -> Self {
+        let id = hash_source_url(&url);
+        Self { url, id, source_type }
+    }
+}
+
+/// Registry of all proxy sources
+/// Pre-populated before creating any streams, then becomes immutable
+#[derive(Debug, Default)]
+pub struct SourceRegistry {
+    sources: HashMap<String, Arc<SourceMetadata>>,
+}
+
+impl SourceRegistry {
+    #[must_use]
+    pub fn new() -> Self {
+        Self { sources: HashMap::new() }
+    }
+
+    /// Pre-populate registry with a source
+    pub fn pre_populate(&mut self, url: &str, source_type: SourceType) {
+        let metadata = Arc::new(SourceMetadata::new(url.to_string(), source_type));
+        self.sources.insert(url.to_string(), metadata);
+    }
+
+    /// Add a Telegram channel, normalizing to canonical `https://t.me/s/{name}` form
+    pub fn add_telegram_channel(&mut self, raw: &str) {
+        let canonical = normalize_channel_url(raw);
+        self.pre_populate(&canonical, SourceType::Telegram);
+    }
+
+    /// Add a subscription URL as-is
+    pub fn add_subscription(&mut self, url: &str) {
+        self.pre_populate(url, SourceType::Subscription);
+    }
+
+    /// Lookup source metadata by URL
+    pub fn lookup(&self, url: &str) -> Option<Arc<SourceMetadata>> {
+        self.sources.get(url).map(Arc::clone)
+    }
+
+    /// Get all registered sources
+    pub fn sources(&self) -> Vec<Arc<SourceMetadata>> {
+        self.sources.values().map(Arc::clone).collect()
+    }
+
+    /// Upsert all registered sources to the database
+    pub fn upsert_all(&self, conn: &rusqlite::Connection) -> rusqlite::Result<()> {
+        for source in self.sources() {
+            crate::db::upsert_source(conn, &source.url)?;
+        }
+        Ok(())
+    }
+
+    /// Partition sources into (telegram_channels, subscriptions) lists
+    fn partition_sources(&self) -> (Vec<String>, Vec<String>) {
+        let mut channels = Vec::new();
+        let mut subscriptions = Vec::new();
+        for meta in self.sources() {
+            match meta.source_type {
+                SourceType::Telegram => channels.push(meta.url.clone()),
+                SourceType::Subscription => subscriptions.push(meta.url.clone()),
+                SourceType::Other => {}
+            }
+        }
+        (channels, subscriptions)
+    }
+
+    /// Construct registry from channel and subscription URL lists
+    pub(crate) fn from_sources(channels: &[String], subscriptions: &[String]) -> Self {
+        let mut registry = Self::new();
+        for channel in channels {
+            registry.add_telegram_channel(channel);
+        }
+        for sub in subscriptions {
+            registry.add_subscription(sub);
+        }
+        registry
+    }
+
+    /// Load config from YAML file, normalize channels, pre-populate registry
+    pub fn from_config(path: &Path) -> Result<Self, anyhow::Error> {
+        let content = std::fs::read_to_string(path).context("Failed to read config file")?;
+        let docs = YamlLoader::load_from_str(&content).context("Failed to parse YAML")?;
+
+        let Some(Yaml::Hash(h)) = docs.first() else {
+            return Err(anyhow::anyhow!("Invalid or empty config file"));
+        };
+
+        let channels: Vec<String> = {
+            let Some(Yaml::Array(list)) = h.get(&Yaml::String("tgchannel".into())) else {
+                return Err(anyhow::anyhow!("Invalid or missing tgchannel in config file"));
+            };
+            list.iter()
+                .filter_map(|v| match v {
+                    Yaml::String(s) => Some(s.clone()),
+                    _ => None,
+                })
+                .collect()
+        };
+
+        let subscriptions: Vec<String> = h
+            .get(&Yaml::String("subscriptions".into()))
+            .and_then(|v| v.as_vec())
+            .map(|list| {
+                list.iter()
+                    .filter_map(|v| match v {
+                        Yaml::String(s) => Some(s.clone()),
+                        _ => None,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        Ok(Self::from_sources(&channels, &subscriptions))
+    }
+
+    /// Run the full mining pipeline with the given fetcher
+    pub(crate) async fn run_pipeline_with<F: SourceFetcher>(
+        self: Arc<Self>,
+        client: &reqwest::Client,
+        conn: &rusqlite::Connection,
+        fetcher: F,
+    ) -> Result<(), anyhow::Error> {
+        let (channels, subscriptions) = self.partition_sources();
+        info!(
+            channels = channels.len(),
+            subscriptions = subscriptions.len(),
+            "Running mining pipeline"
+        );
+        let stream = fetcher.fetch(client, self, channels, subscriptions);
+        let total = process_config_stream(stream, conn).await?;
+        info!(count = total, "Mining pipeline completed");
+        Ok(())
+    }
+
+    /// Run the full mining pipeline with the default LiveFetcher
+    pub async fn run_pipeline(
+        self: Arc<Self>,
+        client: &reqwest::Client,
+        conn: &rusqlite::Connection,
+    ) -> Result<(), anyhow::Error> {
+        self.run_pipeline_with(client, conn, LiveFetcher).await
+    }
+}
+
+fn normalize_channel_url(raw: &str) -> String {
+    let channel_id = raw
+        .strip_prefix("https://t.me/s/")
+        .or_else(|| raw.strip_prefix("https://t.me/"))
+        .unwrap_or(raw)
+        .trim_start_matches('@');
+    format!("https://t.me/s/{channel_id}")
+}
+
+pub trait SourceFetcher {
+    fn fetch(
+        &self,
+        client: &reqwest::Client,
+        registry: Arc<SourceRegistry>,
+        channels: Vec<String>,
+        subscriptions: Vec<String>,
+    ) -> futures::stream::BoxStream<'static, TracedProtocolConfig>;
+}
+
+pub struct LiveFetcher;
+
+impl SourceFetcher for LiveFetcher {
+    fn fetch(
+        &self,
+        client: &reqwest::Client,
+        registry: Arc<SourceRegistry>,
+        channels: Vec<String>,
+        subscriptions: Vec<String>,
+    ) -> futures::stream::BoxStream<'static, TracedProtocolConfig> {
+        let tg_stream = if !channels.is_empty() {
+            Some(super::telegram::fetch_tg_channels(
+                client.clone(),
+                8,
+                channels.into_iter(),
+                Duration::from_secs(30),
+                None,
+                registry.clone(),
+            ).boxed())
+        } else {
+            None
+        };
+
+        let sub_stream = if !subscriptions.is_empty() {
+            Some(super::sub::fetch_subscriptions(
+                client.clone(),
+                registry.clone(),
+                subscriptions,
+            ).boxed())
+        } else {
+            None
+        };
+
+        match (tg_stream, sub_stream) {
+            (Some(tg), Some(sub)) => futures::stream::select(tg, sub).boxed(),
+            (Some(tg), None) => tg,
+            (None, Some(sub)) => sub,
+            (None, None) => futures::stream::empty().boxed(),
+        }
+    }
+}
+
+/// Process a stream of traced configs, writing each source and server to the database.
+/// Sources are upserted lazily on first encounter. Fatal on DB error (aborts pipeline).
+async fn process_config_stream(
+    mut stream: impl StreamExt<Item = TracedProtocolConfig> + std::marker::Unpin,
+    conn: &rusqlite::Connection,
+) -> Result<usize, anyhow::Error> {
+    let mut count = 0usize;
+    let mut seen_sources = HashSet::new();
+    while let Some(item) = stream.next().await {
+        if seen_sources.insert(item.source.id) {
+            crate::db::upsert_source(conn, &item.source.url)
+                .context("source upsert failed (aborting)")?;
+        }
+        crate::db::upsert_server(
+            &conn,
+            &item.config,
+            item.source.id,
+            item.timestamp.timestamp(),
+        )
+        .context("upsert failed (aborting)")?;
+        count += 1;
+    }
+    Ok(count)
+}
+
+use super::TracedProtocolConfig;
 
 #[cfg(test)]
 mod tests {
@@ -19,7 +275,6 @@ mod tests {
 
         assert_eq!(metadata.url, "https://t.me/test_channel");
         assert_eq!(metadata.source_type, SourceType::Telegram);
-        // ID should be deterministic hash
         assert_ne!(metadata.id, 0);
     }
 
@@ -27,11 +282,9 @@ mod tests {
     fn test_registry_pre_populate_and_lookup() {
         let mut registry = SourceRegistry::new();
 
-        // Pre-populate with sources
         registry.pre_populate("https://t.me/channel1", SourceType::Telegram);
         registry.pre_populate("https://example.com/sub.txt", SourceType::Subscription);
 
-        // Lookup should work
         let source1 = registry.lookup("https://t.me/channel1");
         assert!(source1.is_some());
         assert_eq!(source1.unwrap().source_type, SourceType::Telegram);
@@ -40,7 +293,6 @@ mod tests {
         assert!(source2.is_some());
         assert_eq!(source2.unwrap().source_type, SourceType::Subscription);
 
-        // Non-existent source should return None
         let source3 = registry.lookup("https://nonexistent.com/test");
         assert!(source3.is_none());
     }
@@ -50,10 +302,8 @@ mod tests {
         let mut registry = SourceRegistry::new();
         registry.pre_populate("https://test.com", SourceType::Subscription);
 
-        // Convert to immutable Arc
         let registry = std::sync::Arc::new(registry);
 
-        // Multiple threads can safely access
         let registry1 = std::sync::Arc::clone(&registry);
         let registry2 = std::sync::Arc::clone(&registry);
 
@@ -64,86 +314,55 @@ mod tests {
         assert!(source2.is_some());
         assert_eq!(source1.unwrap().id, source2.unwrap().id);
     }
-}
 
-/// Type of proxy source
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SourceType {
-    /// Telegram channel
-    Telegram,
-    /// Subscription URL
-    Subscription,
-    /// Other source type
-    Other,
-}
-
-/// Metadata about a proxy source
-#[derive(Debug, Clone)]
-pub struct SourceMetadata {
-    /// Full source URL (e.g., "<https://t.me/proxy_channel>" or "<https://example.com/sub.txt>")
-    pub url: String,
-    /// Pre-computed hash of URL, used as primary key in database
-    pub id: i64,
-    /// Type of source
-    pub source_type: SourceType,
-}
-
-impl SourceMetadata {
-    /// Create new source metadata
-    #[must_use]
-    pub fn new(url: String, source_type: SourceType) -> Self {
-        let id = hash_source_url(&url);
-        Self {
-            url,
-            id,
-            source_type,
-        }
-    }
-}
-
-/// Registry of all proxy sources
-/// Pre-populated before creating any streams, then becomes immutable
-#[derive(Debug, Default)]
-pub struct SourceRegistry {
-    sources: HashMap<String, Arc<SourceMetadata>>,
-}
-
-impl SourceRegistry {
-    /// Create new empty registry
-    #[must_use]
-    pub fn new() -> Self {
-        Self {
-            sources: HashMap::new(),
-        }
+    #[test]
+    fn test_normalize_channel_url() {
+        assert_eq!(normalize_channel_url("MyChannel"), "https://t.me/s/MyChannel");
+        assert_eq!(normalize_channel_url("@MyChannel"), "https://t.me/s/MyChannel");
+        assert_eq!(normalize_channel_url("https://t.me/MyChannel"), "https://t.me/s/MyChannel");
+        assert_eq!(normalize_channel_url("https://t.me/s/MyChannel"), "https://t.me/s/MyChannel");
     }
 
-    /// Pre-populate registry with a source
-    /// Called during initialization before any streams are created
-    pub fn pre_populate(&mut self, url: &str, source_type: SourceType) {
-        let metadata = Arc::new(SourceMetadata::new(url.to_string(), source_type));
-        self.sources.insert(url.to_string(), metadata);
+    #[test]
+    fn test_add_telegram_channel() {
+        let mut registry = SourceRegistry::new();
+        registry.add_telegram_channel("https://t.me/SomeChannel");
+        let meta = registry.lookup("https://t.me/s/SomeChannel");
+        assert!(meta.is_some());
+        assert_eq!(meta.unwrap().source_type, SourceType::Telegram);
     }
 
-    /// Lookup source metadata by URL
-    /// Returns None if source was not pre-populated
-    pub fn lookup(&self, url: &str) -> Option<Arc<SourceMetadata>> {
-        self.sources.get(url).map(Arc::clone)
+    #[test]
+    fn test_add_subscription() {
+        let mut registry = SourceRegistry::new();
+        registry.add_subscription("https://example.com/sub");
+        let meta = registry.lookup("https://example.com/sub");
+        assert!(meta.is_some());
+        assert_eq!(meta.unwrap().source_type, SourceType::Subscription);
     }
 
-    /// Get all registered sources
-    pub fn sources(&self) -> Vec<Arc<SourceMetadata>> {
-        self.sources.values().map(Arc::clone).collect()
+    #[test]
+    fn test_from_sources() {
+        let channels = vec!["Chan1".to_string(), "@Chan2".to_string(), "https://t.me/Chan3".to_string()];
+        let subs = vec!["https://example.com/sub".to_string()];
+        let registry = SourceRegistry::from_sources(&channels, &subs);
+
+        assert!(registry.lookup("https://t.me/s/Chan1").is_some());
+        assert!(registry.lookup("https://t.me/s/Chan2").is_some());
+        assert!(registry.lookup("https://t.me/s/Chan3").is_some());
+        assert!(registry.lookup("https://example.com/sub").is_some());
     }
 
-    /// Upsert all registered sources to the database
-    /// # Errors
-    /// Returns error if database operation fails
-    pub fn upsert_all(&self, conn: &rusqlite::Connection) -> rusqlite::Result<()> {
-        for source in self.sources() {
-            crate::db::upsert_source(conn, &source.url)?;
-        }
-        Ok(())
+    #[test]
+    fn test_partition_sources() {
+        let channels = vec!["Chan1".to_string()];
+        let subs = vec!["https://example.com/sub".to_string()];
+        let registry = SourceRegistry::from_sources(&channels, &subs);
+
+        let (ch, su) = registry.partition_sources();
+        assert_eq!(ch.len(), 1);
+        assert_eq!(ch[0], "https://t.me/s/Chan1");
+        assert_eq!(su.len(), 1);
+        assert_eq!(su[0], "https://example.com/sub");
     }
 }
-
-
