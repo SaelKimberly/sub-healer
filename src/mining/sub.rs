@@ -1,5 +1,6 @@
 use std::pin::Pin;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use chrono::Utc;
@@ -32,36 +33,26 @@ impl SubFetcher {
     fn spawn(
         mut self: Pin<Box<Self>>,
     ) -> Pin<Box<dyn std::future::Future<Output = ()> + Send + Sync + 'static>> {
-        Box::pin(async move {
-            let this = self.as_mut();
-            let Self {
-                client,
-                url,
-                url_str,
-                sender,
-                registry,
-            } = this.get_mut();
+        // Per-task safety timeout: reqwest client has 30s timeout, but proxy/DNS/OS
+        // edge cases can still stall indefinitely. 90s covers the worst-case download
+        // (slow proxy, large response) while preventing hangs.
+        const TASK_TIMEOUT: Duration = Duration::from_secs(90);
 
-            // Download or read file
-            let data = match url.scheme() {
-                "https" | "http" => match download_sub_data(client, url).await {
-                    Ok(d) => d,
-                    Err(e) => {
-                        _ = sender
-                            .send(SubEvent::Error {
-                                url: url_str.clone(),
-                                error: e.to_string(),
-                            })
-                            .await;
-                        return;
-                    }
-                },
-                "file" => {
-                    let Ok(path) = url.to_file_path() else {
-                        tracing::error!(url = %url_str, "Invalid file URL: not an absolute path");
-                        return;
-                    };
-                    match std::fs::read(&path) {
+        Box::pin(async move {
+            let url_str = self.url_str.clone();
+            let task = async {
+                let this = self.as_mut();
+                let Self {
+                    client,
+                    url,
+                    url_str,
+                    sender,
+                    registry,
+                } = this.get_mut();
+
+                // Download or read file
+                let data = match url.scheme() {
+                    "https" | "http" => match download_sub_data(client, url).await {
                         Ok(d) => d,
                         Err(e) => {
                             _ = sender
@@ -72,67 +63,89 @@ impl SubFetcher {
                                 .await;
                             return;
                         }
+                    },
+                    "file" => {
+                        let Ok(path) = url.to_file_path() else {
+                            tracing::error!(url = %url_str, "Invalid file URL: not an absolute path");
+                            return;
+                        };
+                        match std::fs::read(&path) {
+                            Ok(d) => d,
+                            Err(e) => {
+                                _ = sender
+                                    .send(SubEvent::Error {
+                                        url: url_str.clone(),
+                                        error: e.to_string(),
+                                    })
+                                    .await;
+                                return;
+                            }
+                        }
+                    }
+                    other => {
+                        tracing::error!(scheme = %other, url = %url_str, "Unsupported subscription URL scheme");
+                        return;
+                    }
+                };
+
+                let download_ts = Utc::now();
+
+                // Clone fields needed inside spawn_blocking
+                let url_clone = url.clone();
+                let url_str_clone = url_str.clone();
+                let registry_clone = registry.clone();
+
+                let result = tokio::task::spawn_blocking(move || {
+                    let lines = crate::parse_sub(&url_clone, &data);
+                    let source = registry_clone.lookup(&url_str_clone);
+                    (lines, source)
+                })
+                .await;
+
+                let Ok((lines, Some(source))) = result else {
+                    _ = sender
+                        .send(SubEvent::Error {
+                            url: url_str.clone(),
+                            error: "Source not found in registry".into(),
+                        })
+                        .await;
+                    return;
+                };
+
+                let ts = download_ts.timestamp();
+
+                // Emit unparseable entries via tracing
+                for line in lines.raw_entries() {
+                    if let Data::Raw { scheme, url } = &line.url {
+                        super::emit_unparseable_entry(
+                            url.as_ref(),
+                            scheme.as_ref(),
+                            line.err.as_deref().unwrap_or("unknown"),
+                            source.id,
+                            "subscription",
+                            ts,
+                        );
                     }
                 }
-                other => {
-                    tracing::error!(scheme = %other, url = %url_str, "Unsupported subscription URL scheme");
-                    return;
+
+                // Send parsed configs
+                for line in lines.iter() {
+                    let Data::Url(config) = &line.url else {
+                        continue;
+                    };
+                    let item = SubEvent::Item(TracedProtocolConfig {
+                        config: config.clone(),
+                        timestamp: download_ts,
+                        source: source.clone(),
+                    });
+                    if sender.send(item).await.is_err() {
+                        break;
+                    }
                 }
             };
 
-            let download_ts = Utc::now();
-
-            // Clone fields needed inside spawn_blocking
-            let url_clone = url.clone();
-            let url_str_clone = url_str.clone();
-            let registry_clone = registry.clone();
-
-            let result = tokio::task::spawn_blocking(move || {
-                let lines = crate::parse_sub(&url_clone, &data);
-                let source = registry_clone.lookup(&url_str_clone);
-                (lines, source)
-            })
-            .await;
-
-            let Ok((lines, Some(source))) = result else {
-                _ = sender
-                    .send(SubEvent::Error {
-                        url: url_str.clone(),
-                        error: "Source not found in registry".into(),
-                    })
-                    .await;
-                return;
-            };
-
-            let ts = download_ts.timestamp();
-
-            // Emit unparseable entries via tracing
-            for line in lines.raw_entries() {
-                if let Data::Raw { scheme, url } = &line.url {
-                    super::emit_unparseable_entry(
-                        url.as_ref(),
-                        scheme.as_ref(),
-                        line.err.as_deref().unwrap_or("unknown"),
-                        source.id,
-                        "subscription",
-                        ts,
-                    );
-                }
-            }
-
-            // Send parsed configs
-            for line in lines.iter() {
-                let Data::Url(config) = &line.url else {
-                    continue;
-                };
-                let item = SubEvent::Item(TracedProtocolConfig {
-                    config: config.clone(),
-                    timestamp: download_ts,
-                    source: source.clone(),
-                });
-                if sender.send(item).await.is_err() {
-                    break;
-                }
+            if tokio::time::timeout(TASK_TIMEOUT, task).await.is_err() {
+                tracing::warn!(url = %url_str, "Subscription fetch timed out after 90s");
             }
         })
     }
@@ -245,7 +258,6 @@ pub(super) fn fetch_subscriptions(
     }
 }
 
-#[allow(dead_code, reason = "Drop cancels in-flight tasks")]
 struct SubscriptionStream {
     receiver: tokio::sync::mpsc::Receiver<SubEvent>,
     join_set: JoinSet<()>,
@@ -259,6 +271,11 @@ impl Stream for SubscriptionStream {
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Option<Self::Item>> {
         let this = self.get_mut();
+
+        // Drain completed tasks — this registers their wakers so the stream
+        // gets re-polled when new tasks finish.
+        while this.join_set.poll_join_next(cx).is_ready() {}
+
         match this.receiver.poll_recv(cx) {
             std::task::Poll::Ready(Some(SubEvent::Item(item))) => {
                 std::task::Poll::Ready(Some(item))
@@ -269,7 +286,15 @@ impl Stream for SubscriptionStream {
                 std::task::Poll::Pending
             }
             std::task::Poll::Ready(None) => std::task::Poll::Ready(None),
-            std::task::Poll::Pending => std::task::Poll::Pending,
+            std::task::Poll::Pending => {
+                // All tasks completed but receiver still has items in-flight or
+                // is empty — if no tasks remain, no more items will ever arrive.
+                if this.join_set.is_empty() {
+                    std::task::Poll::Ready(None)
+                } else {
+                    std::task::Poll::Pending
+                }
+            }
         }
     }
 }
