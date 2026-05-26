@@ -23,6 +23,7 @@ pub enum SchemeX {
     Slipnet,
     Stormdns,
     WireGuard,
+    Undefined,
     Unknown(TinyText),
 }
 impl SchemeX {
@@ -45,6 +46,7 @@ impl SchemeX {
             Self::SlipnetEnc => "slipnet-enc",
             Self::Stormdns => "stormdns",
             Self::WireGuard => "wireguard",
+            Self::Undefined => "undefined",
             Self::Unknown(s) => s.as_str(),
         }
     }
@@ -105,9 +107,9 @@ impl SchemeX {
             return if s
                 .chars()
                 .next()
-                .is_some_and(|c| c.is_ascii() && !c.is_ascii_whitespace())
+                .is_some_and(|c| c.is_ascii() && !c.is_ascii_whitespace() && !matches!(c, '<'))
             {
-                vec![(Self::Vmess, Cow::Owned(format!("vmess://{s}")))]
+                vec![(Self::Undefined, Cow::Owned(format!("undefined://{s}")))]
             } else {
                 vec![]
             };
@@ -161,6 +163,7 @@ impl std::str::FromStr for SchemeX {
             SlipnetEnc => "slipnet-enc";
             Stormdns => "stormdns";
             WireGuard => "wireguard";
+            Undefined => "undefined";
         );
 
         Ok(scheme)

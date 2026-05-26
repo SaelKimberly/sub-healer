@@ -5,6 +5,7 @@ use anyhow::Context;
 use clap::Parser;
 use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 use v2ray_heal::mining;
+use v2ray_heal::proto_spec::ProtoSpec;
 
 fn is_telegram_url(url: &url::Url) -> bool {
     url.host_str() == Some("t.me")
@@ -16,6 +17,14 @@ enum Commands {
     Config { file: Option<PathBuf> },
     Remote { url: Vec<url::Url> },
     Local { file: Vec<PathBuf> },
+    Emit {
+        #[arg(long, short)]
+        protocol: Vec<String>,
+        #[arg(long)]
+        min_first_seen_ts: Option<humantime::Duration>,
+        #[arg(long)]
+        min_last_seen_ts: Option<humantime::Duration>,
+    },
 }
 
 #[derive(Debug, clap::Parser)]
@@ -116,6 +125,70 @@ async fn main() -> anyhow::Result<()> {
 
             let count = mining::process_config_stream(futures::stream::iter(items), &conn).await?;
             tracing::info!(count, "Local file mining completed");
+        }
+        Commands::Emit {
+            protocol,
+            min_first_seen_ts,
+            min_last_seen_ts,
+        } => {
+            let conn = mining::open_db(&cli.db)?;
+            use std::time::SystemTime;
+
+            let unix_now = SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_secs() as i64;
+
+            let min_first = min_first_seen_ts.map(|d| {
+                let std_dur: std::time::Duration = d.into();
+                unix_now.saturating_sub(std_dur.as_secs() as i64)
+            });
+
+            let min_last = min_last_seen_ts.map(|d| {
+                let std_dur: std::time::Duration = d.into();
+                unix_now.saturating_sub(std_dur.as_secs() as i64)
+            });
+
+            let protocol_filter = if protocol.is_empty() {
+                None
+            } else {
+                Some(protocol.as_slice())
+            };
+
+            let servers = v2ray_heal::db::query_servers_filtered(&conn, protocol_filter, min_first, min_last)
+                .context("Failed to query servers")?;
+
+            let server_ids: Vec<i64> = servers.iter().map(|s| s.id).collect();
+            let sources = v2ray_heal::db::query_sources_by_server_ids(&conn, &server_ids)
+                .context("Failed to query sources")?;
+
+            // Output
+            use chrono::Utc;
+            println!("# v2ray-heal generated at {}", Utc::now().to_rfc3339());
+            if !sources.is_empty() {
+                println!("# Sources:");
+                for src in &sources {
+                    println!("#   - {}", src.url);
+                }
+            }
+            println!();
+
+            for server in &servers {
+                let config: v2ray_heal::proto_spec::ProtocolConfig =
+                    match serde_json::from_str(&server.raw_config) {
+                        Ok(c) => c,
+                        Err(e) => {
+                            tracing::warn!(server_id = server.id, error = %e, "Failed to deserialize config");
+                            continue;
+                        }
+                    };
+                match config.reconstruct() {
+                    Ok(url) => println!("{url}"),
+                    Err(e) => {
+                        tracing::warn!(server_id = server.id, error = %e, "Failed to reconstruct URL");
+                    }
+                }
+            }
         }
     }
 

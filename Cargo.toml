@@ -59,6 +59,7 @@ rustc-hash = { version = "*" }
 rusqlite = { version = "*", features = ["bundled"] }
 ego-tree = { version = "*" }
 aho-corasick = { version = "*" }
+humantime = { version = "*" }
 
 [dev-dependencies]
 # CPU profiling: `cargo flamegraph --bin v2ray-heal -- mine`

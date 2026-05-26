@@ -270,6 +270,135 @@ pub fn get_sightings(conn: &Connection, server_id: i64) -> Result<Vec<SightingRe
     Ok(sightings)
 }
 
+/// Query servers with optional filters.
+///
+/// * `protocols` — if `Some`, only include servers with matching schema (case-insensitive)
+/// * `min_first_seen` — if `Some`, only servers with `first_seen_ts >=` this value
+/// * `min_last_seen` — if `Some`, only servers with at least one sighting at `seen_ts >=` this value
+///
+/// Results are ordered by `schema ASC, remarks ASC NULLS LAST`.
+///
+/// # Errors
+///
+/// Returns `rusqlite::Error` if the query fails.
+pub fn query_servers_filtered(
+    conn: &Connection,
+    protocols: Option<&[String]>,
+    min_first_seen: Option<i64>,
+    min_last_seen: Option<i64>,
+) -> Result<Vec<ServerRecord>> {
+    let mut conditions: Vec<String> = Vec::new();
+    let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+
+    if let Some(protocols) = protocols {
+        if !protocols.is_empty() {
+            let placeholders: Vec<String> = protocols
+                .iter()
+                .enumerate()
+                .map(|(i, _)| format!("?{}", params.len() + i + 1))
+                .collect();
+            conditions.push(format!("LOWER(schema) IN ({})", placeholders.join(",")));
+            for p in protocols {
+                params.push(Box::new(p.to_ascii_lowercase()));
+            }
+        }
+    }
+
+    if let Some(ts) = min_first_seen {
+        params.push(Box::new(ts));
+        conditions.push(format!("first_seen_ts >= ?{}", params.len()));
+    }
+
+    if let Some(ts) = min_last_seen {
+        params.push(Box::new(ts));
+        conditions.push(format!(
+            "EXISTS (SELECT 1 FROM sightings WHERE server_id = servers.id AND seen_ts >= ?{})",
+            params.len()
+        ));
+    }
+
+    let where_clause = if conditions.is_empty() {
+        String::new()
+    } else {
+        format!("WHERE {}", conditions.join(" AND "))
+    };
+
+    let sql = format!(
+        "SELECT id, schema, host, port, transport, security, remarks, raw_config, first_seen_ts, first_seen_source_id \
+         FROM servers {where_clause} \
+         ORDER BY schema ASC, remarks ASC NULLS LAST"
+    );
+
+    let mut stmt = conn.prepare(&sql)?;
+
+    let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+
+    let rows = stmt.query_map(param_refs.as_slice(), |row| {
+        Ok(ServerRecord {
+            id: row.get(0)?,
+            schema: row.get(1)?,
+            host: row.get(2)?,
+            port: row.get(3)?,
+            transport: row.get(4)?,
+            security: row.get(5)?,
+            remarks: row.get(6)?,
+            raw_config: row.get(7)?,
+            first_seen_ts: row.get(8)?,
+            first_seen_source_id: row.get(9)?,
+        })
+    })?;
+
+    let mut records = Vec::new();
+    for row in rows {
+        records.push(row?);
+    }
+    Ok(records)
+}
+
+/// Get distinct source records that contributed sightings for the given server IDs.
+///
+/// # Errors
+///
+/// Returns `rusqlite::Error` if the query fails.
+pub fn query_sources_by_server_ids(conn: &Connection, server_ids: &[i64]) -> Result<Vec<SourceRecord>> {
+    if server_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let placeholders: Vec<String> = server_ids
+        .iter()
+        .enumerate()
+        .map(|(i, _)| format!("?{}", i + 1))
+        .collect();
+
+    let sql = format!(
+        "SELECT DISTINCT src.id, src.url \
+         FROM sources src \
+         JOIN sightings si ON si.source_id = src.id \
+         WHERE si.server_id IN ({}) \
+         ORDER BY src.url",
+        placeholders.join(",")
+    );
+
+    let mut stmt = conn.prepare(&sql)?;
+
+    let param_refs: Vec<&dyn rusqlite::types::ToSql> =
+        server_ids.iter().map(|id| id as &dyn rusqlite::types::ToSql).collect();
+
+    let rows = stmt.query_map(param_refs.as_slice(), |row| {
+        Ok(SourceRecord {
+            id: row.get(0)?,
+            url: row.get(1)?,
+        })
+    })?;
+
+    let mut records = Vec::new();
+    for row in rows {
+        records.push(row?);
+    }
+    Ok(records)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -154,6 +154,7 @@ impl ProtoSpec for ProtocolConfig {
             SchemeX::Https if raw.userinfo == "t.me" => TgConfig::try_parse(raw).map(Self::Tg),
             SchemeX::Tg => TgConfig::try_parse(raw).map(Self::Tg),
             SchemeX::Https => return Err(ParseError::PromotionUrl),
+            SchemeX::Undefined => return Err(ParseError::PromotionUrl),
             ref other => return Err(ParseError::UnsupportedScheme(other.clone())),
         };
 
