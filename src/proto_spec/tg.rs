@@ -42,6 +42,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::urlx::{HostSpec, RawUrlX, SchemeX, host_serde, port_serde};
 
+use super::common::SecurityConfig;
 use super::utils;
 use super::{ParseError, ProtoSpec};
 
@@ -56,6 +57,8 @@ pub struct TgConfig {
     pub host: HostSpec,
     #[serde(rename = "port", with = "port_serde")]
     pub port: u16,
+    #[serde(default, skip_serializing_if = "SecurityConfig::is_empty")]
+    pub security: SecurityConfig,
     pub secret: String,
     pub transport: String,
     pub remarks: Option<String>,
@@ -118,6 +121,7 @@ impl ProtoSpec for TgConfig {
             sig_cache: std::sync::OnceLock::new(),
             host,
             port,
+            security: SecurityConfig::default(),
             secret,
             transport: if is_socks {
                 "socks".into()
@@ -191,9 +195,6 @@ impl ProtoSpec for TgConfig {
         Some(self.transport.as_str())
     }
 
-    fn security_type(&self) -> Option<&str> {
-        None
-    }
 }
 
 impl TgConfig {

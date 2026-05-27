@@ -38,6 +38,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::urlx::{HostSpec, RawUrlX, SchemeX, host_serde, port_serde};
 
+use super::common::SecurityConfig;
 use super::utils;
 use super::{ParseError, ProtoSpec};
 
@@ -53,6 +54,8 @@ pub struct WireguardConfig {
     pub host: HostSpec,
     #[serde(with = "port_serde")]
     pub port: u16,
+    #[serde(default, skip_serializing_if = "SecurityConfig::is_empty")]
+    pub security: SecurityConfig,
     pub address: String,
     pub public_key: String,
     pub preshared_key: Option<String>,
@@ -115,6 +118,7 @@ impl ProtoSpec for WireguardConfig {
             private_key,
             host: parsed_host,
             port: parsed_port,
+            security: SecurityConfig::default(),
             address,
             public_key,
             preshared_key,
@@ -210,9 +214,6 @@ impl ProtoSpec for WireguardConfig {
         None
     }
 
-    fn security_type(&self) -> Option<&str> {
-        None
-    }
 }
 
 impl WireguardConfig {

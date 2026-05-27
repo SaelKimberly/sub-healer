@@ -52,6 +52,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::urlx::{HostSpec, RawUrlX, SchemeX, host_serde, port_serde};
 
+use super::common::SecurityConfig;
 use super::utils;
 use super::{ParseError, ProtoSpec};
 
@@ -68,6 +69,8 @@ pub struct SsConfig {
     pub host: HostSpec,
     #[serde(with = "port_serde")]
     pub port: u16,
+    #[serde(default, skip_serializing_if = "SecurityConfig::is_empty")]
+    pub security: SecurityConfig,
     pub remarks: Option<String>,
 }
 
@@ -123,6 +126,7 @@ impl ProtoSpec for SsConfig {
             password: password.to_string(),
             host: parsed_host,
             port: parsed_port,
+            security: SecurityConfig::default(),
             remarks,
         })
     }
@@ -181,9 +185,6 @@ impl ProtoSpec for SsConfig {
         None
     }
 
-    fn security_type(&self) -> Option<&str> {
-        None
-    }
 }
 
 impl SsConfig {

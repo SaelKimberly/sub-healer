@@ -35,8 +35,9 @@ use std::num::NonZeroU64;
 
 use serde::{Deserialize, Serialize};
 
-use crate::urlx::{HostSpec, RawUrlX, SchemeX, host_serde, port_serde};
+use crate::urlx::{HostSpec, RawUrlX, SchemeX, TinyText, host_serde, port_serde};
 
+use super::common::SecurityConfig;
 use super::utils;
 use super::{ParseError, ProtoSpec};
 
@@ -52,8 +53,9 @@ pub struct StormdnsConfig {
     #[serde(with = "port_serde")]
     pub port: u16,
     pub encryption_key: String,
-    pub encryption_method: Option<String>,
     pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "SecurityConfig::is_empty")]
+    pub security: SecurityConfig,
 }
 
 impl ProtoSpec for StormdnsConfig {
@@ -119,13 +121,19 @@ impl ProtoSpec for StormdnsConfig {
             .and_then(serde_json::Value::as_i64)
             .map(|n| format!("enc{n}"));
 
+        let enc = encryption_method.as_ref().map(|s| TinyText::from(s.as_str()));
+        let security = SecurityConfig {
+            tls: None,
+            enc,
+        };
+
         Ok(Self {
             sig_cache: std::sync::OnceLock::new(),
             host: parsed_host,
             port: 53,
             encryption_key,
-            encryption_method,
             name,
+            security,
         })
     }
 
@@ -141,8 +149,9 @@ impl ProtoSpec for StormdnsConfig {
             "encryption_key".into(),
             serde_json::Value::String(self.encryption_key.clone()),
         );
-        if let Some(ref v) = self.encryption_method {
+        if let Some(ref v) = self.security.enc {
             let method_num = v
+                .as_str()
                 .strip_prefix("enc")
                 .and_then(|s| s.parse::<i64>().ok())
                 .unwrap_or(0);
@@ -214,15 +223,15 @@ impl ProtoSpec for StormdnsConfig {
         None
     }
 
-    fn security_type(&self) -> Option<&str> {
-        None
+    fn security(&self) -> Option<&SecurityConfig> {
+        Some(&self.security)
     }
 }
 
 impl StormdnsConfig {
     fn compute_sig(&self) -> u64 {
         let mut parts: Vec<&[u8]> = vec![b"stormdns"];
-        if let Some(ref v) = self.encryption_method {
+        if let Some(ref v) = self.security.enc {
             parts.push(v.as_bytes());
         }
         rapidhash::v3::rapidhash_v3(&parts.concat())

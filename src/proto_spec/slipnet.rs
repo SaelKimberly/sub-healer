@@ -37,6 +37,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::urlx::{HostSpec, RawUrlX, SchemeX, TinyText, host_serde, port_serde};
 
+use super::common::SecurityConfig;
 use super::utils;
 use super::{ParseError, ProtoSpec};
 
@@ -51,6 +52,8 @@ pub struct SlipnetConfig {
     pub host: HostSpec,
     #[serde(with = "port_serde")]
     pub port: u16,
+    #[serde(default, skip_serializing_if = "SecurityConfig::is_empty")]
+    pub security: SecurityConfig,
     pub tunnel_type: Option<String>,
     pub public_key: Option<String>,
     pub remarks: Option<String>,
@@ -64,6 +67,8 @@ pub struct SlipnetEncConfig {
     #[serde(skip)]
     sig_cache: std::sync::OnceLock<NonZeroU64>,
 
+    #[serde(default, skip_serializing_if = "SecurityConfig::is_empty")]
+    pub security: SecurityConfig,
     pub data: String,
 }
 
@@ -122,6 +127,7 @@ impl ProtoSpec for SlipnetConfig {
             sig_cache: std::sync::OnceLock::new(),
             host,
             port,
+            security: SecurityConfig::default(),
             tunnel_type: tunnel_type.map(String::from),
             public_key: public_key.map(String::from),
             remarks,
@@ -169,9 +175,6 @@ impl ProtoSpec for SlipnetConfig {
         None
     }
 
-    fn security_type(&self) -> Option<&str> {
-        None
-    }
 }
 
 impl SlipnetConfig {
@@ -218,6 +221,7 @@ impl ProtoSpec for SlipnetEncConfig {
     fn try_parse(raw: &RawUrlX<'_>) -> Result<Self, ParseError> {
         Ok(Self {
             sig_cache: std::sync::OnceLock::new(),
+            security: SecurityConfig::default(),
             data: raw.userinfo.to_string(),
         })
     }
@@ -262,9 +266,6 @@ impl ProtoSpec for SlipnetEncConfig {
         None
     }
 
-    fn security_type(&self) -> Option<&str> {
-        None
-    }
 }
 
 #[cfg(test)]

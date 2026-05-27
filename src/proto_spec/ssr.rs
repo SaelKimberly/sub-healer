@@ -45,6 +45,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::urlx::{HostSpec, RawUrlX, SchemeX, host_serde, port_serde};
 
+use super::common::SecurityConfig;
 use super::utils;
 use super::{ParseError, ProtoSpec};
 
@@ -59,6 +60,8 @@ pub struct SsrConfig {
     pub host: HostSpec,
     #[serde(with = "port_serde")]
     pub port: u16,
+    #[serde(default, skip_serializing_if = "SecurityConfig::is_empty")]
+    pub security: SecurityConfig,
     pub protocol: String,
     pub method: String,
     pub obfs: String,
@@ -123,6 +126,7 @@ impl ProtoSpec for SsrConfig {
             sig_cache: std::sync::OnceLock::new(),
             host: parsed_host,
             port: parsed_port,
+            security: SecurityConfig::default(),
             protocol,
             method,
             obfs,
@@ -201,9 +205,6 @@ impl ProtoSpec for SsrConfig {
         None
     }
 
-    fn security_type(&self) -> Option<&str> {
-        None
-    }
 }
 
 /// Strip trailing non-base64 garbage (Telegram annotation text and decorative

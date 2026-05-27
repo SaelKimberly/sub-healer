@@ -46,6 +46,7 @@ percent-encoding = { version = "*" }
 
 serde = { version = "*", features = ["derive"] }
 serde_json = { version = "*" }
+serde_with = { version = "*" }
 rapidhash = { version = "*" }
 chrono = { version = "*", features = ["serde", "clock"] }
 

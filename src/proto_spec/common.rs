@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::urlx::TinyText;
+
 // ========================================
 // Transport Configurations
 // ========================================
@@ -159,4 +161,191 @@ pub struct KcpConfig {
     pub read_buffer: Option<u32>,
     pub write_buffer: Option<u32>,
     pub seed: Option<String>,
+}
+
+#[serde_with::skip_serializing_none]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct SecurityConfig {
+    pub tls: Option<TlsConfig>,
+    pub enc: Option<TinyText>,
+}
+
+impl SecurityConfig {
+    #[must_use]
+    pub const fn type_str(&self) -> Option<&'static str> {
+        match self.tls {
+            None => None,
+            Some(ref c @ (TlsConfig::Reality(_) | TlsConfig::Tls(_))) => Some(c.type_str()),
+        }
+    }
+
+    #[must_use]
+    pub const fn sni(&self) -> Option<&str> {
+        match self.tls {
+            Some(
+                TlsConfig::Tls(TlsOpts {
+                    sni: Some(ref sni), ..
+                })
+                | TlsConfig::Reality(RealityOpts {
+                    sni: Some(ref sni), ..
+                }),
+            ) => Some(sni.as_str()),
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub const fn alpn(&self) -> Option<&str> {
+        if let Some(TlsConfig::Tls(TlsOpts {
+            alpn: Some(ref alpn),
+            ..
+        })) = self.tls
+        {
+            Some(alpn.as_str())
+        } else {
+            None
+        }
+    }
+
+    #[must_use]
+    pub const fn fp(&self) -> Option<&str> {
+        match self.tls {
+            Some(
+                TlsConfig::Tls(TlsOpts {
+                    fp: Some(ref fp), ..
+                })
+                | TlsConfig::Reality(RealityOpts {
+                    fp: Some(ref fp), ..
+                }),
+            ) => Some(fp.as_str()),
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub const fn insecure(&self) -> Option<bool> {
+        if let Some(TlsConfig::Tls(TlsOpts { insecure, .. })) = self.tls {
+            insecure
+        } else {
+            None
+        }
+    }
+
+    #[must_use]
+    pub const fn pbk(&self) -> Option<&str> {
+        if let Some(TlsConfig::Reality(RealityOpts {
+            pbk: Some(ref pbk), ..
+        })) = self.tls
+        {
+            Some(pbk.as_str())
+        } else {
+            None
+        }
+    }
+
+    #[must_use]
+    pub const fn sid(&self) -> Option<&str> {
+        if let Some(TlsConfig::Reality(RealityOpts {
+            sni: Some(ref sni), ..
+        })) = self.tls
+        {
+            Some(sni.as_str())
+        } else {
+            None
+        }
+    }
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.tls.is_none() && self.enc.is_none()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TlsConfig {
+    Tls(TlsOpts),
+    Reality(RealityOpts),
+}
+
+impl TlsConfig {
+    pub const fn type_str(&self) -> &'static str {
+        match self {
+            Self::Tls(_) => "tls",
+            Self::Reality(_) => "reality",
+        }
+    }
+}
+
+#[serde_with::skip_serializing_none]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub struct TlsOpts {
+    pub sni: Option<String>,
+    pub alpn: Option<String>,
+    pub fp: Option<String>,
+    pub insecure: Option<bool>,
+}
+
+#[serde_with::skip_serializing_none]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub struct RealityOpts {
+    pub sni: Option<String>,
+    pub fp: Option<String>,
+    pub pbk: Option<String>,
+    pub sid: Option<String>,
+    pub spx: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn security_config_default_is_empty() {
+        let sc = SecurityConfig::default();
+        assert!(sc.tls.is_none());
+        assert!(sc.enc.is_none());
+    }
+
+    #[test]
+    fn security_config_type_str() {
+        let tls = SecurityConfig {
+            tls: Some(TlsConfig::Tls(TlsOpts::default())),
+            enc: None,
+        };
+        assert_eq!(tls.type_str(), Some("tls"));
+
+        let reality = SecurityConfig {
+            tls: Some(TlsConfig::Reality(RealityOpts::default())),
+            enc: None,
+        };
+        assert_eq!(reality.type_str(), Some("reality"));
+
+        let none = SecurityConfig::default();
+        assert_eq!(none.type_str(), None);
+    }
+
+    #[test]
+    fn security_config_serde_empty() {
+        let sc = SecurityConfig::default();
+        let json = serde_json::to_string(&sc).unwrap();
+        assert_eq!(json, "{}");
+    }
+
+    #[test]
+    fn security_config_serde_tls() {
+        let sc = SecurityConfig {
+            tls: Some(TlsConfig::Tls(TlsOpts {
+                sni: Some("example.com".into()),
+                ..TlsOpts::default()
+            })),
+            enc: None,
+        };
+        let json = serde_json::to_string(&sc).unwrap();
+        assert!(json.contains("\"tls\""));
+        assert!(json.contains("\"sni\""));
+        assert!(json.contains("\"example.com\""));
+        assert!(!json.contains("\"enc\""));
+    }
 }

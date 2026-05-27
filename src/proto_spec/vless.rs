@@ -47,7 +47,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::urlx::{HostSpec, RawUrlX, SchemeX, host_serde, port_serde};
 
-use super::common::TransportConfig;
+use super::common::{SecurityConfig, TlsConfig, TlsOpts, RealityOpts, TransportConfig};
 use super::utils;
 use super::{ParseError, ProtoSpec};
 
@@ -63,16 +63,12 @@ pub struct VlessConfig {
     pub host: HostSpec,
     #[serde(with = "port_serde")]
     pub port: u16,
-    pub security: String,
+    #[serde(default, skip_serializing_if = "SecurityConfig::is_empty")]
+    pub security: SecurityConfig,
     pub transport: TransportConfig,
     pub encryption: Option<String>,
     pub flow: Option<String>,
     pub path: Option<String>,
-    pub sni: Option<String>,
-    pub alpn: Option<String>,
-    pub fp: Option<String>,
-    pub pbk: Option<String>,
-    pub sid: Option<String>,
     pub splice: Option<bool>,
     pub remarks: Option<String>,
 }
@@ -106,11 +102,6 @@ impl ProtoSpec for VlessConfig {
 
         let query = utils::parse_query(raw.query);
 
-        // security: tls/reality/none. Defaults to "none" (no TLS).
-        let security = query
-            .get("security")
-            .map_or("none", |s| s.as_str())
-            .to_string();
         // type/transport: tcp/ws/grpc/http/kcp/quic/httpupgrade. Defaults to "tcp".
         let transport_type = query.get("type").map_or("tcp", |s| s.as_str()).to_string();
         let path = query.get("path").cloned();
@@ -118,21 +109,36 @@ impl ProtoSpec for VlessConfig {
         let encryption = query.get("encryption").filter(|v| v != &"none").cloned();
         // flow: xtls-rprx-vision for XTLS direct transmission (TLS 1.3 required)
         let flow = query.get("flow").cloned();
-        // sni: TLS SNI override (overrides host for TLS server name)
-        // alpn: comma-separated ALPN list (e.g., "h2,http/1.1")
-        let alpn = query.get("alpn").cloned();
-        // fp: uTLS Client Hello fingerprint (chrome/firefox/safari/random/randomized)
-        let fp = query.get("fp").cloned();
-        // pbk: REALITY public key (base64-encoded)
-        let pbk = query.get("pbk").cloned();
-        // sid: REALITY short ID (hex string)
-        let sid = query.get("sid").cloned();
         // splice: boolean splice mode flag
         let splice = query.get("splice").and_then(|v| match v.as_str() {
             "1" | "true" | "yes" => Some(true),
             "0" | "false" | "no" => Some(false),
             _ => None,
         });
+
+        // TLS/security config
+        let security = match query.get("security").map(|s| s.as_str()) {
+            Some("tls") => SecurityConfig {
+                tls: Some(TlsConfig::Tls(TlsOpts {
+                    sni: query.get("sni").cloned(),
+                    alpn: query.get("alpn").cloned(),
+                    fp: query.get("fp").cloned(),
+                    insecure: None,
+                })),
+                enc: None,
+            },
+            Some("reality") => SecurityConfig {
+                tls: Some(TlsConfig::Reality(RealityOpts {
+                    sni: query.get("sni").cloned(),
+                    fp: query.get("fp").cloned(),
+                    pbk: query.get("pbk").cloned(),
+                    sid: query.get("sid").cloned(),
+                    spx: query.get("spx").cloned(),
+                })),
+                enc: None,
+            },
+            _ => SecurityConfig::default(),
+        };
 
         let remarks = utils::decode_fragment(raw)?;
 
@@ -192,11 +198,6 @@ impl ProtoSpec for VlessConfig {
             encryption,
             flow,
             path,
-            sni: query.get("sni").cloned(),
-            alpn,
-            fp,
-            pbk,
-            sid,
             splice,
             remarks,
         })
@@ -215,8 +216,24 @@ impl ProtoSpec for VlessConfig {
 
         {
             let mut q = base.query_pairs_mut();
-            if self.security != "none" {
-                q.append_pair("security", &self.security);
+            // Security config
+            if let Some(ref tls_config) = self.security.tls {
+                match tls_config {
+                    TlsConfig::Tls(opts) => {
+                        q.append_pair("security", "tls");
+                        if let Some(ref v) = opts.sni { q.append_pair("sni", v); }
+                        if let Some(ref v) = opts.alpn { q.append_pair("alpn", v); }
+                        if let Some(ref v) = opts.fp { q.append_pair("fp", v); }
+                    }
+                    TlsConfig::Reality(opts) => {
+                        q.append_pair("security", "reality");
+                        if let Some(ref v) = opts.sni { q.append_pair("sni", v); }
+                        if let Some(ref v) = opts.fp { q.append_pair("fp", v); }
+                        if let Some(ref v) = opts.pbk { q.append_pair("pbk", v); }
+                        if let Some(ref v) = opts.sid { q.append_pair("sid", v); }
+                        if let Some(ref v) = opts.spx { q.append_pair("spx", v); }
+                    }
+                }
             }
             if self.transport.type_str() != "tcp" {
                 q.append_pair("type", self.transport.type_str());
@@ -248,21 +265,6 @@ impl ProtoSpec for VlessConfig {
             }
             if let Some(ref v) = self.flow {
                 q.append_pair("flow", v);
-            }
-            if let Some(ref v) = self.sni {
-                q.append_pair("sni", v);
-            }
-            if let Some(ref v) = self.alpn {
-                q.append_pair("alpn", v);
-            }
-            if let Some(ref v) = self.fp {
-                q.append_pair("fp", v);
-            }
-            if let Some(ref v) = self.pbk {
-                q.append_pair("pbk", v);
-            }
-            if let Some(ref v) = self.sid {
-                q.append_pair("sid", v);
             }
             if let Some(v) = self.splice {
                 q.append_pair("splice", if v { "true" } else { "false" });
@@ -327,56 +329,35 @@ impl ProtoSpec for VlessConfig {
         Some(self.transport.type_str())
     }
 
-    fn security_type(&self) -> Option<&str> {
-        Some(self.security.as_str())
+    fn security(&self) -> Option<&SecurityConfig> {
+        Some(&self.security)
     }
 }
 
 impl VlessConfig {
     fn compute_sig(&self) -> u64 {
         let mut parts: Vec<&[u8]> = vec![b"vless"];
-        parts.push(self.security.as_bytes());
+        let sec_type = self.security.type_str().unwrap_or("none");
+        parts.push(sec_type.as_bytes());
         parts.push(self.transport.type_str().as_bytes());
         match &self.transport {
             TransportConfig::HttpUpgrade(cfg) => {
-                if let Some(ref v) = cfg.host {
-                    parts.push(v.as_bytes());
-                }
+                if let Some(ref v) = cfg.host { parts.push(v.as_bytes()); }
             }
             TransportConfig::XHttp(cfg) => {
-                if let Some(ref v) = cfg.host {
-                    parts.push(v.as_bytes());
-                }
+                if let Some(ref v) = cfg.host { parts.push(v.as_bytes()); }
             }
             _ => {}
         }
-        if let Some(ref path) = self.path {
-            parts.push(path.as_bytes());
-        }
-        if let Some(ref v) = self.encryption {
-            parts.push(v.as_bytes());
-        }
-        if let Some(ref v) = self.sni {
-            parts.push(v.as_bytes());
-        }
-        if let Some(ref v) = self.flow {
-            parts.push(v.as_bytes());
-        }
-        if let Some(ref v) = self.alpn {
-            parts.push(v.as_bytes());
-        }
-        if let Some(ref v) = self.fp {
-            parts.push(v.as_bytes());
-        }
-        if let Some(ref v) = self.pbk {
-            parts.push(v.as_bytes());
-        }
-        if let Some(ref v) = self.sid {
-            parts.push(v.as_bytes());
-        }
-        if let Some(v) = self.splice {
-            parts.push(if v { b"true" } else { b"false" });
-        }
+        if let Some(ref path) = self.path { parts.push(path.as_bytes()); }
+        if let Some(ref v) = self.encryption { parts.push(v.as_bytes()); }
+        if let Some(ref v) = self.security.sni() { parts.push(v.as_bytes()); }
+        if let Some(ref v) = self.flow { parts.push(v.as_bytes()); }
+        if let Some(ref v) = self.security.alpn() { parts.push(v.as_bytes()); }
+        if let Some(ref v) = self.security.fp() { parts.push(v.as_bytes()); }
+        if let Some(ref v) = self.security.pbk() { parts.push(v.as_bytes()); }
+        if let Some(ref v) = self.security.sid() { parts.push(v.as_bytes()); }
+        if let Some(v) = self.splice { parts.push(if v { b"true" } else { b"false" }); }
         rapidhash::v3::rapidhash_v3(&parts.concat())
     }
 }
@@ -406,7 +387,11 @@ mod tests {
         let config = VlessConfig::try_parse(&raw).expect("failed");
         assert_eq!(config.schema(), SchemeX::Vless);
         assert_eq!(config.flow.as_deref(), Some("xtls-rprx-vision"));
-        assert_eq!(config.pbk.as_deref(), Some("abc123"));
+        if let Some(super::TlsConfig::Reality(ref opts)) = config.security.tls {
+            assert_eq!(opts.pbk.as_deref(), Some("abc123"));
+        } else {
+            panic!("expected reality config");
+        }
     }
 
     #[test]

@@ -37,6 +37,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::urlx::{HostSpec, RawUrlX, SchemeX, host_serde, port_serde};
 
+use super::common::{SecurityConfig, TlsConfig, TlsOpts};
 use super::utils;
 use super::{ParseError, ProtoSpec};
 
@@ -55,9 +56,8 @@ pub struct TuicConfig {
     pub port: u16,
     pub congestion_control: Option<String>,
     pub udp_relay_mode: Option<String>,
-    pub alpn: Option<String>,
-    pub allow_insecure: Option<bool>,
-    pub sni: Option<String>,
+    #[serde(default, skip_serializing_if = "SecurityConfig::is_empty")]
+    pub security: SecurityConfig,
     pub remarks: Option<String>,
 }
 
@@ -96,19 +96,22 @@ impl ProtoSpec for TuicConfig {
         let congestion_control = query.get("congestion_control").cloned();
         // udp_relay_mode: native/quic. Defaults to native.
         let udp_relay_mode = query.get("udp_relay_mode").cloned();
-        // alpn: comma-separated TLS ALPN list. Defaults to h3.
-        let alpn = query.get("alpn").cloned();
-        // allow_insecure: 3 alias variants for TLS cert skip.
-        let allow_insecure = query
-            .get("allow_insecure")
-            .or_else(|| query.get("insecure"))
-            .or_else(|| query.get("allowInsecure"))
-            .and_then(|v| match v.as_str() {
-                "1" | "true" => Some(true),
-                "0" | "false" => Some(false),
-                _ => None,
-            });
-        let sni = query.get("sni").cloned();
+        let security = SecurityConfig {
+            tls: Some(TlsConfig::Tls(TlsOpts {
+                sni: query.get("sni").cloned(),
+                alpn: query.get("alpn").cloned(),
+                fp: None,
+                insecure: query.get("allow_insecure")
+                    .or_else(|| query.get("insecure"))
+                    .or_else(|| query.get("allowInsecure"))
+                    .and_then(|v| match v.as_str() {
+                        "1" | "true" => Some(true),
+                        "0" | "false" => Some(false),
+                        _ => None,
+                    }),
+            })),
+            enc: None,
+        };
         let remarks = utils::decode_fragment(raw)?;
 
         Ok(Self {
@@ -119,9 +122,7 @@ impl ProtoSpec for TuicConfig {
             port: parsed_port,
             congestion_control,
             udp_relay_mode,
-            alpn,
-            allow_insecure,
-            sni,
+            security,
             remarks,
         })
     }
@@ -144,13 +145,14 @@ impl ProtoSpec for TuicConfig {
             if let Some(ref v) = self.udp_relay_mode {
                 parts.push(format!("udp_relay_mode={}", urlencoding::encode(v)));
             }
-            if let Some(ref v) = self.alpn {
+            // Security config (TUIC always uses TLS)
+            if let Some(ref v) = self.security.alpn() {
                 parts.push(format!("alpn={}", urlencoding::encode(v)));
             }
-            if let Some(v) = self.allow_insecure {
+            if let Some(v) = self.security.insecure() {
                 parts.push(format!("allow_insecure={}", if v { "1" } else { "0" }));
             }
-            if let Some(ref v) = self.sni {
+            if let Some(ref v) = self.security.sni() {
                 parts.push(format!("sni={}", urlencoding::encode(v)));
             }
             if parts.is_empty() {
@@ -219,8 +221,8 @@ impl ProtoSpec for TuicConfig {
         None
     }
 
-    fn security_type(&self) -> Option<&str> {
-        None
+    fn security(&self) -> Option<&SecurityConfig> {
+        Some(&self.security)
     }
 }
 
@@ -233,13 +235,13 @@ impl TuicConfig {
         if let Some(ref v) = self.udp_relay_mode {
             parts.push(v.as_bytes());
         }
-        if let Some(ref v) = self.alpn {
+        if let Some(ref v) = self.security.alpn() {
             parts.push(v.as_bytes());
         }
-        if let Some(v) = self.allow_insecure {
+        if let Some(v) = self.security.insecure() {
             parts.push(if v { b"true" } else { b"false" });
         }
-        if let Some(ref v) = self.sni {
+        if let Some(ref v) = self.security.sni() {
             parts.push(v.as_bytes());
         }
         rapidhash::v3::rapidhash_v3(&parts.concat())
@@ -266,7 +268,7 @@ mod tests {
         assert_eq!(config.password, "dongtaiwang.com");
         assert_eq!(config.congestion_control.as_deref(), Some("cubic"));
         assert_eq!(config.udp_relay_mode.as_deref(), Some("native"));
-        assert_eq!(config.alpn.as_deref(), Some("h3"));
+        assert_eq!(config.security.alpn(), Some("h3"));
     }
 
     #[test]
@@ -279,8 +281,8 @@ mod tests {
             config.host().map(|h| h.to_str()),
             Some("ip1.758733.xyz".into())
         );
-        assert_eq!(config.allow_insecure, Some(false));
-        assert_eq!(config.sni.as_deref(), Some("apple.com"));
+        assert_eq!(config.security.insecure(), Some(false));
+        assert_eq!(config.security.sni(), Some("apple.com"));
         assert_eq!(config.congestion_control.as_deref(), Some("bbr"));
     }
 

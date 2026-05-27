@@ -20,7 +20,7 @@ mod vless;
 mod vmess;
 mod wireguard;
 
-pub use common::{HttpUpgradeConfig, XHttpConfig};
+pub use common::{HttpUpgradeConfig, RealityOpts, SecurityConfig, TlsConfig, TlsOpts, XHttpConfig};
 pub use hysteria2::Hysteria2Config;
 pub use slipnet::{SlipnetConfig, SlipnetEncConfig};
 pub use ss::SsConfig;
@@ -82,8 +82,13 @@ pub trait ProtoSpec: Serialize + DeserializeOwned + std::fmt::Debug + Clone {
     fn uid(&self) -> u64 {
         self.sig() ^ self.cred_hash()
     }
+    fn security(&self) -> Option<&SecurityConfig> {
+        None
+    }
     fn transport_type(&self) -> Option<&str>;
-    fn security_type(&self) -> Option<&str>;
+    fn security_type(&self) -> Option<&str> {
+        self.security().and_then(SecurityConfig::type_str)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -132,6 +137,7 @@ impl ProtoSpec for ProtocolConfig {
     fn cred_hash(&self) -> u64 { dispatch!(self, cred_hash) }
     fn sig(&self) -> u64 { dispatch!(self, sig) }
     fn set_sig_cache(&self, v: std::num::NonZeroU64) { dispatch!(self, set_sig_cache, v) }
+    fn security(&self) -> Option<&SecurityConfig> { dispatch!(self, security) }
     fn transport_type(&self) -> Option<&str> { dispatch!(self, transport_type) }
     fn security_type(&self) -> Option<&str> { dispatch!(self, security_type) }
 

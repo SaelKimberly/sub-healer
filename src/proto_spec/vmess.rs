@@ -57,7 +57,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::urlx::{HostSpec, RawUrlX, SchemeX, host_serde, port_serde};
 
-use super::common::TransportConfig;
+use super::common::{SecurityConfig, TlsConfig, TlsOpts, TransportConfig};
 use super::utils;
 use super::{ParseError, ProtoSpec};
 
@@ -73,14 +73,11 @@ pub struct VmessConfig {
     pub host: HostSpec,
     #[serde(with = "port_serde")]
     pub port: u16,
-    pub security: Option<String>,
+    #[serde(default, skip_serializing_if = "SecurityConfig::is_empty")]
+    pub security: SecurityConfig,
     pub transport: TransportConfig,
     pub alter_id: Option<String>,
     pub path: Option<String>,
-    pub sni: Option<String>,
-    pub alpn: Option<String>,
-    pub fp: Option<String>,
-    pub tls: Option<String>,
     pub remarks: Option<String>,
 }
 
@@ -125,15 +122,6 @@ impl ProtoSpec for VmessConfig {
             .ok_or_else(|| ParseError::InvalidConf("id".into(), "not a string".into()))?
             .to_owned();
 
-        // "scy" — security/encryption method, defaults to "auto"
-        // Filters empty/null/`"null"` values → maps to Some("auto")
-        let security = json
-            .get("scy")
-            .and_then(|v| v.as_str())
-            .filter(|s| !s.is_empty() && s != &"null")
-            .or(Some("auto"))
-            .map(String::from);
-
         // "net" — transport network type (tcp, ws, kcp, grpc, http/h2, quic, httpupgrade, xhttp/splithttp)
         // Filters empty/null/"null" — absence means tcp
         let net_str = json
@@ -149,34 +137,39 @@ impl ProtoSpec for VmessConfig {
             .filter(|s| !s.is_empty())
             .map(String::from);
 
-        // "sni" — TLS Server Name Indication, overrides host for TLS
+        // Extract TLS fields from JSON
         let sni = json
             .get("sni")
             .and_then(|v| v.as_str())
             .filter(|s| !s.is_empty())
             .map(String::from);
-
-        // "alpn" — ALPN list (comma-separated: "h2,http/1.1")
-        // Filters empty and escaped-empty `""`
         let alpn = json
             .get("alpn")
             .and_then(|v| v.as_str())
             .filter(|s| !s.is_empty() && s != &"\"\"")
             .map(String::from);
-
-        // "fp" — uTLS Client Hello fingerprint (chrome, firefox, safari, random, randomized)
         let fp = json
             .get("fp")
             .and_then(|v| v.as_str())
             .filter(|s| !s.is_empty())
             .map(String::from);
-
-        // "tls" — TLS security flag: "tls" enables TLS, "" disables
-        let tls = json
+        let tls_str = json
             .get("tls")
             .and_then(|v| v.as_str())
-            .filter(|s| !s.is_empty() && s != &"\"\"")
+            .filter(|s| !s.is_empty() && s != &"\"\"");
+
+        // scy → security.enc (encryption method)
+        let scy = json
+            .get("scy")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty() && s != &"null")
+            .or(Some("auto"))
             .map(String::from);
+
+        let security = SecurityConfig {
+            tls: tls_str.map(|_| TlsConfig::Tls(TlsOpts { sni: sni.clone(), alpn, fp, insecure: None })),
+            enc: scy.map(|s| crate::urlx::TinyText::from(s.as_str())),
+        };
 
         // "aid" — AlterId (additional IDs), must be 0 for AEAD-only clients
         // Filters empty/escaped-empty/"0" since 0 is the modern AEAD default
@@ -209,7 +202,7 @@ impl ProtoSpec for VmessConfig {
             .filter(|s| !s.is_empty())
             .map(String::from);
         let server_addr = Some(parsed_host.to_str().into_owned());
-        transport = transport.with_host(vmess_host, sni.clone(), server_addr);
+        transport = transport.with_host(vmess_host, sni, server_addr);
 
         // For XHttp: mode comes from VMess JSON `type` field
         if let TransportConfig::XHttp(ref mut xcfg) = transport
@@ -247,10 +240,6 @@ impl ProtoSpec for VmessConfig {
             transport,
             alter_id,
             path,
-            sni,
-            alpn,
-            fp,
-            tls,
             remarks,
         })
     }
@@ -269,8 +258,20 @@ impl ProtoSpec for VmessConfig {
         );
         map.insert("id".into(), serde_json::Value::String(self.uuid.clone()));
 
-        if let Some(ref v) = self.security {
-            map.insert("scy".into(), serde_json::Value::String(v.clone()));
+        if let Some(TlsConfig::Tls(opts)) = &self.security.tls {
+            map.insert("tls".into(), serde_json::Value::String("tls".into()));
+            if let Some(ref v) = opts.sni {
+                map.insert("sni".into(), serde_json::Value::String(v.clone()));
+            }
+            if let Some(ref v) = opts.alpn {
+                map.insert("alpn".into(), serde_json::Value::String(v.clone()));
+            }
+            if let Some(ref v) = opts.fp {
+                map.insert("fp".into(), serde_json::Value::String(v.clone()));
+            }
+        }
+        if let Some(ref v) = self.security.enc {
+            map.insert("scy".into(), serde_json::Value::String(v.to_string()));
         }
         if self.transport.type_str() != "tcp" {
             map.insert(
@@ -280,18 +281,6 @@ impl ProtoSpec for VmessConfig {
         }
         if let Some(ref v) = self.path {
             map.insert("path".into(), serde_json::Value::String(v.clone()));
-        }
-        if let Some(ref v) = self.sni {
-            map.insert("sni".into(), serde_json::Value::String(v.clone()));
-        }
-        if let Some(ref v) = self.alpn {
-            map.insert("alpn".into(), serde_json::Value::String(v.clone()));
-        }
-        if let Some(ref v) = self.fp {
-            map.insert("fp".into(), serde_json::Value::String(v.clone()));
-        }
-        if let Some(ref v) = self.tls {
-            map.insert("tls".into(), serde_json::Value::String(v.clone()));
         }
         if let Some(ref v) = self.alter_id {
             map.insert("aid".into(), serde_json::Value::String(v.clone()));
@@ -348,15 +337,15 @@ impl ProtoSpec for VmessConfig {
         Some(self.transport.type_str())
     }
 
-    fn security_type(&self) -> Option<&str> {
-        self.security.as_deref()
+    fn security(&self) -> Option<&SecurityConfig> {
+        Some(&self.security)
     }
 }
 
 impl VmessConfig {
     fn compute_sig(&self) -> u64 {
         let mut parts: Vec<&[u8]> = vec![b"vmess"];
-        if let Some(ref v) = self.security {
+        if let Some(ref v) = self.security.enc {
             parts.push(v.as_bytes());
         }
         parts.push(self.transport.type_str().as_bytes());
@@ -376,7 +365,7 @@ impl VmessConfig {
         if let Some(ref v) = self.alter_id {
             parts.push(v.as_bytes());
         }
-        if let Some(ref v) = self.sni {
+        if let Some(ref v) = self.security.sni() {
             parts.push(v.as_bytes());
         }
         rapidhash::v3::rapidhash_v3(&parts.concat())

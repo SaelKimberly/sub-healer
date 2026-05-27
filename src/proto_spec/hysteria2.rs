@@ -56,6 +56,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::urlx::{HostSpec, PortSpec, RawUrlX, SchemeX, host_serde, port_spec_serde};
 
+use super::common::{SecurityConfig, TlsConfig, TlsOpts};
 use super::utils;
 use super::{ParseError, ProtoSpec};
 
@@ -71,11 +72,10 @@ pub struct Hysteria2Config {
     pub host: HostSpec,
     #[serde(with = "port_spec_serde")]
     pub port: PortSpec,
-    pub security: String,
+    #[serde(default, skip_serializing_if = "SecurityConfig::is_empty")]
+    pub security: SecurityConfig,
     pub obfs: Option<String>,
     pub obfs_password: Option<String>,
-    pub insecure: Option<bool>,
-    pub sni: Option<String>,
     pub up: Option<String>,
     pub down: Option<String>,
     pub remarks: Option<String>,
@@ -102,25 +102,25 @@ impl ProtoSpec for Hysteria2Config {
 
         let query = utils::parse_query(raw.query);
 
-        // security: defaults to "tls". Hysteria2 always uses QUIC+TLS.
-        let security = query
-            .get("security")
-            .map_or("tls", |s| s.as_str())
-            .to_string();
         // obfs: obfuscation type (e.g., "salamander")
         let obfs = query.get("obfs").cloned();
         // obfs-password: pre-shared key for salamander obfuscation
         let obfs_password = query.get("obfs-password").cloned();
-        // insecure: skip TLS certificate verification
-        let insecure = query.get("insecure").and_then(|v| match v.as_str() {
-            "1" | "true" | "yes" => Some(true),
-            "0" | "false" | "no" => Some(false),
-            _ => None,
-        });
-        // sni: TLS Server Name Indication (overrides host)
-        let sni = query.get("sni").cloned();
         // up/down: bandwidth limits (canonical impl doesn't parse these from URL)
         let up = query.get("up").cloned();
+        let security = SecurityConfig {
+            tls: Some(TlsConfig::Tls(TlsOpts {
+                sni: query.get("sni").cloned(),
+                alpn: None,
+                fp: None,
+                insecure: query.get("insecure").and_then(|v| match v.as_str() {
+                    "1" | "true" | "yes" => Some(true),
+                    "0" | "false" | "no" => Some(false),
+                    _ => None,
+                }),
+            })),
+            enc: None,
+        };
         let down = query.get("down").cloned();
         let remarks = utils::decode_fragment(raw)?;
 
@@ -132,8 +132,6 @@ impl ProtoSpec for Hysteria2Config {
             security,
             obfs,
             obfs_password,
-            insecure,
-            sni,
             up,
             down,
             remarks,
@@ -150,20 +148,20 @@ impl ProtoSpec for Hysteria2Config {
 
         let query_string = {
             let mut parts: Vec<String> = Vec::new();
-            if self.security != "tls" {
-                parts.push(format!("security={}", self.security));
+            // Security config (always Tls for Hysteria2)
+            if self.security.tls.is_some() {
+                if let Some(true) = self.security.insecure() {
+                    parts.push("insecure=1".to_string());
+                }
+                if let Some(ref v) = self.security.sni() {
+                    parts.push(format!("sni={}", urlencoding::encode(v)));
+                }
             }
             if let Some(ref v) = self.obfs {
                 parts.push(format!("obfs={}", urlencoding::encode(v)));
             }
             if let Some(ref v) = self.obfs_password {
                 parts.push(format!("obfs-password={}", urlencoding::encode(v)));
-            }
-            if self.insecure == Some(true) {
-                parts.push("insecure=1".to_string());
-            }
-            if let Some(ref v) = self.sni {
-                parts.push(format!("sni={}", urlencoding::encode(v)));
             }
             if let Some(ref v) = self.up {
                 parts.push(format!("up={}", urlencoding::encode(v)));
@@ -232,35 +230,28 @@ impl ProtoSpec for Hysteria2Config {
         None
     }
 
-    fn security_type(&self) -> Option<&str> {
-        Some(self.security.as_str())
+    fn security(&self) -> Option<&SecurityConfig> {
+        Some(&self.security)
     }
 }
 
 impl Hysteria2Config {
     fn compute_sig(&self) -> u64 {
         let mut parts: Vec<&[u8]> = vec![b"hysteria2"];
-        parts.push(self.security.as_bytes());
-
+        let sec_type = self.security.type_str().unwrap_or("none");
+        parts.push(sec_type.as_bytes());
         parts.extend(
             [&self.obfs, &self.obfs_password]
                 .into_iter()
                 .flatten()
                 .map(String::as_bytes),
         );
-        if let Some(v) = self.insecure {
+        if let Some(v) = self.security.insecure() {
             parts.push(if v { b"true" } else { b"false" });
         }
-        if let Some(ref v) = self.sni {
-            parts.push(v.as_bytes());
-        }
-        if let Some(ref v) = self.up {
-            parts.push(v.as_bytes());
-        }
-        if let Some(ref v) = self.down {
-            parts.push(v.as_bytes());
-        }
-
+        if let Some(ref v) = self.security.sni() { parts.push(v.as_bytes()); }
+        if let Some(ref v) = self.up { parts.push(v.as_bytes()); }
+        if let Some(ref v) = self.down { parts.push(v.as_bytes()); }
         rapidhash::v3::rapidhash_v3(&parts.concat())
     }
 }
@@ -277,7 +268,7 @@ mod tests {
         let config = Hysteria2Config::try_parse(&raw).expect("failed");
         assert_eq!(config.schema(), SchemeX::Hysteria2);
         assert_eq!(config.obfs.as_deref(), Some("salamander"));
-        assert_eq!(config.insecure, Some(true));
+        assert_eq!(config.security.insecure(), Some(true));
     }
 
     #[test]

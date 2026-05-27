@@ -42,7 +42,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::urlx::{HostSpec, RawUrlX, SchemeX, host_serde, port_serde};
 
-use super::common::TransportConfig;
+use super::common::{RealityOpts, SecurityConfig, TlsConfig, TlsOpts, TransportConfig};
 use super::utils;
 use super::{ParseError, ProtoSpec};
 
@@ -58,12 +58,10 @@ pub struct TrojanConfig {
     pub host: HostSpec,
     #[serde(with = "port_serde")]
     pub port: u16,
-    pub security: String,
+    #[serde(default, skip_serializing_if = "SecurityConfig::is_empty")]
+    pub security: SecurityConfig,
     pub transport: TransportConfig,
     pub path: Option<String>,
-    pub sni: Option<String>,
-    pub alpn: Option<String>,
-    pub fp: Option<String>,
     pub remarks: Option<String>,
 }
 
@@ -92,17 +90,31 @@ impl ProtoSpec for TrojanConfig {
         let query = utils::parse_query(raw.query);
 
         // Security mode: tls (default), none, or reality
-        let security = query
-            .get("security")
-            .map_or("tls", |s| s.as_str())
-            .to_string();
+        let security = match query.get("security").map(|s| s.as_str()) {
+            Some("tls") | None => SecurityConfig {
+                tls: Some(TlsConfig::Tls(TlsOpts {
+                    sni: query.get("sni").cloned(),
+                    alpn: query.get("alpn").cloned(),
+                    fp: query.get("fp").cloned(),
+                    insecure: None,
+                })),
+                enc: None,
+            },
+            Some("reality") => SecurityConfig {
+                tls: Some(TlsConfig::Reality(RealityOpts {
+                    sni: query.get("sni").cloned(),
+                    fp: query.get("fp").cloned(),
+                    pbk: query.get("pbk").cloned(),
+                    sid: query.get("sid").cloned(),
+                    spx: query.get("spx").cloned(),
+                })),
+                enc: None,
+            },
+            _ => SecurityConfig::default(),
+        };
         // Transport type: tcp (default), ws, grpc, http, quic, kcp
         let transport_type = query.get("type").map_or("tcp", |s| s.as_str()).to_string();
         let path = query.get("path").cloned();
-        // SNI fallback order: peer → sni → URL hostname (outbound/dialer compat)
-        let sni = query.get("sni").cloned();
-        let alpn = query.get("alpn").cloned();
-        let fp = query.get("fp").cloned();
 
         let remarks = utils::decode_fragment(raw)?;
 
@@ -112,7 +124,7 @@ impl ProtoSpec for TrojanConfig {
         let mut transport =
             TransportConfig::from_type_and_path(Some(&transport_type), path.as_deref())
                 .ok_or_else(|| ParseError::InvalidConf("type".into(), transport_type.into()))?;
-        transport = transport.with_host(host, sni.clone(), server_addr);
+        transport = transport.with_host(host, query.get("sni").cloned(), server_addr);
 
         let path = match transport {
             TransportConfig::Ws(ref ws) => ws.path.clone(),
@@ -131,9 +143,6 @@ impl ProtoSpec for TrojanConfig {
             transport,
             security,
             path,
-            sni,
-            alpn,
-            fp,
             remarks,
         })
     }
@@ -148,8 +157,25 @@ impl ProtoSpec for TrojanConfig {
 
         let query_string = {
             let mut parts: Vec<String> = Vec::new();
-            if self.security != "tls" {
-                parts.push(format!("security={}", self.security));
+            // Security config. TLS is the default — only emit when reality or sni/alpn/fp set.
+            if let Some(ref tls_config) = self.security.tls {
+                match tls_config {
+                    TlsConfig::Tls(opts) => {
+                        if opts.sni.is_some() || opts.alpn.is_some() || opts.fp.is_some() {
+                            parts.push("security=tls".to_string());
+                        }
+                        if let Some(ref v) = opts.sni { parts.push(format!("sni={}", urlencoding::encode(v))); }
+                        if let Some(ref v) = opts.alpn { parts.push(format!("alpn={}", urlencoding::encode(v))); }
+                        if let Some(ref v) = opts.fp { parts.push(format!("fp={}", urlencoding::encode(v))); }
+                    }
+                    TlsConfig::Reality(opts) => {
+                        parts.push("security=reality".to_string());
+                        if let Some(ref v) = opts.sni { parts.push(format!("sni={}", urlencoding::encode(v))); }
+                        if let Some(ref v) = opts.fp { parts.push(format!("fp={}", urlencoding::encode(v))); }
+                        if let Some(ref v) = opts.pbk { parts.push(format!("pbk={}", urlencoding::encode(v))); }
+                        if let Some(ref v) = opts.sid { parts.push(format!("sid={}", urlencoding::encode(v))); }
+                    }
+                }
             }
             if self.transport.type_str() != "tcp" {
                 parts.push(format!("type={}", self.transport.type_str()));
@@ -169,15 +195,6 @@ impl ProtoSpec for TrojanConfig {
             }
             if let Some(ref path) = self.path {
                 parts.push(format!("path={}", urlencoding::encode(path)));
-            }
-            if let Some(ref v) = self.sni {
-                parts.push(format!("sni={}", urlencoding::encode(v)));
-            }
-            if let Some(ref v) = self.alpn {
-                parts.push(format!("alpn={}", urlencoding::encode(v)));
-            }
-            if let Some(ref v) = self.fp {
-                parts.push(format!("fp={}", urlencoding::encode(v)));
             }
             if parts.is_empty() {
                 String::new()
@@ -240,15 +257,16 @@ impl ProtoSpec for TrojanConfig {
         Some(self.transport.type_str())
     }
 
-    fn security_type(&self) -> Option<&str> {
-        Some(self.security.as_str())
+    fn security(&self) -> Option<&SecurityConfig> {
+        Some(&self.security)
     }
 }
 
 impl TrojanConfig {
     fn compute_sig(&self) -> u64 {
         let mut parts: Vec<&[u8]> = vec![b"trojan"];
-        parts.push(self.security.as_bytes());
+        let sec_type = self.security.type_str().unwrap_or("none");
+        parts.push(sec_type.as_bytes());
         parts.push(self.transport.type_str().as_bytes());
         match &self.transport {
             TransportConfig::HttpUpgrade(cfg) => {
@@ -266,15 +284,9 @@ impl TrojanConfig {
         if let Some(ref path) = self.path {
             parts.push(path.as_bytes());
         }
-        if let Some(ref v) = self.sni {
-            parts.push(v.as_bytes());
-        }
-        if let Some(ref v) = self.alpn {
-            parts.push(v.as_bytes());
-        }
-        if let Some(ref v) = self.fp {
-            parts.push(v.as_bytes());
-        }
+        if let Some(ref v) = self.security.sni() { parts.push(v.as_bytes()); }
+        if let Some(ref v) = self.security.alpn() { parts.push(v.as_bytes()); }
+        if let Some(ref v) = self.security.fp() { parts.push(v.as_bytes()); }
         rapidhash::v3::rapidhash_v3(&parts.concat())
     }
 }
