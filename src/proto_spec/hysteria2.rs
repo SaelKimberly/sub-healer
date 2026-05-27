@@ -98,8 +98,7 @@ impl ProtoSpec for Hysteria2Config {
             (auth, hostport)
         };
 
-        let (parsed_host, parsed_port) = utils::parse_hostport(hostport)
-            .map_err(|e| ParseError::InvalidHostPort(format!("{hostport}: {e}").into()))?;
+        let (parsed_host, parsed_port) = utils::parse_hostport(hostport)?;
 
         let query = utils::parse_query(raw.query);
 

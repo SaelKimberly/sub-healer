@@ -59,6 +59,8 @@ pub enum ParseError {
     UnsupportedScheme(SchemeX),
     #[error("not a proxy config URL (promotion or navigation link)")]
     PromotionUrl,
+    #[error("private/reserved host: {0}")]
+    InvalidPrivateHost(Cow<'static, str>),
 }
 
 pub trait ProtoSpec: Serialize + DeserializeOwned + std::fmt::Debug + Clone {

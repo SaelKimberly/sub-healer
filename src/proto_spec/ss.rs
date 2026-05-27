@@ -105,8 +105,7 @@ impl ProtoSpec for SsConfig {
             (ui.to_string(), hp.to_string())
         };
 
-        let (parsed_host, parsed_port) = utils::parse_hostport(&hostport)
-            .map_err(|e| ParseError::InvalidHostPort(format!("{hostport}: {e}").into()))?;
+        let (parsed_host, parsed_port) = utils::parse_hostport(&hostport)?;
         let parsed_port = parsed_port
             .first()
             .ok_or_else(|| ParseError::InvalidPort("empty port spec".into()))?;
@@ -201,17 +200,17 @@ mod tests {
 
     #[test]
     fn test_ss_basic() {
-        let url = "ss://Y2xlb2Y6cGFzc3dvcmRAMTwzMC4wLjE2MDo4MDgw@127.0.0.1:8080";
+        let url = "ss://Y2xlb2Y6cGFzc3dvcmRAMTwzMC4wLjE2MDo4MDgw@1.2.3.4:8080";
         let raw = crate::urlx::RawUrlX::from(url);
         let config = SsConfig::try_parse(&raw).expect("failed");
         assert_eq!(config.schema(), SchemeX::SS);
-        assert_eq!(config.host.to_str(), "127.0.0.1");
+        assert_eq!(config.host.to_str(), "1.2.3.4");
         assert_eq!(config.method, "cleof");
     }
 
     #[test]
     fn test_reconstruct_roundtrip() {
-        let input = "ss://Y2xlb2Y6cGFzc3dvcmRAMTwzMC4wLjE2MDo4MDgw@127.0.0.1:8080";
+        let input = "ss://Y2xlb2Y6cGFzc3dvcmRAMTwzMC4wLjE2MDo4MDgw@1.2.3.4:8080";
         let raw = crate::urlx::RawUrlX::from(input);
         let parsed = SsConfig::try_parse(&raw).expect("failed to parse");
         let reconstructed = parsed.reconstruct().expect("failed to reconstruct");
@@ -226,7 +225,7 @@ mod tests {
 
     #[test]
     fn test_serde_roundtrip() {
-        let input = "ss://Y2xlb2Y6cGFzc3dvcmRAMTwzMC4wLjE2MDo4MDgw@127.0.0.1:8080";
+        let input = "ss://Y2xlb2Y6cGFzc3dvcmRAMTwzMC4wLjE2MDo4MDgw@1.2.3.4:8080";
         let raw = crate::urlx::RawUrlX::from(input);
         let parsed = SsConfig::try_parse(&raw).expect("failed");
         let json = serde_json::to_string(&parsed).expect("serialize");
@@ -240,6 +239,6 @@ mod tests {
 
     #[test]
     fn test_roundtrip() {
-        check_roundtrip::<SsConfig>("ss://Y2xlb2Y6cGFzc3dvcmRAMTwzMC4wLjE2MDo4MDgw@127.0.0.1:8080");
+        check_roundtrip::<SsConfig>("ss://Y2xlb2Y6cGFzc3dvcmRAMTwzMC4wLjE2MDo4MDgw@1.2.3.4:8080");
     }
 }

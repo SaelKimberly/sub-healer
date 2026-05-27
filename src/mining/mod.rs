@@ -178,7 +178,7 @@ mod tests {
 
     fn make_vmess_config() -> ProtocolConfig {
         let raw = RawUrlX::from(
-            "vmess://eyJhZGQiOiIxMjcuMC4wLjEiLCJwb3J0Ijo4MCwiaWQiOiJhYmNkZS0xMjM0NS02Nzg5MCIsIm5ldCI6InRjcCIsInR5cGUiOiJub25lIn0=",
+            "vmess://eyJhZGQiOiIxLjIuMy40IiwicG9ydCI6ODAsImlkIjoiYWJjZGUtMTIzNDUtNjc4OTAiLCJuZXQiOiJ0Y3AiLCJ0eXBlIjoibm9uZSJ9",
         );
         ProtocolConfig::try_parse(&raw).expect("valid vmess")
     }

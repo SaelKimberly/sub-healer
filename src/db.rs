@@ -424,8 +424,8 @@ mod tests {
         config.uid().cast_signed()
     }
 
-    const CONFIG_A: &str = "vmess://eyJhZGQiOiIxMjcuMC4wLjEiLCJwb3J0Ijo4MCwiaWQiOiJhYmNkZS0xMjM0NS02Nzg5MCIsIm5ldCI6InRjcCIsInR5cGUiOiJub25lIn0=";
-    const CONFIG_B: &str = "vmess://eyJhZGQiOiIxOTIuMTY4LjEuMSIsInBvcnQiOjQ0MywiaWQiOiJmZWRjYmEwOTg3NjU0MzIxIiwibmV0Ijoid3MiLCJ0eXBlIjoibm9uZSJ9";
+    const CONFIG_A: &str = "vmess://eyJhZGQiOiIxLjIuMy40IiwicG9ydCI6ODAsImlkIjoiYWJjZGUtMTIzNDUtNjc4OTAiLCJuZXQiOiJ0Y3AiLCJ0eXBlIjoibm9uZSJ9";
+    const CONFIG_B: &str = "vmess://eyJhZGQiOiIxLjIuMy41IiwicG9ydCI6NDQzLCJpZCI6ImZlZGNiYTA5ODc2NTQzMjEiLCJuZXQiOiJ3cyIsInR5cGUiOiJub25lIn0=";
 
     #[test]
     fn test_fresh_insert() {

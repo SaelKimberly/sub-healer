@@ -85,8 +85,7 @@ impl ProtoSpec for TuicConfig {
         uuid::Uuid::parse_str(uuid)
             .map_err(|_| ParseError::InvalidUserInfo(format!("invalid UUID: {uuid}").into()))?;
 
-        let (parsed_host, parsed_port) = utils::parse_hostport(hostport)
-            .map_err(|e| ParseError::InvalidHostPort(format!("{hostport}: {e}").into()))?;
+        let (parsed_host, parsed_port) = utils::parse_hostport(hostport)?;
         let parsed_port = parsed_port
             .first()
             .ok_or_else(|| ParseError::InvalidPort("empty port spec".into()))?;

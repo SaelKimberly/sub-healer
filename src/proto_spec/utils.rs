@@ -2,28 +2,65 @@ use std::borrow::Cow;
 
 use base64::Engine;
 use bstr::ByteSlice;
+use rustls::pki_types::{IpAddr::V4, IpAddr::V6};
 
 use crate::urlx::{HostSpec, PortSpec, RawUrlX};
+
+use super::ParseError;
+
+/// Check that a host is not loopback, private, or localhost.
+///
+/// # Errors
+///
+/// Returns an error if the host is a loopback/private IP or "localhost".
+fn validate_host_not_private(host: &HostSpec) -> Result<(), ParseError> {
+    match host {
+        HostSpec::DnsName(name) => {
+            let name = name.as_ref().to_ascii_lowercase();
+            if name == "localhost" || name.ends_with(".localhost") {
+                return Err(ParseError::InvalidPrivateHost("localhost".into()));
+            }
+        }
+        HostSpec::IpAddress(V4(ip)) => {
+            let addr = std::net::Ipv4Addr::from(*ip);
+            if addr.is_loopback() || addr.is_private() || addr.is_link_local() {
+                return Err(ParseError::InvalidPrivateHost(addr.to_string().into()));
+            }
+        }
+        HostSpec::IpAddress(V6(ip)) => {
+            let addr = std::net::Ipv6Addr::from(*ip);
+            if addr.is_loopback() || addr.is_unique_local() || addr.is_unicast_link_local() {
+                return Err(ParseError::InvalidPrivateHost(addr.to_string().into()));
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
 
 /// Parse host:port from a string, returning (`HostSpec`, `PortSpec`)
 ///
 /// # Errors
 ///
 /// Returns an error if the string is not a valid host:port specification.
-pub fn parse_hostport(s: &str) -> Result<(HostSpec, PortSpec), Cow<'static, str>> {
+pub fn parse_hostport(s: &str) -> Result<(HostSpec, PortSpec), ParseError> {
     // Strip decorative prefixes like @@ or $*@
     let s = s.trim_start_matches('@');
     let s = s.trim_start_matches("$*@");
     let (tail, (host, port)) = crate::utils::host_port_spec(s.as_bytes().into())
-        .map_err(|_| format!("Invalid hostport: {s}"))?;
+        .map_err(|_| ParseError::InvalidHostPort(format!("Invalid hostport: {s}").into()))?;
+    let host = host.to_owned();
+    validate_host_not_private(&host)?;
     if !tail.is_empty() {
         let tail_str = unsafe { std::str::from_utf8_unchecked(tail.into_fragment()) };
         // Lenient: if tail contains query-like chars (= or &), strip it
         if !tail_str.contains('=') && !tail_str.contains('&') {
-            return Err(format!("Invalid hostport: {s} (non-empty tail: {tail_str})").into());
+            return Err(ParseError::InvalidHostPort(
+                format!("Invalid hostport: {s} (non-empty tail: {tail_str})").into(),
+            ));
         }
     }
-    Ok((host.to_owned(), port))
+    Ok((host, port))
 }
 
 /// Parse host from a string (no port)
@@ -31,16 +68,21 @@ pub fn parse_hostport(s: &str) -> Result<(HostSpec, PortSpec), Cow<'static, str>
 /// # Errors
 ///
 /// If the string is not a valid host.
-pub fn parse_host(s: &str) -> Result<HostSpec, Cow<'static, str>> {
+pub fn parse_host(s: &str) -> Result<HostSpec, ParseError> {
     let (tail, host) = crate::utils::host_port::host(s.as_bytes().into())
-        .map_err(|_| format!("Invalid host: {s}"))?;
+        .map_err(|_| ParseError::InvalidHost(format!("Invalid host: {s}").into()))?;
+    let host = host.to_owned();
+    validate_host_not_private(&host)?;
     if !tail.is_empty() {
-        return Err(format!("Invalid host: {s} (non-empty tail: {})", unsafe {
-            std::str::from_utf8_unchecked(tail.into_fragment())
-        })
-        .into());
+        return Err(ParseError::InvalidHost(
+            format!(
+                "Invalid host: {s} (non-empty tail: {})",
+                unsafe { std::str::from_utf8_unchecked(tail.into_fragment()) }
+            )
+            .into(),
+        ));
     }
-    Ok(host.to_owned())
+    Ok(host)
 }
 
 /// Parse port from string

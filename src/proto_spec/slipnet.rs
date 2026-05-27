@@ -100,10 +100,7 @@ impl ProtoSpec for SlipnetConfig {
             .and_then(|s| if s.is_empty() { None } else { Some(s.as_str()) });
 
         let host = domain
-            .map(|d| {
-                utils::parse_host(d)
-                    .map_err(|e| ParseError::InvalidHost(format!("{d}: {e}").into()))
-            })
+            .map(|d| utils::parse_host(d))
             .transpose()?
             .ok_or(ParseError::MissingHost)?;
 

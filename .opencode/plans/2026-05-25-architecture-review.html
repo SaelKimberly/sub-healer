@@ -1,0 +1,388 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Architecture review — v2ray-heal</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script type="module">
+      import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+      mermaid.initialize({ startOnLoad: true, theme: "neutral", securityLevel: "loose" });
+    </script>
+    <style>
+      .seam { stroke-dasharray: 4 4; }
+      .leak { stroke: #dc2626; }
+      .deep { background: linear-gradient(135deg, #0f172a, #1e293b); }
+      .badge-strong { background: #059669; }
+      .badge-worth { background: #d97706; }
+      .badge-speculative { background: #475569; }
+      .badge-done { background: #4338ca; }
+      .badge-pending { background: #b45309; }
+    </style>
+  </head>
+  <body class="bg-stone-50 text-slate-900 font-sans">
+    <main class="max-w-5xl mx-auto px-6 py-12 space-y-12">
+      <header class="border-b border-slate-200 pb-6">
+        <h1 class="text-3xl font-serif font-bold text-slate-900">Architecture review — v2ray-heal</h1>
+        <p class="text-sm text-slate-500 mt-1">2026-05-25 · updated 2026-05-26 · 5 candidates (4 done, 1 pending)</p>
+        <div class="flex flex-wrap gap-4 mt-3 text-xs text-slate-600">
+          <span><span class="inline-block w-3 h-3 bg-white border border-slate-400 mr-1"></span> module</span>
+          <span><span class="inline-block w-3 h-3 border border-slate-400 border-dashed mr-1"></span> seam</span>
+          <span><span class="inline-block w-3 h-3 bg-gradient-to-br from-slate-800 to-slate-700 mr-1"></span> deep module</span>
+          <span><span class="inline-block w-3 h-3 bg-indigo-600 mr-1"></span> implemented</span>
+          <span><span class="inline-block w-3 h-3 bg-amber-700 mr-1"></span> pending</span>
+        </div>
+        <div class="mt-4 p-4 bg-indigo-50 border border-indigo-200 rounded-lg text-sm text-indigo-900">
+          <strong>Progress:</strong> 4/5 candidates implemented. Test count: <strong>85 passing</strong> (was 30 + 5 pre-existing failures, now resolved). Dependencies removed: <code>enum_dispatch</code>. See AGENTS.md for full state.
+        </div>
+      </header>
+
+      <section class="space-y-10" id="candidates">
+
+        <!-- Candidate 1: Pipeline orchestration -->
+        <article class="bg-white rounded-lg border border-slate-200 p-6 space-y-4">
+          <div class="flex items-center gap-3">
+            <h2 class="text-xl font-serif font-bold">1. Pipeline orchestration: no seam for testing</h2>
+            <span class="badge-done text-white text-xs font-semibold px-2 py-0.5 rounded">Done</span>
+          </div>
+          <div class="font-mono text-sm text-slate-500">src/mining/mod.rs · src/mining/config.rs · src/mining/registry.rs</div>
+
+          <div class="grid grid-cols-2 gap-4">
+            <div class="rounded-lg border border-slate-200 bg-white p-4">
+              <pre class="mermaid text-xs">
+                flowchart TB
+                  subgraph Before["Before: monolithic run_with_config"]
+                    direction TB
+                    RC[run_with_config]
+                    RC --> CL[config::load_config]
+                    RC --> OB[open_db]
+                    RC --> BC[build_client]
+                    RC --> RP[registry.pre_populate]
+                    RC --> TG[telegram::fetch_tg_channels]
+                    RC --> SF[sub::fetch_subscriptions]
+                    RC --> PC[process_config_stream]
+                    PC --> US[db::upsert_server]
+                  end
+                  classDef concrete fill:#e2e8f0,stroke:#94a3b8
+                  class RC,CL,OB,BC,RP,TG,SF,PC,US concrete
+              </pre>
+            </div>
+            <div class="rounded-lg border border-slate-200 bg-white p-4">
+              <pre class="mermaid text-xs">
+                flowchart TB
+                  subgraph After["After: Pipeline<C: ConfigSource, F: SourceFetcher>"]
+                    direction TB
+                    P[Pipeline { config_source, fetcher }]
+                    P --> R[run]
+                    R --> L[config_source.sources]
+                    R --> F[fetcher.fetch]
+                    R --> DB[upsert_server]
+
+                    subgraph Prod["Prod adapters"]
+                      YC[YamlConfigSource]
+                      LF[LiveFetcher]
+                    end
+                    subgraph Test["Test adapters"]
+                      TC[TestConfigSource]
+                      SF2[StubFetcher]
+                    end
+                    L -.-> YC
+                    L -.-> TC
+                    F -.-> LF
+                    F -.-> SF2
+                  end
+                  subgraph DB_impl["Database"]
+                    RC2[&rusqlite::Connection<br/>:memory: for tests]
+                  end
+                  DB --> RC2
+                  classDef deep fill:#0f172a,stroke:#1e293b,color:#fff
+                  classDef adapter fill:#fef3c7,stroke:#d97706
+                  classDef note fill:#eef2ff,stroke:#6366f1
+                  class P,R deep
+                  class YC,LF adapter
+                  class TC,SF2 adapter
+                  class RC2 note
+              </pre>
+            </div>
+          </div>
+
+          <div class="grid grid-cols-3 gap-4 text-sm">
+            <div>
+              <h3 class="font-semibold text-xs uppercase tracking-wider text-slate-500 mb-1">Problem</h3>
+              <p class="text-slate-700"><code>run_with_config()</code> threads real HTTP client, real SQLite, real Telegram through entire pipeline. Only testable by hitting network + filesystem. Pipeline glue was 0% tested.</p>
+            </div>
+            <div>
+              <h3 class="font-semibold text-xs uppercase tracking-wider text-slate-500 mb-1">Implementation</h3>
+              <p class="text-slate-700"><strong>Seam via generics:</strong> <code>ConfigSource</code> trait + <code>YamlConfigSource</code>, <code>SourceFetcher</code> trait + <code>LiveFetcher</code>, <code>Pipeline&lt;C, F&gt;</code>. DB passed as <code>&amp;rusqlite::Connection</code> — <code>:memory:</code> SQLite for tests (no <code>DbAdapter</code> trait needed). <code>run_with_config</code> wraps <code>Pipeline::new(YamlConfigSource, LiveFetcher).run(client, conn)</code>.</p>
+            </div>
+            <div>
+              <h3 class="font-semibold text-xs uppercase tracking-wider text-slate-500 mb-1">Wins</h3>
+              <ul class="list-disc list-inside text-slate-700 space-y-0.5">
+                <li>4 pipeline tests (empty sources, registry upsert, config upsert, multiple configs)</li>
+                <li>Pipeline testable without network/filesystem</li>
+                <li>Enables #3 (config struct) as next step</li>
+              </ul>
+            </div>
+          </div>
+        </article>
+
+        <!-- Candidate 2: ProtocolConfig delegation -->
+        <article class="bg-white rounded-lg border border-slate-200 p-6 space-y-4">
+          <div class="flex items-center gap-3">
+            <h2 class="text-xl font-serif font-bold">2. ProtocolConfig delegation: 132 match arms</h2>
+            <span class="badge-done text-white text-xs font-semibold px-2 py-0.5 rounded">Done</span>
+          </div>
+          <div class="font-mono text-sm text-slate-500">src/proto_spec/mod.rs · Cargo.toml</div>
+
+          <div class="grid grid-cols-2 gap-4">
+            <div class="rounded-lg border border-slate-200 bg-white p-4">
+              <pre class="mermaid text-xs">
+                flowchart LR
+                  subgraph proto_spec/mod.rs
+                    I[impl ProtoSpec]
+                    I --> D1[reconstruct · match 11 variants]
+                    I --> D2[schema · match 11 variants]
+                    I --> D3[host · match 11 variants]
+                    I --> D4[port · match 11 variants]
+                    I --> D5[remarks · match 11 variants]
+                    I --> D6[cred_hash · match 11 variants]
+                    I --> D7[sig · match 11 variants]
+                    I --> D8[set_sig_cache · match 11 variants]
+                    I --> D9[transport_type · match 11 variants]
+                    I --> D10[security_type · match 11 variants]
+                    I --> D11[uid · default impl]
+                  end
+                  classDef shallow fill:#fef2f2,stroke:#dc2626
+                  class I,D1,D2,D3,D4,D5,D6,D7,D8,D9,D10,D11 shallow
+              </pre>
+            </div>
+            <div class="rounded-lg border border-slate-200 bg-white p-4 flex items-center justify-center">
+              <div class="text-center">
+                <div class="badge-done text-white text-xs font-semibold px-2 py-0.5 rounded inline-block mb-2">After</div>
+                <pre class="mermaid text-xs">flowchart LR
+                  M[dispatch! macro]
+                  M --> Vless
+                  M --> Vmess
+                  M --> Trojan
+                  M --> Hysteria2
+                  M --> Ss
+                  M --> Ssr
+                  M --> Tg
+                  M --> Slipnet
+                  M --> Stormdns
+                  M --> Tuic
+                  M --> Wireguard
+                  classDef deep fill:#0f172a,stroke:#1e293b,color:#fff
+                  class M deep</pre>
+              </div>
+            </div>
+          </div>
+
+          <div class="grid grid-cols-3 gap-4 text-sm">
+            <div>
+              <h3 class="font-semibold text-xs uppercase tracking-wider text-slate-500 mb-1">Problem</h3>
+              <p class="text-slate-700"><code>impl ProtoSpec for ProtocolConfig</code> dispatched 12 trait methods across 11 variants = 132 arms of pure delegation.</p>
+            </div>
+            <div>
+              <h3 class="font-semibold text-xs uppercase tracking-wider text-slate-500 mb-1">Implementation</h3>
+              <p class="text-slate-700"><code>#[enum_dispatch]</code> panicked on static method <code>try_parse</code> — enum_dispatch doesn't support static methods. Replaced with <code>dispatch!</code> macro generating 11-arm match for each of 10 instance methods. <code>try_parse</code> stays as an inherent-style trait method. <code>enum_dispatch</code> dependency removed from <code>Cargo.toml</code>.</p>
+              <p class="text-slate-600 mt-1">5 pre-existing test failures (SSR InvalidStructure, SlipnetEnc InvalidUserInfo, WireGuard stub, etc.) also resolved.</p>
+            </div>
+            <div>
+              <h3 class="font-semibold text-xs uppercase tracking-wider text-slate-500 mb-1">Wins</h3>
+              <ul class="list-disc list-inside text-slate-700 space-y-0.5">
+                <li>Delegation centralized in one macro — adding protocol = one variant + one config file</li>
+                <li>No external dependency for dispatch</li>
+                <li>TryParse stays generic for <code>check_roundtrip&lt;T: ProtoSpec&gt;</code></li>
+              </ul>
+            </div>
+          </div>
+        </article>
+
+        <!-- Candidate 3: Config file read twice -->
+        <article class="bg-white rounded-lg border border-slate-200 p-6 space-y-4">
+          <div class="flex items-center gap-3">
+            <h2 class="text-xl font-serif font-bold">3. Config file read twice + URL normalization in 3 places</h2>
+            <span class="badge-pending text-white text-xs font-semibold px-2 py-0.5 rounded">Pending</span>
+          </div>
+          <div class="font-mono text-sm text-slate-500">src/mining/config.rs · src/main.rs · src/mining/telegram.rs</div>
+
+          <div class="rounded-lg border border-slate-200 bg-white p-4">
+            <pre class="mermaid text-xs">
+              flowchart TB
+                subgraph BEFORE["Before"]
+                  direction TB
+                  RC[run_with_config] --> LC[load_config]
+                  RC --> LS[load_subscriptions]
+                  LC --> READ1[read_to_string + parse YAML]
+                  LS --> READ2[read_to_string + parse YAML]
+
+                  MR[main.rs :: Remote] --> EC[extract_channel_name]
+                  TG[telegram.rs :: fetch_tg_channels] --> CH[builds t.me/s/ URLs]
+                  CFG[config.rs] --> CFG_CH[builds t.me/s/ URLs]
+                  EC --> EC_CH[builds t.me/s/ URLs]
+
+                  READ1 -.-> DUPE[⚠ 2x read]
+                  READ2 -.-> DUPE
+                  CFG_CH -.-> DUPE2[⚠ 3x channel normalization]
+                  EC_CH -.-> DUPE2
+                  CH -.-> DUPE2
+                end
+                classDef warn fill:#fef3c7,stroke:#d97706
+                class DUPE,DUPE2 warn
+            </pre>
+          </div>
+
+          <div class="grid grid-cols-3 gap-4 text-sm">
+            <div>
+              <h3 class="font-semibold text-xs uppercase tracking-wider text-slate-500 mb-1">Problem</h3>
+              <p class="text-slate-700"><code>load_config</code> and <code>load_subscriptions</code> each read+parse the YAML file independently. Channel URL normalization duplicated in 3 places (<code>config.rs:28-32</code>, <code>main.rs:15-22</code>, <code>telegram.rs</code>).</p>
+            </div>
+            <div>
+              <h3 class="font-semibold text-xs uppercase tracking-wider text-slate-500 mb-1">Solution</h3>
+              <p class="text-slate-700">Merge into one <code>load_config(path) -> MiningConfig { channels, subscriptions }</code>. Extract channel normalization into a shared function in <code>config.rs</code>.</p>
+            </div>
+            <div>
+              <h3 class="font-semibold text-xs uppercase tracking-wider text-slate-500 mb-1">Wins</h3>
+              <ul class="list-disc list-inside text-slate-700 space-y-0.5">
+                <li>YAML parsed once instead of twice</li>
+                <li>Adding config fields means touching one struct, not two functions</li>
+                <li>Locality: YAML schema changes affect one module</li>
+              </ul>
+            </div>
+          </div>
+        </article>
+
+        <!-- Candidate 4: Database time-travel upsert -->
+        <article class="bg-white rounded-lg border border-slate-200 p-6 space-y-4">
+          <div class="flex items-center gap-3">
+            <h2 class="text-xl font-serif font-bold">4. Database time-travel upsert: zero tests, critical logic</h2>
+            <span class="badge-done text-white text-xs font-semibold px-2 py-0.5 rounded">Done</span>
+          </div>
+          <div class="font-mono text-sm text-slate-500">src/db.rs</div>
+
+          <div class="rounded-lg border border-slate-200 bg-white p-4">
+            <pre class="mermaid text-xs">
+              flowchart TB
+                subgraph time_travel["Time-travel upsert logic (7 tests)"]
+                  direction TB
+                  US[upsert_server] --> EXISTS{server exists?}
+                  EXISTS -->|no| INSERT[INSERT server + sighting]
+                  EXISTS -->|yes| COMPARE{incoming_ts < first_seen_ts?}
+                  COMPARE -->|yes| ARCHIVE[Archive current → sighting]
+                  ARCHIVE --> UPDATE[UPDATE first_seen_ts/remarks/source]
+                  COMPARE -->|no| SIGHTING[INSERT sighting only]
+                end
+                classDef deep fill:#0f172a,stroke:#1e293b,color:#fff
+                class US deep
+            </pre>
+          </div>
+
+          <div class="grid grid-cols-3 gap-4 text-sm">
+            <div>
+              <h3 class="font-semibold text-xs uppercase tracking-wider text-slate-500 mb-1">Problem</h3>
+              <p class="text-slate-700">Time-travel upsert had 0 tests and a duplicate-sighting bug in the archive branch (redundant INSERT created copy of existing sighting). <code>SourceRecord</code> had phantom <code>url_hash</code> field.</p>
+            </div>
+            <div>
+              <h3 class="font-semibold text-xs uppercase tracking-wider text-slate-500 mb-1">Implementation</h3>
+              <p class="text-slate-700">7 tests added covering: fresh insert, later sighting, earlier archive, same timestamp, FK violation, different servers, same server different source. Bug fixed: archive branch no longer INSERTs redundant sighting copy. Phantom <code>url_hash</code> field removed. Tests use <code>rusqlite::Connection::open_in_memory()</code> directly — no <code>DbAdapter</code> trait abstraction needed.</p>
+            </div>
+            <div>
+              <h3 class="font-semibold text-xs uppercase tracking-wider text-slate-500 mb-1">Wins</h3>
+              <ul class="list-disc list-inside text-slate-700 space-y-0.5">
+                <li>All time-travel edge cases tested</li>
+                <li>Duplicate-sighting bug fixed</li>
+                <li>Phantom field removed, struct matches schema</li>
+              </ul>
+            </div>
+          </div>
+        </article>
+
+        <!-- Candidate 5: Duplicate scheme normalization -->
+        <article class="bg-white rounded-lg border border-slate-200 p-6 space-y-4">
+          <div class="flex items-center gap-3">
+            <h2 class="text-xl font-serif font-bold">5. Duplicate scheme normalization in telegram.rs</h2>
+            <span class="badge-done text-white text-xs font-semibold px-2 py-0.5 rounded">Done</span>
+          </div>
+          <div class="font-mono text-sm text-slate-500">src/mining/telegram.rs · src/urlx/schemex.rs</div>
+
+          <div class="grid grid-cols-2 gap-4">
+            <div class="rounded-lg border border-slate-200 bg-white p-4">
+              <pre class="mermaid text-xs">
+                flowchart LR
+                  subgraph Before["Before: manual match (21 lines)"]
+                    M[match schema_lower]
+                    M -->|shadowsocks| SS1["→ ss"]
+                    M -->|hy / hysteria| HY1["→ hy"]
+                    M -->|hy2 / hysteria2| HY21["→ hy2"]
+                    M -->|ssr / shadowsocksr| SSR1["→ ssr"]
+                  end
+                  subgraph Schemex["schemex.rs FromStr (duplicate)"]
+                    F[match str]
+                    F -->|shadowsocks| SS2["→ SS"]
+                    F -->|hy / hysteria| HY2["→ Hysteria"]
+                    F -->|hy2 / hysteria2| HY22["→ Hysteria2"]
+                    F -->|ssr / shadowsocksr| SSR2["→ SSR"]
+                  end
+                  M -.->|DUPLICATE| F
+                  classDef warn fill:#fef3c7,stroke:#d97706
+                  class M,F warn
+              </pre>
+            </div>
+            <div class="rounded-lg border border-slate-200 bg-white p-4 flex items-center justify-center">
+              <div class="text-center">
+                <div class="badge-done text-white text-xs font-semibold px-2 py-0.5 rounded inline-block mb-2">After</div>
+                <pre class="mermaid text-xs">flowchart LR
+                  subgraph extract_urls
+                    L[SchemeX::from_str(s)]
+                  end
+                  subgraph schemex.rs
+                    F[Single source of truth]
+                  end
+                  L -.->|delegates to| F
+                  classDef deep fill:#0f172a,stroke:#1e293b,color:#fff
+                  class L,F deep</pre>
+              </div>
+            </div>
+          </div>
+
+          <div class="grid grid-cols-3 gap-4 text-sm">
+            <div>
+              <h3 class="font-semibold text-xs uppercase tracking-wider text-slate-500 mb-1">Problem</h3>
+              <p class="text-slate-700"><code>extract_urls()</code> in <code>telegram.rs</code> maintained its own scheme alias map (~15 entries). <code>SchemeX::from_str</code> had the same aliases. Two sources of truth, could drift.</p>
+            </div>
+            <div>
+              <h3 class="font-semibold text-xs uppercase tracking-wider text-slate-500 mb-1">Implementation</h3>
+              <p class="text-slate-700">Replaced 21-line manual match block with <code>SchemeX::from_str(s.trim_start()).unwrap().to_string()</code>. The <code>https</code> guard for <code>t.me/socks?</code> / <code>t.me/proxy?</code> was a no-op — both branches produced <code>"https"</code> — actual filtering happens in <code>TgConfig::try_parse</code> via <code>raw.userinfo == "t.me"</code>. <code>use std::borrow::Cow</code> removed.</p>
+            </div>
+            <div>
+              <h3 class="font-semibold text-xs uppercase tracking-wider text-slate-500 mb-1">Wins</h3>
+              <ul class="list-disc list-inside text-slate-700 space-y-0.5">
+                <li>Single source of truth for scheme aliases</li>
+                <li>New schemes automatically work in Telegram extraction</li>
+                <li>21 lines → 1 line</li>
+              </ul>
+            </div>
+          </div>
+        </article>
+
+      </section>
+
+      <section id="top-recommendation" class="bg-slate-900 text-white rounded-lg p-8 space-y-3">
+        <h2 class="text-2xl font-serif font-bold">Status: 4/5 done</h2>
+        <p class="text-slate-300">
+          <strong class="text-white">Implemented:</strong> Pipeline orchestration seam (#1), ProtocolConfig delegation (#2), Database time-travel upsert tests (#4), Duplicate scheme normalization (#5).
+        </p>
+        <p class="text-slate-300">
+          <strong class="text-white">Pending:</strong> Config file read twice + URL normalization in 3 places (#3) — next candidate.
+        </p>
+        <p class="text-slate-300">
+          <strong class="text-white">Cross-cutting:</strong> 5 pre-existing test failures resolved (85 passing, 3 ignored). <code>enum_dispatch</code> dependency removed. 4 pipeline tests and 7 database tests added.
+        </p>
+        <p class="text-slate-400 text-sm">
+          <a href="#candidates" class="underline hover:text-white">Review all candidates</a>
+        </p>
+      </section>
+
+    </main>
+  </body>
+</html>

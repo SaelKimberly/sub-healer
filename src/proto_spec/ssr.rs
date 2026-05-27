@@ -114,8 +114,7 @@ impl ProtoSpec for SsrConfig {
                 .unwrap_or(r)
         });
 
-        let parsed_host = utils::parse_host(&raw_host)
-            .map_err(|e| ParseError::InvalidHost(format!("{raw_host}: {e}").into()))?;
+        let parsed_host = utils::parse_host(&raw_host)?;
         let parsed_port: u16 = raw_port
             .parse()
             .map_err(|_| ParseError::InvalidPort(raw_port.to_string().into()))?;

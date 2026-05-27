@@ -106,8 +106,7 @@ impl ProtoSpec for StormdnsConfig {
             .and_then(|v| v.as_str())
             .ok_or_else(|| ParseError::MissingConf("profile.server.domain".into()))?;
 
-        let parsed_host = utils::parse_host(domain)
-            .map_err(|e| ParseError::InvalidHost(format!("{domain}: {e}").into()))?;
+        let parsed_host = utils::parse_host(domain)?;
 
         let encryption_key = server
             .get("encryption_key")
