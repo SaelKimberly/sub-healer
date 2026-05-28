@@ -1,8 +1,11 @@
 //! Very permissive parser for JSON-ish data in raw subscriptions.
 //! Uses hand-rolled UTF-8/percent-decoding character source.
 
+use std::str::FromStr;
+
+use serde_json::{Map, Number, Value};
+
 use super::fast_perc::AutoChars;
-use super::unescaper::Unescaper;
 
 type PResult<T> = Result<T, PermissiveJsonError>;
 
@@ -27,536 +30,360 @@ impl core::fmt::Display for PermissiveJsonError {
 
 impl std::error::Error for PermissiveJsonError {}
 
-#[repr(transparent)]
-struct Opens(u64);
-
-const OBJ: u64 = 0b01;
-const ARR: u64 = 0b10;
-const MOV: usize = 2;
-
-impl Opens {
-    #[inline]
-    const fn push_obj(&mut self) {
-        self.0 = (self.0 << MOV) | OBJ;
-    }
-    #[inline]
-    const fn push_arr(&mut self) {
-        self.0 = (self.0 << MOV) | ARR;
-    }
-    #[inline]
-    const fn pop(&mut self) -> Option<bool> {
-        let Some(result) = self.last() else {
-            return None;
-        };
-        self.0 >>= MOV;
-        Some(result)
-    }
-    #[inline]
-    const fn last(&self) -> Option<bool> {
-        match self.0 & 0b11 {
-            OBJ => Some(true),
-            ARR => Some(false),
-            _ => None,
-        }
-    }
+#[cfg_attr(test, derive(Debug))]
+enum Container {
+    Arr(Vec<Value>),
+    Obj(Map<String, Value>, Option<String>),
 }
-
-#[derive(Debug)]
-enum JsonToken {
-    Comma,
-    Colon,
-    Key(String),
-    Val(serde_json::Value),
-    ArrStart,
-    ObjStart,
-    ArrClose,
-    ObjClose,
+#[derive(Default)]
+#[cfg_attr(test, derive(Debug))]
+struct JsonBuilder {
+    stack: Vec<Container>,
+    root: Option<Value>,
 }
-
-enum Path {
-    Key(String),
-    Index(usize),
-}
-
-struct Cursor {
-    base: Option<serde_json::Value>,
-    path: Vec<Path>,
-    head: *mut serde_json::Value,
-    _marker: std::marker::PhantomPinned,
-}
-
-impl Cursor {
-    const fn new() -> Self {
-        Self {
-            base: None,
-            path: Vec::new(),
-            head: std::ptr::null_mut(),
-            _marker: std::marker::PhantomPinned,
-        }
+impl JsonBuilder {
+    pub const fn object(&self) -> bool {
+        matches!(self.stack.as_slice(), &[.., Container::Obj(_, _)])
     }
-
-    const fn head_arr(&mut self) -> PResult<&mut Vec<serde_json::Value>> {
-        let Some(serde_json::Value::Array(a)) = (unsafe { self.head.as_mut() }) else {
-            return Err(PermissiveJsonError::InvalidSyntax);
-        };
-        Ok(a)
+    pub fn begin_obj(&mut self) {
+        self.stack.push(Container::Obj(Map::default(), None));
     }
-    const fn head_obj(&mut self) -> PResult<&mut serde_json::Map<String, serde_json::Value>> {
-        let Some(serde_json::Value::Object(o)) = (unsafe { self.head.as_mut() }) else {
-            return Err(PermissiveJsonError::InvalidSyntax);
-        };
-        Ok(o)
+    pub fn begin_arr(&mut self) {
+        self.stack.push(Container::Arr(Vec::default()));
     }
-
-    fn update_head(&mut self) -> PResult<()> {
-        let mut container_ref: &mut _ = self
-            .base
-            .get_or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
-
-        for elem in &self.path {
-            container_ref = match elem {
-                Path::Key(k) => {
-                    let serde_json::Value::Object(o) = container_ref else {
-                        return Err(PermissiveJsonError::InvalidSyntax);
-                    };
-                    o.get_mut(k).ok_or(PermissiveJsonError::InvalidSyntax)?
-                }
-                Path::Index(i) => {
-                    let serde_json::Value::Array(a) = container_ref else {
-                        return Err(PermissiveJsonError::InvalidSyntax);
-                    };
-                    a.get_mut(*i).ok_or(PermissiveJsonError::InvalidSyntax)?
-                }
-            };
-        }
-
-        self.head = container_ref;
-
-        Ok(())
-    }
-
-    fn add_new_container(&mut self, key: Option<String>, is_array: bool) -> PResult<()> {
-        if self.base.is_none() {
-            if is_array {
-                self.base = Some(serde_json::Value::Array(Vec::new()));
-            } else {
-                self.base = Some(serde_json::Value::Object(serde_json::Map::new()));
+    pub fn set_pending_key(&mut self, key: String) -> Result<(), PermissiveJsonError> {
+        match self.stack.last_mut() {
+            Some(Container::Obj(_, pending)) => {
+                *pending = Some(key);
+                Ok(())
             }
-            self.head = self.base.as_mut().unwrap();
-            return Ok(());
+            _ => Err(PermissiveJsonError::InvalidSyntax),
         }
+    }
+    pub fn end_obj(&mut self) -> Result<(), PermissiveJsonError> {
+        let Some(Container::Obj(map, _)) = self.stack.pop() else {
+            return Err(PermissiveJsonError::InvalidSyntax);
+        };
+        self.insert_completed_value(Value::Object(map))
+    }
+    pub fn end_arr(&mut self) -> Result<(), PermissiveJsonError> {
+        let Some(Container::Arr(arr)) = self.stack.pop() else {
+            return Err(PermissiveJsonError::InvalidSyntax);
+        };
+        self.insert_completed_value(Value::Array(arr))
+    }
+    pub fn insert_completed_value(&mut self, value: Value) -> Result<(), PermissiveJsonError> {
+        match self.stack.last_mut() {
+            None => {
+                self.root = Some(value);
+                Ok(())
+            }
+            Some(Container::Obj(map, pending)) => {
+                pending
+                    .take()
+                    .map_or(Err(PermissiveJsonError::InvalidSyntax), |key| {
+                        map.insert(key, value);
+                        Ok(())
+                    })
+            }
+            Some(Container::Arr(arr)) => {
+                arr.push(value);
+                Ok(())
+            }
+        }
+    }
+}
+#[cfg_attr(test, derive(Debug))]
+struct JsonReader<'a> {
+    char_iter: AutoChars<'a>,
+    last_char: char,
+    json: JsonBuilder,
+}
 
-        if let Some(k) = key {
-            let o = self.head_obj()?;
-            o.insert(
-                k.clone(),
-                if is_array {
-                    serde_json::Value::Array(Vec::new())
-                } else {
-                    serde_json::Value::Object(serde_json::Map::new())
+const fn next_char_impl(char_iter: &mut AutoChars) -> PResult<char> {
+    match char_iter.next() {
+        Some(c) => Ok(c),
+        None if char_iter.remaining().is_empty() => Err(PermissiveJsonError::Eof),
+        None => Err(PermissiveJsonError::InvalidEncoding),
+    }
+}
+
+impl<'a> JsonReader<'a> {
+    const fn create(input: &'a [u8]) -> PResult<Self> {
+        let mut char_iter = AutoChars::new(input);
+        match next_char_impl(&mut char_iter) {
+            Ok(last_char) => Ok(Self {
+                char_iter,
+                last_char,
+                json: JsonBuilder {
+                    stack: Vec::new(),
+                    root: None,
                 },
-            );
-            self.path.push(Path::Key(k));
-        } else {
-            let new_index = {
-                let a = self.head_arr()?;
-                a.push(if is_array {
-                    serde_json::Value::Array(Vec::new())
+            }),
+            Err(e) => Err(e),
+        }
+    }
+
+    fn try_consume(mut self) -> PResult<(Value, &'a [u8])> {
+        loop {
+            // #[cfg(test)]
+            // eprintln!("{:#?}", &self);
+            if let Some(root) = self.json.root.take() {
+                return Ok((root, self.char_iter.remaining()));
+            }
+
+            if self.json.object() {
+                if let Err(e) = self.read_key() {
+                    match self.last_char {
+                        '}' | ']' => {}
+                        _ => return Err(e),
+                    }
                 } else {
-                    serde_json::Value::Object(serde_json::Map::new())
-                });
-                a.len() - 1
-            };
-            self.path.push(Path::Index(new_index));
-        }
-
-        self.update_head().expect("Never fails here");
-
-        Ok(())
-    }
-
-    fn move_up(&mut self) {
-        _ = self.path.pop();
-        self.update_head().expect("Never fails here");
-    }
-
-    fn push_kv(&mut self, key: Option<String>, value: serde_json::Value) -> PResult<()> {
-        if let Some(key) = key {
-            let o = self.head_obj()?;
-            o.insert(key, value);
-        } else {
-            let a = self.head_arr()?;
-            a.push(value);
-        }
-        Ok(())
-    }
-
-    fn finalize(self) -> PResult<serde_json::Value> {
-        self.base.ok_or(PermissiveJsonError::EmptyInput)
-    }
-}
-
-fn tokens_to_new_json(tokens: Vec<JsonToken>) -> PResult<serde_json::Value> {
-    let mut cursor = Cursor::new();
-    let mut key = Option::<String>::None;
-
-    for t in tokens {
-        match t {
-            JsonToken::Key(s) => {
-                let None = key.replace(s) else {
-                    return Err(PermissiveJsonError::InvalidSyntax);
-                };
+                    _ = self.next_char()?;
+                }
             }
-            JsonToken::ArrStart => {
-                cursor.add_new_container(key.take(), true)?;
-            }
-            JsonToken::ArrClose | JsonToken::ObjClose => {
-                cursor.move_up();
-            }
-            JsonToken::ObjStart => {
-                cursor.add_new_container(key.take(), false)?;
-            }
-            JsonToken::Colon | JsonToken::Comma => {}
-            JsonToken::Val(v) => {
-                cursor.push_kv(key.take(), v)?;
+            self.read_val()?;
+
+            while self.skip_while_whitespace(None)? == ',' {
+                _ = self.next_char()?;
             }
         }
     }
-    cursor.finalize()
 }
-
-struct Tokenizer<'a> {
-    iter: AutoChars<'a>,
-    last_c: char,
-    tokens: Vec<JsonToken>,
-}
-
-impl<'a> Tokenizer<'a> {
-    fn new(input: &'a [u8]) -> PResult<Self> {
-        let mut iter = AutoChars::new(input);
-        let last_c = iter.next().ok_or(PermissiveJsonError::EmptyInput)?;
-        Ok(Self {
-            iter,
-            last_c,
-            tokens: Vec::new(),
-        })
-    }
-
+impl JsonReader<'_> {
     const fn next_char(&mut self) -> PResult<char> {
-        match self.iter.next() {
-            Some(c) => {
-                self.last_c = c;
+        match next_char_impl(&mut self.char_iter) {
+            Ok(c) => {
+                self.last_char = c;
                 Ok(c)
             }
-            None if self.iter.remaining().is_empty() => Err(PermissiveJsonError::Eof),
-            None => Err(PermissiveJsonError::InvalidEncoding),
+            Err(e) => Err(e),
+        }
+    }
+    fn skip_while_whitespace(&mut self, mut opt_out: Option<&mut String>) -> PResult<char> {
+        loop {
+            if self.last_char.is_whitespace() || matches!(self.last_char, '+') {
+                if let Some(out) = opt_out.as_mut() {
+                    out.push(self.last_char);
+                }
+                _ = self.next_char()?;
+            } else {
+                break Ok(self.last_char);
+            }
         }
     }
 
-    fn skip_ws(&mut self) -> PResult<()> {
-        while self.last_c.is_whitespace() || self.last_c == '+' {
-            self.next_char()?;
+    fn take_text(
+        &mut self,
+        out: &mut String,
+        predicate: impl Fn(char) -> bool,
+        esc_char: Option<char>,
+    ) -> PResult<()> {
+        loop {
+            if let Some(esc_char) = esc_char
+                && self.last_char == esc_char
+            {
+                let ch = self.next_char()?;
+                out.push(esc_char);
+                out.push(ch);
+            } else if predicate(self.last_char) {
+                out.push(self.last_char);
+            } else {
+                return Ok(());
+            }
+            match self.next_char() {
+                Ok(_) => {}
+                Err(PermissiveJsonError::Eof) => return Ok(()),
+                Err(e) => return Err(e),
+            }
+        }
+    }
+
+    #[inline]
+    fn read_key(&mut self) -> PResult<()> {
+        let key = self.read_any_data_and_verify(&[':'])?;
+        self.json.set_pending_key(key)
+    }
+    fn read_val_raw(&mut self) -> PResult<String> {
+        self.read_any_data_and_verify(&[',', ']', '}'])
+    }
+
+    fn read_val(&mut self) -> PResult<()> {
+        match self.skip_while_whitespace(None)? {
+            '{' => {
+                self.json.begin_obj();
+                self.next_char()?;
+            }
+            '[' => {
+                self.json.begin_arr();
+                self.next_char()?;
+            }
+            '}' => {
+                self.json.end_obj()?;
+                if self.json.root.is_none() {
+                    self.next_char()?;
+                }
+            }
+            ']' => {
+                self.json.end_arr()?;
+                if self.json.root.is_none() {
+                    self.next_char()?;
+                }
+            }
+            _ => {
+                let val_raw = self.read_val_raw()?;
+
+                let v = match val_raw.as_bytes() {
+                    [c @ (b'0'..=b'9')] => Value::Number(Number::from(c - b'0')),
+                    n @ [b'1'..=b'9', ..]
+                        if let Ok(s) = str::from_utf8(n)
+                            && s.chars().all(|c| c.is_ascii_digit()) =>
+                    {
+                        <i64 as FromStr>::from_str(val_raw.as_str()).map_or_else(
+                            |_| Value::String(val_raw),
+                            |v| Value::Number(Number::from(v)),
+                        )
+                    }
+                    [b't' | b'T', b'r', b'u', b'e'] => Value::Bool(true),
+                    [b'F' | b'f', b'a', b'l', b's', b'e'] => Value::Bool(false),
+                    [b'N', b'o', b'n', b'e'] | [b'n', b'u', b'l', b'l'] => Value::Null,
+                    _ => <i64 as FromStr>::from_str(val_raw.as_str())
+                        .map_or_else(
+                            |_| {
+                                <f64 as FromStr>::from_str(val_raw.as_str()).map_or_else(
+                                    |_| None,
+                                    |v| Number::from_f64(v).map(Value::Number),
+                                )
+                            },
+                            |v| Some(Value::Number(Number::from(v))),
+                        )
+                        .unwrap_or(Value::String(val_raw)),
+                };
+                return self.json.insert_completed_value(v);
+            }
         }
         Ok(())
     }
 
-    const fn test_ctrl(&self) -> Option<JsonToken> {
-        match self.last_c {
-            '{' => Some(JsonToken::ObjStart),
-            '}' => Some(JsonToken::ObjClose),
-            '[' => Some(JsonToken::ArrStart),
-            ']' => Some(JsonToken::ArrClose),
-            ':' => Some(JsonToken::Colon),
-            ',' => Some(JsonToken::Comma),
-            _ => None,
+    // Read all characters from current (last_char):
+    // If current char is a quote, then read to the next not escaped quote.
+    // If current char is not a quote, read with restrictive allowlist
+    // When reading done, verify, that next non-whitespace character is in verification asset.
+
+    fn apply_unescape(val: &str, is_value: bool) -> String {
+        if is_value {
+            super::unescaper::Unescaper::default()
+                .chardet(true, true)
+                .enc8259(true)
+                .enc_uni(true)
+                .do_unescape(val.as_bytes())
+                .expect("unescape ok")
+        } else {
+            super::unescaper::Unescaper::default()
+                .enc8259(true)
+                .do_unescape(val.as_bytes())
+                .expect("unescape ok")
         }
     }
 
-    fn test_text(&mut self, is_value: bool) -> PResult<Option<String>> {
-        if let eof @ ('"' | '\'') = self.last_c {
-            let bos = self.iter.bytes_read();
+    fn read_any_data_and_verify(&mut self, verification_asset: &'static [char]) -> PResult<String> {
+        if verification_asset.is_empty() {
+            unreachable!("should never be used if empty")
+        }
+        let c = self.skip_while_whitespace(None)?;
 
-            let mut esc = false;
-            let mut txt = String::new();
+        let mut key = String::new();
+        if let eof @ ('"' | '\'') = c {
+            _ = self.next_char()?;
+            let is_value = verification_asset.len() > 1 || verification_asset[0] != ':';
+            loop {
+                self.take_text(&mut key, |c| c != eof, Some('\\'))?;
+                let mut key_length = key.len();
+                key.push('\\');
+                key.push(eof);
 
-            let txt: String = 'outer: loop {
-                match self.next_char() {
-                    Ok(c) => {
-                        if esc {
-                            esc = false;
-                        } else if c == '\\' {
-                            esc = true;
-                            txt.push('\\');
-                            continue;
-                        } else if c == eof {
-                            let cur_length = txt.len();
-                            // Loop used here to collect whitespace characters before next
-                            // non-control character found (if any)
-                            loop {
-                                match self.next_char() {
-                                    Err(PermissiveJsonError::Eof) => break 'outer txt,
-                                    Err(e) => return Err(e),
-                                    // For value, control characters is limited to these
-                                    // If found any, treat original txt as final
-                                    Ok(',' | ']' | '}') if is_value => {
-                                        txt.truncate(cur_length);
-                                        break 'outer txt;
-                                    }
-                                    // For key, control characters is limited to these
-                                    // If found any, treat original txt as final
-                                    Ok(':') if !is_value => {
-                                        txt.truncate(cur_length);
-                                        break 'outer txt;
-                                    }
-                                    // Non-control characters will treat txt as non-final
-                                    // If they are whitespace, then continue reading, until verification character found
-                                    // Otherwise proceed 'outer loop
-                                    Ok(c) => {
-                                        txt.push('\\');
-                                        txt.push(eof);
-                                        txt.push(c);
-                                        if !c.is_whitespace() {
-                                            continue 'outer;
-                                        }
-                                    }
-                                }
-                            }
+                let check = loop {
+                    match self.next_char() {
+                        Err(PermissiveJsonError::Eof) => {
+                            key.truncate(key_length);
+                            let raw = core::mem::take(&mut key);
+                            return Ok(Self::apply_unescape(&raw, is_value));
                         }
-                        txt.push(c);
+                        Err(e) => return Err(e),
+                        Ok(_) => {}
                     }
-                    Err(PermissiveJsonError::Eof) => {
-                        if self.iter.bytes_read() == bos {
-                            return Err(PermissiveJsonError::Eof);
+                    match self.skip_while_whitespace(Some(&mut key)) {
+                        Err(PermissiveJsonError::Eof) => {
+                            key.truncate(key_length);
+                            let raw = core::mem::take(&mut key);
+                            return Ok(Self::apply_unescape(&raw, is_value));
                         }
-                        break txt;
+                        Err(e) => return Err(e),
+                        Ok(c) if c == eof => {
+                            key_length = key.len();
+                            key.push('\\');
+                            key.push(eof);
+                        }
+                        Ok(c) => break c,
+                    }
+                };
+
+                if verification_asset.contains(&check) {
+                    key.truncate(key_length);
+                    let raw = core::mem::take(&mut key);
+                    return Ok(Self::apply_unescape(&raw, is_value));
+                }
+
+                // check is not a delimiter — it's part of the value text
+                // It was consumed from iterator by next_char above.
+                // Push it to key and advance past it so take_text doesn't
+                // double-process it (which would mess up \ escape handling).
+                key.push(check);
+                match self.next_char() {
+                    Err(PermissiveJsonError::Eof) => {
+                        key.push('\\');
+                        key.push(eof);
+                        let raw = core::mem::take(&mut key);
+                        return Ok(Self::apply_unescape(&raw, is_value));
                     }
                     Err(e) => return Err(e),
+                    Ok(_) => {}
                 }
-            };
-
-            let unescaper = if is_value {
-                Unescaper::default()
-                    .chardet(true, true)
-                    .enc8259(true)
-                    .enc_uni(true)
-            } else {
-                Unescaper::default().enc8259(true)
-            };
-
-            let txt = unescaper
-                .do_unescape(txt.as_bytes())
-                .expect("As all unescape should be ok");
-
-            Ok(Some(txt))
+                match self.skip_while_whitespace(Some(&mut key)) {
+                    Err(PermissiveJsonError::Eof) => {
+                        key.push('\\');
+                        key.push(eof);
+                        let raw = core::mem::take(&mut key);
+                        return Ok(Self::apply_unescape(&raw, is_value));
+                    }
+                    Err(e) => return Err(e),
+                    Ok(_) => {}
+                }
+            }
         } else {
-            Ok(None)
+            self.take_text(
+                &mut key,
+                |c| matches!(c,'A'..='Z' | 'a'..='z' | '0'..='9' | '_' | '-' | '.'),
+                None,
+            )?;
+            if verification_asset.contains(&self.last_char) {
+                return Ok(key);
+            }
+            if self.char_iter.remaining().is_empty() && !key.is_empty() {
+                return Ok(key);
+            }
         }
-    }
-
-    fn test_ukey(&mut self) -> PResult<String> {
-        self.skip_ws()?;
-        let mut key = String::new();
-
-        loop {
-            match self.last_c {
-                ':' => break,
-                c @ ('A'..='Z' | 'a'..='z' | '0'..='9' | '_' | '-') => {
-                    key.push(c);
-                }
-                '"' | '\'' => {
-                    // detected mismatched closing bracket — skip it
-                }
-                _ => return Err(PermissiveJsonError::InvalidSyntax),
+        if matches!(self.last_char, '"' | '\'') {
+            _ = self.next_char()?;
+            if verification_asset.contains(&self.skip_while_whitespace(None)?) {
+                return Ok(key);
             }
-
-            self.next_char()?;
-
-            if self.last_c.is_whitespace() {
-                break;
-            }
+            return Err(PermissiveJsonError::InvalidSyntax);
+        }
+        if !verification_asset.contains(&self.skip_while_whitespace(None)?) {
+            return Err(PermissiveJsonError::InvalidSyntax);
         }
         Ok(key)
-    }
-
-    fn test_uval(&mut self, in_object: bool) -> PResult<serde_json::Value> {
-        let positive = if self.last_c == '-' {
-            self.next_char()?;
-            false
-        } else {
-            true
-        };
-        let mut maybe_num = self.last_c.is_ascii_digit();
-        let mut e_appeared = false;
-        let mut p_appeared = false;
-        let mut value_repr = String::new();
-
-        loop {
-            if self.last_c.is_whitespace() {
-                break;
-            }
-            if matches!(self.last_c, '"' | '\'') {
-                maybe_num = false;
-                break;
-            }
-            match self.last_c {
-                ',' => break,
-                '}' if in_object => break,
-                ']' if !in_object => break,
-                '{' | '[' | ':' => return Err(PermissiveJsonError::InvalidSyntax),
-                _ => {}
-            }
-
-            match self.last_c {
-                '0'..='9' => value_repr.push(self.last_c),
-                'e' | 'E' => {
-                    if maybe_num && e_appeared {
-                        maybe_num = false;
-                    } else {
-                        e_appeared = true;
-                    }
-                    value_repr.push('e');
-                }
-                '.' => {
-                    if maybe_num && (p_appeared || e_appeared) {
-                        maybe_num = false;
-                    } else {
-                        p_appeared = true;
-                    }
-                    value_repr.push(self.last_c);
-                }
-                _ => {
-                    maybe_num = false;
-                    value_repr.push(self.last_c);
-                }
-            }
-
-            self.next_char()?;
-        }
-
-        let v = if maybe_num {
-            if p_appeared || e_appeared {
-                value_repr
-                    .parse::<f64>()
-                    .map_or(serde_json::Value::String(value_repr), |v| {
-                        let Some(v) = serde_json::Number::from_f64(if positive { v } else { -v })
-                        else {
-                            unreachable!()
-                        };
-                        serde_json::Value::Number(v)
-                    })
-            } else if let Ok(v) = value_repr.parse::<i64>() {
-                serde_json::Value::Number(serde_json::Number::from(if positive { v } else { -v }))
-            } else {
-                serde_json::Value::String(value_repr)
-            }
-        } else {
-            match value_repr.as_str().trim() {
-                "None" | "null" => serde_json::Value::Null,
-                "True" | "true" => serde_json::Value::Bool(true),
-                "False" | "false" => serde_json::Value::Bool(false),
-                _ => serde_json::Value::String(value_repr),
-            }
-        };
-        Ok(v)
-    }
-
-    fn expect_key(&mut self) -> PResult<String> {
-        self.test_text(false)?.map_or_else(|| self.test_ukey(), Ok)
-    }
-
-    fn expect_val(&mut self, in_object: bool) -> PResult<serde_json::Value> {
-        self.test_text(true)?.map_or_else(
-            || self.test_uval(in_object),
-            |v| Ok(serde_json::Value::String(v)),
-        )
-    }
-
-    fn tokenize(&mut self) -> PResult<(&'a [u8], serde_json::Value)> {
-        let mut opens = Opens(0);
-
-        if self.test_ctrl().is_none() {
-            return match (self.last_c, self.iter.remaining().split_at_checked(3)) {
-                ('N' | 'n', Some((b"one" | b"ull", tail))) => Ok((tail, serde_json::Value::Null)),
-                _ => Err(PermissiveJsonError::InvalidSyntax),
-            };
-        }
-
-        let mut allow_comma = false;
-        let mut allow_colon = false;
-        let mut in_object = false;
-
-        'tokenize: loop {
-            'ctrl: loop {
-                self.skip_ws()?;
-
-                let Some(t) = self.test_ctrl() else {
-                    break 'ctrl;
-                };
-
-                match t {
-                    JsonToken::ArrStart => {
-                        opens.push_arr();
-                        allow_comma = false;
-                        allow_colon = false;
-                    }
-                    JsonToken::ObjStart => {
-                        opens.push_obj();
-                        allow_comma = false;
-                        allow_colon = false;
-                    }
-                    JsonToken::ArrClose if opens.pop() == Some(false) => {
-                        allow_comma = true;
-                    }
-                    JsonToken::ObjClose if opens.pop() == Some(true) => {
-                        allow_comma = true;
-                    }
-                    JsonToken::Comma if allow_comma => {}
-                    JsonToken::Colon if allow_colon => {}
-                    _ => return Err(PermissiveJsonError::InvalidSyntax),
-                }
-
-                if let JsonToken::ArrClose | JsonToken::ObjClose = t
-                    && matches!(self.tokens.last(), Some(JsonToken::Comma))
-                {
-                    _ = self.tokens.pop();
-                }
-                self.tokens.push(t);
-
-                let Some(is_in_object) = opens.last() else {
-                    break 'tokenize;
-                };
-                in_object = is_in_object;
-
-                self.next_char()?;
-            }
-
-            if in_object {
-                if let Some(JsonToken::ObjStart | JsonToken::Comma) = self.tokens.last() {
-                    let key = self.expect_key()?;
-                    self.tokens.push(JsonToken::Key(key));
-                    allow_colon = true;
-                    allow_comma = false;
-                } else if matches!(self.tokens.last(), Some(JsonToken::Colon)) {
-                    let val = self.expect_val(true)?;
-                    self.tokens.push(JsonToken::Val(val));
-                    allow_colon = false;
-                    allow_comma = true;
-                } else {
-                    return Err(PermissiveJsonError::InvalidSyntax);
-                }
-            } else if let Some(JsonToken::ArrStart | JsonToken::Comma) = self.tokens.last() {
-                let val = self.expect_val(false)?;
-                self.tokens.push(JsonToken::Val(val));
-                allow_colon = false;
-                allow_comma = true;
-            } else {
-                return Err(PermissiveJsonError::InvalidSyntax);
-            }
-        }
-
-        let remaining = self.iter.remaining();
-        let json = tokens_to_new_json(core::mem::take(&mut self.tokens))?;
-        Ok((remaining, json))
     }
 }
 
@@ -566,10 +393,8 @@ impl<'a> Tokenizer<'a> {
 ///
 /// Returns an error if the input is not valid or recoverable JSON.
 pub fn permissive_json_core(input: &[u8]) -> PResult<(&[u8], serde_json::Value)> {
-    if let Ok(value) = serde_json::from_slice::<serde_json::Value>(input) {
-        return Ok((b"", value));
-    }
-    Tokenizer::new(input)?.tokenize()
+    let (value, remaining) = JsonReader::create(input)?.try_consume()?;
+    Ok((remaining, value))
 }
 
 /// Parse a JSON value from a byte slice, with some leniency.
@@ -598,57 +423,47 @@ pub fn permissive_json(input: &[u8]) -> PResult<serde_json::Value> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Tokenizer, permissive_json};
+    use super::permissive_json_core;
+    use super::{PResult, permissive_json};
 
     #[test]
-    fn test_tokenizer() {
-        let data = b"None";
-        let mut t = Tokenizer::new(data.as_slice()).expect("new failed");
-        let (tail, res) = t.tokenize().expect("tokenize failed");
-        eprintln!("{tail:?}");
-        eprintln!("{res:?}");
+    fn test_tokenizer() -> PResult<()> {
+        let (tail, res) = permissive_json_core(b"None")?;
+        assert_eq!(res, serde_json::Value::Null);
+        assert!(tail.is_empty(), "tail: {tail:?}");
 
-        let data = b"{}";
-        let mut t = Tokenizer::new(data.as_slice()).expect("new failed");
-        let (tail, res) = t.tokenize().expect("tokenize failed");
-        eprintln!("{tail:?}");
-        eprintln!("{res:?}");
+        let (tail, res) = permissive_json_core(b"{}")?;
+        assert_eq!(res, serde_json::json!({}));
+        assert!(tail.is_empty(), "tail: {tail:?}");
 
-        let data = b"{'key':'val'}";
-        let mut t = Tokenizer::new(data.as_slice()).expect("new failed");
-        let (tail, res) = t.tokenize().expect("tokenize failed");
-        eprintln!("{tail:?}");
-        eprintln!("{res:?}");
+        let (tail, res) = permissive_json_core(b"{'key':'val'}")?;
+        assert_eq!(res, serde_json::json!({"key": "val"}));
+        assert!(tail.is_empty(), "tail: {tail:?}");
 
-        let data = b"{'key':[['val',],],}";
-        let mut t = Tokenizer::new(data.as_slice()).expect("new failed");
-        let (tail, res) = t.tokenize().expect("tokenize failed");
-        eprintln!("{tail:?}");
-        eprintln!("{res:?}");
+        let (tail, res) = permissive_json_core(b"{'key':[['val',],],}")?;
+        assert_eq!(res, serde_json::json!({"key": [["val"]]}));
+        assert!(tail.is_empty(), "tail: {tail:?}");
 
-        let data = b"{'key':[[{'val':null}]]}";
-        let mut t = Tokenizer::new(data.as_slice()).expect("new failed");
-        let (tail, res) = t.tokenize().expect("tokenize failed");
-        eprintln!("{tail:?}");
-        eprintln!("{res:?}");
+        let (tail, res) = permissive_json_core(b"{'key':[[{'val':null}]]}")?;
+        assert_eq!(res, serde_json::json!({"key": [[{"val": null}]]}));
+        assert!(tail.is_empty(), "tail: {tail:?}");
 
-        let data = b"{key:[[{'val':null}]]}";
-        let mut t = Tokenizer::new(data.as_slice()).expect("new failed");
-        let (tail, res) = t.tokenize().expect("tokenize failed");
-        eprintln!("{tail:?}");
-        eprintln!("{res:?}");
+        let (tail, res) = permissive_json_core(b"{key:[[{'val':null}]]}")?;
+        assert_eq!(res, serde_json::json!({"key": [[{"val": null}]]}));
+        assert!(tail.is_empty(), "tail: {tail:?}");
 
-        let data = b"{var-length-key:[[{'some val':null}]]}";
-        let mut t = Tokenizer::new(data.as_slice()).expect("new failed");
-        let (tail, res) = t.tokenize().expect("tokenize failed");
-        eprintln!("{tail:?}");
-        eprintln!("{res:?}");
+        let (tail, res) = permissive_json_core(b"{var-length-key:[[{'some val':null}]]}")?;
+        assert_eq!(
+            res,
+            serde_json::json!({"var-length-key": [[{"some val": null}]]})
+        );
+        assert!(tail.is_empty(), "tail: {tail:?}");
 
-        let data = b"%7B%22key%22%3A%22value%22%7D";
-        let mut t = Tokenizer::new(data.as_slice()).expect("new failed");
-        let (tail, res) = t.tokenize().expect("tokenize failed");
-        eprintln!("{tail:?}");
-        eprintln!("{res:?}");
+        let (tail, res) = permissive_json_core(b"%7B%22key%22%3A%22value%22%7D")?;
+        assert_eq!(res, serde_json::json!({"key": "value"}));
+        assert!(tail.is_empty(), "tail: {tail:?}");
+
+        Ok(())
     }
 
     #[test]

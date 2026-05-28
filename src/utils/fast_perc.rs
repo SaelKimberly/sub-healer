@@ -103,7 +103,7 @@ const fn char_advance(slice: &mut &[u8], state: &mut usize) -> Option<char> {
         None
     }
 }
-
+#[cfg_attr(test, derive(Debug))]
 pub(super) struct AutoChars<'a> {
     slice: &'a [u8],
     last_e: usize,
