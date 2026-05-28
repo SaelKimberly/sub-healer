@@ -86,6 +86,10 @@ pub fn build_client() -> Result<reqwest::Client, anyhow::Error> {
 /// # Errors
 ///
 /// Returns an error if the database connection fails.
+#[allow(
+    clippy::future_not_send,
+    reason = "need some research. this is not a problem, as all works fine, but clippy complains"
+)]
 pub async fn process_config_stream(
     mut stream: impl StreamExt<Item = TracedProtocolConfig> + std::marker::Unpin,
     conn: &rusqlite::Connection,
@@ -136,6 +140,10 @@ pub fn emit_unparseable_entry(
 /// # Errors
 ///
 /// Will return `Err` if the config file is invalid or the database cannot be opened.
+#[allow(
+    clippy::future_not_send,
+    reason = "need some research. this is not a problem, as all works fine, but clippy complains"
+)]
 pub async fn run_with_config(config_path: &Path, db_path: &Path) -> Result<(), anyhow::Error> {
     info!("Starting mining run with config: {}", config_path.display());
     let client = build_client()?;
@@ -257,7 +265,7 @@ mod tests {
             .await
             .unwrap();
 
-        let server_id = config.uid() as i64;
+        let server_id = config.uid().cast_signed();
         let server = crate::db::get_server(&conn, server_id).unwrap();
         assert!(server.is_some(), "server should exist after upsert");
         if let Some(s) = server {
@@ -284,7 +292,7 @@ mod tests {
             .await
             .unwrap();
 
-        let server_id = make_vmess_config().uid() as i64;
+        let server_id = make_vmess_config().uid().cast_signed();
         let sightings = crate::db::get_sightings(&conn, server_id).unwrap();
         assert!(
             sightings.len() >= 2,

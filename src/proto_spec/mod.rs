@@ -129,17 +129,39 @@ macro_rules! dispatch {
 }
 
 impl ProtoSpec for ProtocolConfig {
-    fn reconstruct(&self) -> Result<String, ParseError> { dispatch!(self, reconstruct) }
-    fn schema(&self) -> SchemeX { dispatch!(self, schema) }
-    fn host(&self) -> Option<&HostSpec> { dispatch!(self, host) }
-    fn port(&self) -> Option<u16> { dispatch!(self, port) }
-    fn remarks(&self) -> Option<&str> { dispatch!(self, remarks) }
-    fn cred_hash(&self) -> u64 { dispatch!(self, cred_hash) }
-    fn sig(&self) -> u64 { dispatch!(self, sig) }
-    fn set_sig_cache(&self, v: std::num::NonZeroU64) { dispatch!(self, set_sig_cache, v) }
-    fn security(&self) -> Option<&SecurityConfig> { dispatch!(self, security) }
-    fn transport_type(&self) -> Option<&str> { dispatch!(self, transport_type) }
-    fn security_type(&self) -> Option<&str> { dispatch!(self, security_type) }
+    fn reconstruct(&self) -> Result<String, ParseError> {
+        dispatch!(self, reconstruct)
+    }
+    fn schema(&self) -> SchemeX {
+        dispatch!(self, schema)
+    }
+    fn host(&self) -> Option<&HostSpec> {
+        dispatch!(self, host)
+    }
+    fn port(&self) -> Option<u16> {
+        dispatch!(self, port)
+    }
+    fn remarks(&self) -> Option<&str> {
+        dispatch!(self, remarks)
+    }
+    fn cred_hash(&self) -> u64 {
+        dispatch!(self, cred_hash)
+    }
+    fn sig(&self) -> u64 {
+        dispatch!(self, sig)
+    }
+    fn set_sig_cache(&self, v: std::num::NonZeroU64) {
+        dispatch!(self, set_sig_cache, v);
+    }
+    fn security(&self) -> Option<&SecurityConfig> {
+        dispatch!(self, security)
+    }
+    fn transport_type(&self) -> Option<&str> {
+        dispatch!(self, transport_type)
+    }
+    fn security_type(&self) -> Option<&str> {
+        dispatch!(self, security_type)
+    }
 
     /// # Errors
     ///
@@ -161,8 +183,8 @@ impl ProtoSpec for ProtocolConfig {
             SchemeX::WireGuard => WireguardConfig::try_parse(raw).map(Self::Wireguard),
             SchemeX::Https if raw.userinfo == "t.me" => TgConfig::try_parse(raw).map(Self::Tg),
             SchemeX::Tg => TgConfig::try_parse(raw).map(Self::Tg),
-            SchemeX::Https => return Err(ParseError::PromotionUrl),
-            SchemeX::Undefined => return Err(ParseError::PromotionUrl),
+            SchemeX::Undefined | SchemeX::Https => return Err(ParseError::PromotionUrl),
+
             ref other => return Err(ParseError::UnsupportedScheme(other.clone())),
         };
 
@@ -199,8 +221,8 @@ impl ProtoSpec for ProtocolConfig {
 
 #[cfg(test)]
 pub(crate) mod test_helpers {
-    use crate::urlx::RawUrlX;
     use super::ProtoSpec;
+    use crate::urlx::RawUrlX;
 
     pub fn check_roundtrip<T>(url: &str)
     where
@@ -209,9 +231,12 @@ pub(crate) mod test_helpers {
         let raw = RawUrlX::from(url);
         let parsed = T::try_parse(&raw).unwrap_or_else(|e| panic!("parse failed for {url}: {e}"));
         parsed.sig();
-        let reconstructed = parsed.reconstruct().unwrap_or_else(|e| panic!("reconstruct failed for {url}: {e}"));
+        let reconstructed = parsed
+            .reconstruct()
+            .unwrap_or_else(|e| panic!("reconstruct failed for {url}: {e}"));
         let re_raw = RawUrlX::from(reconstructed.as_str());
-        let reparsed = T::try_parse(&re_raw).unwrap_or_else(|e| panic!("reparse failed for {reconstructed}: {e}"));
+        let reparsed = T::try_parse(&re_raw)
+            .unwrap_or_else(|e| panic!("reparse failed for {reconstructed}: {e}"));
         reparsed.sig();
         assert_eq!(parsed, reparsed, "roundtrip failed for: {url}");
     }

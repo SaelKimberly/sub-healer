@@ -90,7 +90,7 @@ impl ProtoSpec for TrojanConfig {
         let query = utils::parse_query(raw.query);
 
         // Security mode: tls (default), none, or reality
-        let security = match query.get("security").map(|s| s.as_str()) {
+        let security = match query.get("security").map(String::as_str) {
             Some("tls") | None => SecurityConfig {
                 tls: Some(TlsConfig::Tls(TlsOpts {
                     sni: query.get("sni").cloned(),
@@ -164,16 +164,30 @@ impl ProtoSpec for TrojanConfig {
                         if opts.sni.is_some() || opts.alpn.is_some() || opts.fp.is_some() {
                             parts.push("security=tls".to_string());
                         }
-                        if let Some(ref v) = opts.sni { parts.push(format!("sni={}", urlencoding::encode(v))); }
-                        if let Some(ref v) = opts.alpn { parts.push(format!("alpn={}", urlencoding::encode(v))); }
-                        if let Some(ref v) = opts.fp { parts.push(format!("fp={}", urlencoding::encode(v))); }
+                        if let Some(ref v) = opts.sni {
+                            parts.push(format!("sni={}", urlencoding::encode(v)));
+                        }
+                        if let Some(ref v) = opts.alpn {
+                            parts.push(format!("alpn={}", urlencoding::encode(v)));
+                        }
+                        if let Some(ref v) = opts.fp {
+                            parts.push(format!("fp={}", urlencoding::encode(v)));
+                        }
                     }
                     TlsConfig::Reality(opts) => {
                         parts.push("security=reality".to_string());
-                        if let Some(ref v) = opts.sni { parts.push(format!("sni={}", urlencoding::encode(v))); }
-                        if let Some(ref v) = opts.fp { parts.push(format!("fp={}", urlencoding::encode(v))); }
-                        if let Some(ref v) = opts.pbk { parts.push(format!("pbk={}", urlencoding::encode(v))); }
-                        if let Some(ref v) = opts.sid { parts.push(format!("sid={}", urlencoding::encode(v))); }
+                        if let Some(ref v) = opts.sni {
+                            parts.push(format!("sni={}", urlencoding::encode(v)));
+                        }
+                        if let Some(ref v) = opts.fp {
+                            parts.push(format!("fp={}", urlencoding::encode(v)));
+                        }
+                        if let Some(ref v) = opts.pbk {
+                            parts.push(format!("pbk={}", urlencoding::encode(v)));
+                        }
+                        if let Some(ref v) = opts.sid {
+                            parts.push(format!("sid={}", urlencoding::encode(v)));
+                        }
                     }
                 }
             }
@@ -284,9 +298,15 @@ impl TrojanConfig {
         if let Some(ref path) = self.path {
             parts.push(path.as_bytes());
         }
-        if let Some(ref v) = self.security.sni() { parts.push(v.as_bytes()); }
-        if let Some(ref v) = self.security.alpn() { parts.push(v.as_bytes()); }
-        if let Some(ref v) = self.security.fp() { parts.push(v.as_bytes()); }
+        if let Some(v) = self.security.sni() {
+            parts.push(v.as_bytes());
+        }
+        if let Some(v) = self.security.alpn() {
+            parts.push(v.as_bytes());
+        }
+        if let Some(v) = self.security.fp() {
+            parts.push(v.as_bytes());
+        }
         rapidhash::v3::rapidhash_v3(&parts.concat())
     }
 }

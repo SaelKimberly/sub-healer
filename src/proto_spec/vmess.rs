@@ -167,7 +167,14 @@ impl ProtoSpec for VmessConfig {
             .map(String::from);
 
         let security = SecurityConfig {
-            tls: tls_str.map(|_| TlsConfig::Tls(TlsOpts { sni: sni.clone(), alpn, fp, insecure: None })),
+            tls: tls_str.map(|_| {
+                TlsConfig::Tls(TlsOpts {
+                    sni: sni.clone(),
+                    alpn,
+                    fp,
+                    insecure: None,
+                })
+            }),
             enc: scy.map(|s| crate::urlx::TinyText::from(s.as_str())),
         };
 
@@ -365,7 +372,7 @@ impl VmessConfig {
         if let Some(ref v) = self.alter_id {
             parts.push(v.as_bytes());
         }
-        if let Some(ref v) = self.security.sni() {
+        if let Some(v) = self.security.sni() {
             parts.push(v.as_bytes());
         }
         rapidhash::v3::rapidhash_v3(&parts.concat())

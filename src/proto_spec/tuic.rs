@@ -101,7 +101,8 @@ impl ProtoSpec for TuicConfig {
                 sni: query.get("sni").cloned(),
                 alpn: query.get("alpn").cloned(),
                 fp: None,
-                insecure: query.get("allow_insecure")
+                insecure: query
+                    .get("allow_insecure")
                     .or_else(|| query.get("insecure"))
                     .or_else(|| query.get("allowInsecure"))
                     .and_then(|v| match v.as_str() {
@@ -146,13 +147,13 @@ impl ProtoSpec for TuicConfig {
                 parts.push(format!("udp_relay_mode={}", urlencoding::encode(v)));
             }
             // Security config (TUIC always uses TLS)
-            if let Some(ref v) = self.security.alpn() {
+            if let Some(v) = self.security.alpn() {
                 parts.push(format!("alpn={}", urlencoding::encode(v)));
             }
             if let Some(v) = self.security.insecure() {
                 parts.push(format!("allow_insecure={}", if v { "1" } else { "0" }));
             }
-            if let Some(ref v) = self.security.sni() {
+            if let Some(v) = self.security.sni() {
                 parts.push(format!("sni={}", urlencoding::encode(v)));
             }
             if parts.is_empty() {
@@ -235,13 +236,13 @@ impl TuicConfig {
         if let Some(ref v) = self.udp_relay_mode {
             parts.push(v.as_bytes());
         }
-        if let Some(ref v) = self.security.alpn() {
+        if let Some(v) = self.security.alpn() {
             parts.push(v.as_bytes());
         }
         if let Some(v) = self.security.insecure() {
             parts.push(if v { b"true" } else { b"false" });
         }
-        if let Some(ref v) = self.security.sni() {
+        if let Some(v) = self.security.sni() {
             parts.push(v.as_bytes());
         }
         rapidhash::v3::rapidhash_v3(&parts.concat())

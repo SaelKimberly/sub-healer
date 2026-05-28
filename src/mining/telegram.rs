@@ -107,12 +107,7 @@ impl Stream for TracedConfigStream {
                     if let Some(ref unparseable) = msg.unparseable_urls {
                         for u in unparseable {
                             crate::mining::emit_unparseable_entry(
-                                &u.raw_url,
-                                &u.scheme,
-                                &u.error,
-                                source.id,
-                                "telegram",
-                                ts,
+                                &u.raw_url, &u.scheme, &u.error, source.id, "telegram", ts,
                             );
                         }
                     }
@@ -149,7 +144,11 @@ impl Stream for TracedConfigStream {
     }
 }
 
-#[allow(clippy::type_complexity)]
+#[allow(
+    clippy::type_complexity,
+    clippy::too_many_lines,
+    reason = "This is a core parser function for single message"
+)]
 fn extract_urls(
     channel_id: &str,
     msg: ElementRef<'_>,
@@ -228,13 +227,12 @@ fn extract_urls(
         .into_iter()
         .filter(|s| !s.is_empty() && !s.ends_with('…') && !s.ends_with("…»"))
     {
-        let clean = if let Some((i, _)) =
-            s.char_indices().rev().take_while(|(_, c)| *c == '`').last()
-        {
-            &s[..i]
-        } else {
-            &s
-        };
+        let clean =
+            if let Some((i, _)) = s.char_indices().rev().take_while(|(_, c)| *c == '`').last() {
+                &s[..i]
+            } else {
+                &s
+            };
         let raw: RawUrlX = clean.into();
         let raw_scheme = raw.schema.to_string();
         match ProtocolConfig::try_parse(&raw) {
@@ -555,6 +553,7 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "fetches real Telegram data; run manually to diagnose parsing warnings"]
+    #[allow(clippy::too_many_lines)]
     async fn test_fetch_tg_channel() -> anyhow::Result<()> {
         // --- Output directory ---
         let ts = Local::now().format("%Y%m%d-%H%M%S");

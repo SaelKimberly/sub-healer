@@ -574,6 +574,6 @@ mod tests {
         let ps = ps.unwrap();
         assert!(ps.contains("ConfigsHub"), "Should contain channel name");
         assert!(ps.contains("v2ray"), "Should contain description");
-        eprintln!("OK: ps={:?}", ps);
+        eprintln!("OK: ps={ps:?}");
     }
 }

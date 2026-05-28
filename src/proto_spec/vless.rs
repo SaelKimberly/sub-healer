@@ -47,7 +47,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::urlx::{HostSpec, RawUrlX, SchemeX, host_serde, port_serde};
 
-use super::common::{SecurityConfig, TlsConfig, TlsOpts, RealityOpts, TransportConfig};
+use super::common::{RealityOpts, SecurityConfig, TlsConfig, TlsOpts, TransportConfig};
 use super::utils;
 use super::{ParseError, ProtoSpec};
 
@@ -81,6 +81,7 @@ impl ProtoSpec for VlessConfig {
     ///
     /// Supports combined `userinfo@hostport` or separate hostport components.
     /// UUID validated via `uuid::Uuid::parse_str`.
+    #[allow(clippy::too_many_lines)]
     fn try_parse(raw: &RawUrlX<'_>) -> Result<Self, ParseError> {
         let (username, hostport) = if let Some(hostport) = raw.hostport {
             (raw.userinfo, hostport)
@@ -117,7 +118,7 @@ impl ProtoSpec for VlessConfig {
         });
 
         // TLS/security config
-        let security = match query.get("security").map(|s| s.as_str()) {
+        let security = match query.get("security").map(String::as_str) {
             Some("tls") => SecurityConfig {
                 tls: Some(TlsConfig::Tls(TlsOpts {
                     sni: query.get("sni").cloned(),
@@ -221,17 +222,33 @@ impl ProtoSpec for VlessConfig {
                 match tls_config {
                     TlsConfig::Tls(opts) => {
                         q.append_pair("security", "tls");
-                        if let Some(ref v) = opts.sni { q.append_pair("sni", v); }
-                        if let Some(ref v) = opts.alpn { q.append_pair("alpn", v); }
-                        if let Some(ref v) = opts.fp { q.append_pair("fp", v); }
+                        if let Some(ref v) = opts.sni {
+                            q.append_pair("sni", v);
+                        }
+                        if let Some(ref v) = opts.alpn {
+                            q.append_pair("alpn", v);
+                        }
+                        if let Some(ref v) = opts.fp {
+                            q.append_pair("fp", v);
+                        }
                     }
                     TlsConfig::Reality(opts) => {
                         q.append_pair("security", "reality");
-                        if let Some(ref v) = opts.sni { q.append_pair("sni", v); }
-                        if let Some(ref v) = opts.fp { q.append_pair("fp", v); }
-                        if let Some(ref v) = opts.pbk { q.append_pair("pbk", v); }
-                        if let Some(ref v) = opts.sid { q.append_pair("sid", v); }
-                        if let Some(ref v) = opts.spx { q.append_pair("spx", v); }
+                        if let Some(ref v) = opts.sni {
+                            q.append_pair("sni", v);
+                        }
+                        if let Some(ref v) = opts.fp {
+                            q.append_pair("fp", v);
+                        }
+                        if let Some(ref v) = opts.pbk {
+                            q.append_pair("pbk", v);
+                        }
+                        if let Some(ref v) = opts.sid {
+                            q.append_pair("sid", v);
+                        }
+                        if let Some(ref v) = opts.spx {
+                            q.append_pair("spx", v);
+                        }
                     }
                 }
             }
@@ -342,22 +359,44 @@ impl VlessConfig {
         parts.push(self.transport.type_str().as_bytes());
         match &self.transport {
             TransportConfig::HttpUpgrade(cfg) => {
-                if let Some(ref v) = cfg.host { parts.push(v.as_bytes()); }
+                if let Some(ref v) = cfg.host {
+                    parts.push(v.as_bytes());
+                }
             }
             TransportConfig::XHttp(cfg) => {
-                if let Some(ref v) = cfg.host { parts.push(v.as_bytes()); }
+                if let Some(ref v) = cfg.host {
+                    parts.push(v.as_bytes());
+                }
             }
             _ => {}
         }
-        if let Some(ref path) = self.path { parts.push(path.as_bytes()); }
-        if let Some(ref v) = self.encryption { parts.push(v.as_bytes()); }
-        if let Some(ref v) = self.security.sni() { parts.push(v.as_bytes()); }
-        if let Some(ref v) = self.flow { parts.push(v.as_bytes()); }
-        if let Some(ref v) = self.security.alpn() { parts.push(v.as_bytes()); }
-        if let Some(ref v) = self.security.fp() { parts.push(v.as_bytes()); }
-        if let Some(ref v) = self.security.pbk() { parts.push(v.as_bytes()); }
-        if let Some(ref v) = self.security.sid() { parts.push(v.as_bytes()); }
-        if let Some(v) = self.splice { parts.push(if v { b"true" } else { b"false" }); }
+        if let Some(ref path) = self.path {
+            parts.push(path.as_bytes());
+        }
+        if let Some(ref v) = self.encryption {
+            parts.push(v.as_bytes());
+        }
+        if let Some(v) = self.security.sni() {
+            parts.push(v.as_bytes());
+        }
+        if let Some(ref v) = self.flow {
+            parts.push(v.as_bytes());
+        }
+        if let Some(v) = self.security.alpn() {
+            parts.push(v.as_bytes());
+        }
+        if let Some(v) = self.security.fp() {
+            parts.push(v.as_bytes());
+        }
+        if let Some(v) = self.security.pbk() {
+            parts.push(v.as_bytes());
+        }
+        if let Some(v) = self.security.sid() {
+            parts.push(v.as_bytes());
+        }
+        if let Some(v) = self.splice {
+            parts.push(if v { b"true" } else { b"false" });
+        }
         rapidhash::v3::rapidhash_v3(&parts.concat())
     }
 }

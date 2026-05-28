@@ -105,7 +105,7 @@ impl ProtoSpec for SlipnetConfig {
             .and_then(|s| if s.is_empty() { None } else { Some(s.as_str()) });
 
         let host = domain
-            .map(|d| utils::parse_host(d))
+            .map(utils::parse_host)
             .transpose()?
             .ok_or(ParseError::MissingHost)?;
 
@@ -174,7 +174,6 @@ impl ProtoSpec for SlipnetConfig {
     fn transport_type(&self) -> Option<&str> {
         None
     }
-
 }
 
 impl SlipnetConfig {
@@ -265,7 +264,6 @@ impl ProtoSpec for SlipnetEncConfig {
     fn transport_type(&self) -> Option<&str> {
         None
     }
-
 }
 
 #[cfg(test)]

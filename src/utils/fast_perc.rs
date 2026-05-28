@@ -107,33 +107,19 @@ const fn char_advance(slice: &mut &[u8], state: &mut usize) -> Option<char> {
 pub(super) struct AutoChars<'a> {
     slice: &'a [u8],
     last_e: usize,
-    last_c: Option<char>,
 }
 
 impl AutoChars<'_> {
     pub(super) const fn next(&mut self) -> Option<char> {
-        if let Some(c) = self.last_c.take() {
-            Some(c)
-        } else if let Some(c) = char_advance(&mut self.slice, &mut self.last_e) {
-            Some(c)
-        } else {
-            None
-        }
+        char_advance(&mut self.slice, &mut self.last_e)
     }
 }
 impl<'a> AutoChars<'a> {
     pub(super) const fn new(slice: &'a [u8]) -> Self {
-        Self {
-            slice,
-            last_e: 0,
-            last_c: None,
-        }
+        Self { slice, last_e: 0 }
     }
     pub const fn remaining(&self) -> &'a [u8] {
         self.slice
-    }
-    pub(super) const fn bytes_read(&self) -> usize {
-        self.last_e
     }
 }
 
@@ -157,7 +143,6 @@ mod tests {
         assert_eq!(ac.next(), Some('h'));
         assert_eq!(ac.next(), Some('e'));
         assert_eq!(ac.remaining(), b"llo");
-        assert_eq!(ac.bytes_read(), 2);
 
         // Test invalid percent treated as literal
         let mut ac = AutoChars::new(b"%XY");
@@ -171,6 +156,5 @@ mod tests {
         let mut ac = AutoChars::new(b"");
         assert_eq!(ac.next(), None);
         assert!(ac.remaining().is_empty());
-        assert_eq!(ac.bytes_read(), 0);
     }
 }

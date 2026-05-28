@@ -150,10 +150,10 @@ impl ProtoSpec for Hysteria2Config {
             let mut parts: Vec<String> = Vec::new();
             // Security config (always Tls for Hysteria2)
             if self.security.tls.is_some() {
-                if let Some(true) = self.security.insecure() {
+                if self.security.insecure() == Some(true) {
                     parts.push("insecure=1".to_string());
                 }
-                if let Some(ref v) = self.security.sni() {
+                if let Some(v) = self.security.sni() {
                     parts.push(format!("sni={}", urlencoding::encode(v)));
                 }
             }
@@ -249,9 +249,15 @@ impl Hysteria2Config {
         if let Some(v) = self.security.insecure() {
             parts.push(if v { b"true" } else { b"false" });
         }
-        if let Some(ref v) = self.security.sni() { parts.push(v.as_bytes()); }
-        if let Some(ref v) = self.up { parts.push(v.as_bytes()); }
-        if let Some(ref v) = self.down { parts.push(v.as_bytes()); }
+        if let Some(v) = self.security.sni() {
+            parts.push(v.as_bytes());
+        }
+        if let Some(ref v) = self.up {
+            parts.push(v.as_bytes());
+        }
+        if let Some(ref v) = self.down {
+            parts.push(v.as_bytes());
+        }
         rapidhash::v3::rapidhash_v3(&parts.concat())
     }
 }

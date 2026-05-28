@@ -1,4 +1,5 @@
 #![warn(clippy::nursery, clippy::pedantic)]
+#![allow(clippy::doc_markdown)]
 pub mod db;
 pub mod mining;
 pub mod proto_spec;

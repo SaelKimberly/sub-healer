@@ -268,6 +268,7 @@ pub enum TlsConfig {
 }
 
 impl TlsConfig {
+    #[must_use]
     pub const fn type_str(&self) -> &'static str {
         match self {
             Self::Tls(_) => "tls",

@@ -90,7 +90,7 @@ impl SourceRegistry {
         Ok(())
     }
 
-    /// Partition sources into (telegram_channels, subscriptions) lists
+    /// Partition sources into (`telegram_channels`, `subscriptions`) lists
     fn partition_sources(&self) -> (Vec<String>, Vec<String>) {
         let mut channels = Vec::new();
         let mut subscriptions = Vec::new();
@@ -165,6 +165,10 @@ impl SourceRegistry {
     /// # Errors
     ///
     /// Returns an error if the pipeline fails
+    #[allow(
+        clippy::future_not_send,
+        reason = "need some research. this is not a problem, as all works fine, but clippy complains"
+    )]
     pub async fn run_pipeline_with<F: SourceFetcher>(
         self: Arc<Self>,
         client: &reqwest::Client,
@@ -188,6 +192,10 @@ impl SourceRegistry {
     /// # Errors
     ///
     /// Returns an error if the pipeline fails
+    #[allow(
+        clippy::future_not_send,
+        reason = "need some research. this is not a problem, as all works fine, but clippy complains"
+    )]
     pub async fn run_pipeline(
         self: Arc<Self>,
         client: &reqwest::Client,
@@ -198,6 +206,7 @@ impl SourceRegistry {
     }
 
     /// Run a fetcher stream from the registry sources, returning a boxed stream of traced configs
+    #[allow(clippy::needless_pass_by_value, reason = "we need to own the fetcher")]
     pub fn run_fetcher_stream<F: SourceFetcher>(
         self: Arc<Self>,
         client: &reqwest::Client,
