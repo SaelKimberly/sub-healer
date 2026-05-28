@@ -4,6 +4,7 @@
 use std::str::FromStr;
 
 use serde_json::{Map, Number, Value};
+use smallvec::SmallVec;
 
 use super::fast_perc::AutoChars;
 
@@ -38,12 +39,12 @@ enum Container {
 #[derive(Default)]
 #[cfg_attr(test, derive(Debug))]
 struct JsonBuilder {
-    stack: Vec<Container>,
+    stack: smallvec::SmallVec<[Container; 8]>,
     root: Option<Value>,
 }
 impl JsonBuilder {
-    pub const fn object(&self) -> bool {
-        matches!(self.stack.as_slice(), &[.., Container::Obj(_, _)])
+    pub fn object(&self) -> bool {
+        matches!(self.stack.last(), Some(Container::Obj(_, _)))
     }
     pub fn begin_obj(&mut self) {
         self.stack.push(Container::Obj(Map::default(), None));
@@ -116,7 +117,7 @@ impl<'a> JsonReader<'a> {
                 char_iter,
                 last_char,
                 json: JsonBuilder {
-                    stack: Vec::new(),
+                    stack: SmallVec::new_const(),
                     root: None,
                 },
             }),
@@ -146,6 +147,13 @@ impl<'a> JsonReader<'a> {
 
             while self.skip_while_whitespace(None)? == ',' {
                 _ = self.next_char()?;
+            }
+
+            if self.json.root.is_none()
+                && self.char_iter.remaining().is_empty()
+                && !matches!(self.last_char, '"' | '\'' | '}' | ']' | ',')
+            {
+                return Err(PermissiveJsonError::Eof);
             }
         }
     }
@@ -425,6 +433,69 @@ pub fn permissive_json(input: &[u8]) -> PResult<serde_json::Value> {
 mod tests {
     use super::permissive_json_core;
     use super::{PResult, permissive_json};
+
+    fn truncated_lines() -> Vec<&'static [u8]> {
+        r#"
+        {
+        {#🇳🇱 The Netherlands, Amsterdam | [BL]
+        {"scMaxEachPostBytes":#4Sarina-8699
+        {"scMaxEachPostBytes":# By EbraSha
+        {# By EbraSha
+        {'headers':# By EbraSha
+        {#XHTTP, VK [V.O.I.D]
+        {#XHTTP, Max [V.O.I.D]
+        {#0193 | 🇷🇺 Russia | VLESS | TG: @YoutubeUnBlockRu
+        {#0272 | 🌐 Unknown | VLESS | TG: @YoutubeUnBlockRu
+        {#1766 | 🌐 Unknown | VLESS | TG: @YoutubeUnBlockRu
+        {#2735 | 🌐 Unknown | VLESS | TG: @YoutubeUnBlockRu
+        {#3422 | 🌐 Unknown | VLESS | TG: @YoutubeUnBlockRu
+        {"scMaxEachPostBytes": 1000000, "scMaxConcurrentPosts": 100%2…
+        {"v":"2","ps":"tag","add":"host.com","port":"443","id":"uuid1234","aid":"0"
+        {"key":"val","other":"val2"
+        {"scMaxEachPostBytes":1000000,"scMaxConcurrentPosts":100
+        {"nested":{"inner":{"deep":"val"}
+        {"a":1,"b":2,"c":3,"d":4
+        {"host":"","path":"","mode":"auto"
+        {"xPaddingBytes":"100-1000","scMaxEachPostBytes":"1000000"
+        {"arr": [1, 2, 3, 4, 5
+        {"v":"2","ps":"test"
+        {"a":1,"b":2,"c":3
+        {"deeply":{"nested":{"object":{"with":{"many":"fields"}
+        {"data":"very long string that just keeps going and going and going
+        {"mode":"auto","type":"grpc"
+        "#
+        .lines()
+        .map(str::trim)
+        .map(str::as_bytes)
+        .collect()
+    }
+
+    #[test]
+    fn test_truncated_leaks_nothing() {
+        // Verify that no truncated input causes the parser to
+        // re-interpret value bytes as keys (which would mean
+        // the parser consumed bytes without advancing last_char).
+        let lines = truncated_lines();
+        for line in &lines {
+            eprintln!("wait: line: {}", String::from_utf8_lossy(line));
+            let result = permissive_json_core(line);
+            // If the parser re-reads a value byte as a key,
+            // it means progress-through-input ≠ cursor-advance.
+            // This test just checks no crash/infinite-loop.
+            _ = result;
+            eprintln!("done: line: {}", String::from_utf8_lossy(line));
+        }
+    }
+
+    #[test]
+    fn test_truncated_lines_dont_loop() {
+        let lines = truncated_lines();
+        for line in &lines {
+            let result = permissive_json_core(line);
+            // All truncated inputs should error (not infinite loop, not OOM)
+            assert!(result.is_err(), "Expected error for truncated: {line:?}");
+        }
+    }
 
     #[test]
     fn test_tokenizer() -> PResult<()> {

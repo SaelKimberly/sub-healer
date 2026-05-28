@@ -55,6 +55,7 @@ scraper = { version = "*" }
 yaml-rust2 = { version = "*" }
 mimalloc = { version = "*" }
 smartstring = { version = "*", features = ["serde"] }
+smallvec = {  version = "*", features = ["const_new","const_generics"] }
 rayon = { version = "*" }
 rustc-hash = { version = "*" }
 rusqlite = { version = "*", features = ["bundled"] }
