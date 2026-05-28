@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::collections::BTreeMap;
 use std::fs::OpenOptions;
 use std::path::PathBuf;
@@ -54,6 +55,7 @@ async fn main() -> anyhow::Result<()> {
             concurrency: 16,
             timeout: Duration::from_secs(10),
             backfill: Some(Backfill::Last(TimeDelta::hours(12))),
+            per_source_backfill: HashMap::new(),
         },
     };
     let mut stream = registry.run_fetcher_stream(&client, fetcher);

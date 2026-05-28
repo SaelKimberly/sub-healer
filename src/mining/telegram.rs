@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::pin::Pin;
 use std::str::FromStr;
 use std::sync::{Arc, LazyLock};
@@ -481,6 +482,7 @@ pub(crate) fn fetch_tg_channels<I, S>(
     channels: I,
     timeout: Duration,
     backfill: Option<Backfill>,
+    per_source_backfill: HashMap<TinyText, DateTime<Utc>>,
     registry: Arc<SourceRegistry>,
 ) -> impl Stream<Item = TracedProtocolConfig>
 where
@@ -502,6 +504,10 @@ where
             .trim_start_matches('@');
         let source_url: TinyText = super::registry::normalize_channel_url(raw).into();
 
+        let channel_backfill = per_source_backfill
+            .get(&source_url)
+            .copied()
+            .or_else(|| backfill.as_ref().map(Backfill::to_min_datetime));
         let task = Box::pin(TgChannelFetch {
             client: client.clone(),
             channel: channel_id.into(),
@@ -510,7 +516,7 @@ where
             limit: limit.clone(),
             timeout,
             before: None,
-            backfill: backfill.as_ref().map(Backfill::to_min_datetime),
+            backfill: channel_backfill,
         });
 
         task_group.spawn(task.spawn());
@@ -658,6 +664,7 @@ mod tests {
             channels.into_iter(),
             Duration::from_secs(10),
             Some(Backfill::Last(TimeDelta::hours(5))),
+            HashMap::new(),
             registry.clone(),
         );
 

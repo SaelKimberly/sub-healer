@@ -5,12 +5,14 @@ mod traced_config;
 mod unparseable_log;
 mod writer;
 
+use std::collections::HashMap;
 use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context;
+use chrono::{DateTime, Utc};
 use futures::StreamExt;
 use tracing::info;
 
@@ -21,6 +23,7 @@ pub use unparseable_log::UnparseableLayer;
 pub use writer::PipelineLogWriter;
 
 pub use self::telegram::Backfill;
+use crate::urlx::TinyText;
 
 pub const PROXY_URL: &str = "http://127.0.0.1:20172";
 pub const SEMAPHORE_PERMITS: usize = 64;
@@ -31,6 +34,7 @@ pub struct TgConfig {
     pub concurrency: usize,
     pub timeout: Duration,
     pub backfill: Option<Backfill>,
+    pub per_source_backfill: HashMap<TinyText, DateTime<Utc>>,
 }
 
 impl Default for TgConfig {
@@ -39,6 +43,7 @@ impl Default for TgConfig {
             concurrency: 8,
             timeout: Duration::from_secs(30),
             backfill: None,
+            per_source_backfill: HashMap::new(),
         }
     }
 }

@@ -290,17 +290,17 @@ pub fn query_servers_filtered(
     let mut conditions: Vec<String> = Vec::new();
     let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
 
-    if let Some(protocols) = protocols {
-        if !protocols.is_empty() {
-            let placeholders: Vec<String> = protocols
-                .iter()
-                .enumerate()
-                .map(|(i, _)| format!("?{}", params.len() + i + 1))
-                .collect();
-            conditions.push(format!("LOWER(schema) IN ({})", placeholders.join(",")));
-            for p in protocols {
-                params.push(Box::new(p.to_ascii_lowercase()));
-            }
+    if let Some(protocols) = protocols
+        && !protocols.is_empty()
+    {
+        let placeholders: Vec<String> = protocols
+            .iter()
+            .enumerate()
+            .map(|(i, _)| format!("?{}", params.len() + i + 1))
+            .collect();
+        conditions.push(format!("LOWER(schema) IN ({})", placeholders.join(",")));
+        for p in protocols {
+            params.push(Box::new(p.to_ascii_lowercase()));
         }
     }
 
@@ -331,7 +331,7 @@ pub fn query_servers_filtered(
 
     let mut stmt = conn.prepare(&sql)?;
 
-    let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+    let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(AsRef::as_ref).collect();
 
     let rows = stmt.query_map(param_refs.as_slice(), |row| {
         Ok(ServerRecord {
@@ -360,7 +360,10 @@ pub fn query_servers_filtered(
 /// # Errors
 ///
 /// Returns `rusqlite::Error` if the query fails.
-pub fn query_sources_by_server_ids(conn: &Connection, server_ids: &[i64]) -> Result<Vec<SourceRecord>> {
+pub fn query_sources_by_server_ids(
+    conn: &Connection,
+    server_ids: &[i64],
+) -> Result<Vec<SourceRecord>> {
     if server_ids.is_empty() {
         return Ok(Vec::new());
     }
@@ -382,8 +385,10 @@ pub fn query_sources_by_server_ids(conn: &Connection, server_ids: &[i64]) -> Res
 
     let mut stmt = conn.prepare(&sql)?;
 
-    let param_refs: Vec<&dyn rusqlite::types::ToSql> =
-        server_ids.iter().map(|id| id as &dyn rusqlite::types::ToSql).collect();
+    let param_refs: Vec<&dyn rusqlite::types::ToSql> = server_ids
+        .iter()
+        .map(|id| id as &dyn rusqlite::types::ToSql)
+        .collect();
 
     let rows = stmt.query_map(param_refs.as_slice(), |row| {
         Ok(SourceRecord {
@@ -397,6 +402,48 @@ pub fn query_sources_by_server_ids(conn: &Connection, server_ids: &[i64]) -> Res
         records.push(row?);
     }
     Ok(records)
+}
+
+/// Query all known sources from the database.
+///
+/// # Errors
+///
+/// Returns `rusqlite::Error` if the query fails.
+pub fn query_all_sources(conn: &Connection) -> Result<Vec<SourceRecord>> {
+    let mut stmt = conn.prepare("SELECT id, url FROM sources ORDER BY url")?;
+    let rows = stmt.query_map([], |row| {
+        Ok(SourceRecord {
+            id: row.get(0)?,
+            url: row.get(1)?,
+        })
+    })?;
+    let mut records = Vec::new();
+    for row in rows {
+        records.push(row?);
+    }
+    Ok(records)
+}
+
+/// Query the latest timestamp associated with a source.
+///
+/// Combines `servers.first_seen_ts` and `sightings.seen_ts` to find the
+/// most recent timestamp for servers linked to this source.
+/// Returns `None` if the source has zero server records (inactive).
+///
+/// # Errors
+///
+/// Returns `rusqlite::Error` if the query fails.
+pub fn query_latest_ts_for_source(conn: &Connection, source_id: i64) -> Result<Option<i64>> {
+    let result: Option<i64> = conn.query_row(
+        "SELECT MAX(ts) FROM (
+            SELECT MAX(seen_ts) AS ts FROM sightings WHERE source_id = ?1
+            UNION ALL
+            SELECT first_seen_ts AS ts FROM servers WHERE first_seen_source_id = ?2
+        )",
+        params![source_id, source_id],
+        |row| row.get(0),
+    )?;
+    Ok(result.filter(|&ts| ts > 0))
 }
 
 #[cfg(test)]

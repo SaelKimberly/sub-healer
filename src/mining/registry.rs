@@ -165,7 +165,7 @@ impl SourceRegistry {
     /// # Errors
     ///
     /// Returns an error if the pipeline fails
-    pub(crate) async fn run_pipeline_with<F: SourceFetcher>(
+    pub async fn run_pipeline_with<F: SourceFetcher>(
         self: Arc<Self>,
         client: &reqwest::Client,
         conn: &rusqlite::Connection,
@@ -250,6 +250,7 @@ impl SourceFetcher for LiveFetcher {
                     channels.into_iter(),
                     self.tg_config.timeout,
                     self.tg_config.backfill.clone(),
+                    self.tg_config.per_source_backfill.clone(),
                     registry.clone(),
                 )
                 .boxed(),
