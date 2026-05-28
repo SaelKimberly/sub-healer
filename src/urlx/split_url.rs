@@ -25,6 +25,8 @@ pub struct RawUrlX<'a> {
     pub query: Option<&'a str>,
     /// `[fragment]`
     pub fragment: Option<&'a str>,
+    /// Original URL string (zero-copy borrow)
+    pub raw: &'a str,
 }
 
 impl<'a> RawUrlX<'a> {
@@ -69,6 +71,7 @@ impl<'a> RawUrlX<'a> {
             path: None,
             query: None,
             fragment,
+            raw: _,
         } = self
             && (fragment.is_none() || allow_frag)
         {
@@ -256,27 +259,29 @@ impl<'a> RawUrlX<'a> {
         // ! the '@' is part of a query value or fragment, not a userinfo separator.
         let split_at = unparsed.find('@').filter(|pos| {
             let earliest = unparsed.find('#').or_else(|| unparsed.find('?'));
-            earliest.map_or_else(|| true, |early| {
-                if *pos < early {
-                    return true;
-                }
-                // Trojan URLs may have '#' in the 16-byte ASCII password
-                // (e.g. "8r<[9'l6hAO#8ZQi@host:port").
-                // Check if after @ is a valid host:port.
-                if schema == SchemeX::Trojan && *pos == 16
-                    && unparsed[..16].is_ascii()
-                {
-                    let after_at = &unparsed[*pos + 1..];
-                    let host_end = after_at.find('/')
-                        .or_else(|| after_at.find('?'))
-                        .or_else(|| after_at.find('#'))
-                        .unwrap_or(after_at.len());
-                    let candidate = &after_at[..host_end];
-                    let span = candidate.as_bytes().into();
-                    return crate::utils::host_port::host_port_spec(span).is_ok();
-                }
-                false
-            })
+            earliest.map_or_else(
+                || true,
+                |early| {
+                    if *pos < early {
+                        return true;
+                    }
+                    // Trojan URLs may have '#' in the 16-byte ASCII password
+                    // (e.g. "8r<[9'l6hAO#8ZQi@host:port").
+                    // Check if after @ is a valid host:port.
+                    if schema == SchemeX::Trojan && *pos == 16 && unparsed[..16].is_ascii() {
+                        let after_at = &unparsed[*pos + 1..];
+                        let host_end = after_at
+                            .find('/')
+                            .or_else(|| after_at.find('?'))
+                            .or_else(|| after_at.find('#'))
+                            .unwrap_or(after_at.len());
+                        let candidate = &after_at[..host_end];
+                        let span = candidate.as_bytes().into();
+                        return crate::utils::host_port::host_port_spec(span).is_ok();
+                    }
+                    false
+                },
+            )
         });
         let (userinfo, rest) = match split_at {
             Some(_) => match unparsed.split_once('@') {
@@ -359,6 +364,7 @@ impl<'a> RawUrlX<'a> {
                 path,
                 query,
                 fragment,
+                raw: s,
             });
         };
         unparsed = rest;
@@ -399,14 +405,12 @@ impl<'a> RawUrlX<'a> {
         // ? 6. Remove channel
         // * ==============================
         // * [channel]@ <-split-> [host:port]
-        // * ==============================
         let host_port = if let Some((_, host_port)) = unparsed.split_once('@') {
             host_port
         } else {
             unparsed
         };
         let host_port = (!host_port.is_empty()).then_some(host_port);
-
         Some(RawUrlX {
             schema,
             userinfo,
@@ -414,6 +418,7 @@ impl<'a> RawUrlX<'a> {
             path,
             query,
             fragment,
+            raw: s,
         })
     }
 }
@@ -426,13 +431,11 @@ impl<'a> From<&'a str> for RawUrlX<'a> {
 
 #[cfg(test)]
 mod tests {
-
     use super::*;
-
     #[test]
+
     fn test_vmess_standard_b64() {
         let url = "vmess://abc/def";
-
         let raw = RawUrlX::from(url);
         let RawUrlX {
             schema: SchemeX::Vmess,
@@ -441,6 +444,7 @@ mod tests {
             path: None,
             query: None,
             fragment: None,
+            raw: _,
         } = raw
         else {
             panic!("Should be vmess with only userinfo");
@@ -449,7 +453,6 @@ mod tests {
     #[test]
     fn test_vmess_standard_b64_trailing_slash() {
         let url = "vmess://abc/";
-
         let raw = RawUrlX::from(url);
         let RawUrlX {
             schema: SchemeX::Vmess,
@@ -458,6 +461,7 @@ mod tests {
             path: None,
             query: None,
             fragment: None,
+            raw: _,
         } = raw
         else {
             panic!("Should be vmess with only userinfo");

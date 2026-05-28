@@ -213,8 +213,13 @@ impl ProtoSpec for ProtocolConfig {
             .or_else(|_| SlipnetConfig::try_parse(raw).map(Self::Slipnet))
             .or_else(|_| TgConfig::try_parse(raw).map(Self::Tg))
             .or(Err(original_err))?;
-
-        tracing::warn!(target: "visit::basic", "Schema fallback success: [{} => {}]", original_schema, v.schema());
+        tracing::warn!(
+            target: "mining::unparseable",
+            raw_url = raw.raw,
+            "Schema fallback success: [{original} => {restored}]",
+            original = original_schema,
+            restored = v.schema(),
+        );
         Ok(v)
     }
 }

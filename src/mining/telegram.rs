@@ -134,7 +134,14 @@ impl Stream for TracedConfigStream {
                     tracing::info!(target: "mining::tg_channel", id=t.as_str(), "Failure ({e})");
                 }
                 std::task::Poll::Ready(Some(TgEvent::Backfill(task))) => {
-                    tracing::info!(target: "mining::tg_channel", id=task.channel.as_str(), "Backfill (up to {} id)", task.before.unwrap());
+                    tracing::info!(
+                        target: "mining::tg_channel",
+                        id = task.channel.as_str(),
+                        backfill = ?task.backfill,
+                        oldest_msg_ts = ?task.oldest_msg_ts,
+                        "Backfill (up to {before} id)",
+                        before = task.before.unwrap(),
+                    );
                     this.join_set.spawn(TgChannelFetch::spawn(Box::pin(task)));
                 }
                 std::task::Poll::Ready(None) => return std::task::Poll::Ready(None),
@@ -318,6 +325,7 @@ struct TgChannelFetch {
     timeout: Duration,
     before: Option<u32>,
     backfill: Option<DateTime<Utc>>,
+    oldest_msg_ts: Option<DateTime<Utc>>,
 }
 
 impl TgChannelFetch {
@@ -336,8 +344,8 @@ impl TgChannelFetch {
                 timeout,
                 before,
                 backfill,
+                oldest_msg_ts: _,
             } = this.get_mut();
-
             // Reconstruct the web view link
             let url = if let Some(before) = before {
                 tracing::info!(target: "mining::tg_channel", id=channel_id.as_str(), "Continue downloading (up to {before} id)");
@@ -394,7 +402,6 @@ impl TgChannelFetch {
             let limit = limit.clone();
             let channel_id = channel_id.clone();
             let source_url = source_url.clone();
-
             let timeout = *timeout;
             let backfill = *backfill;
 
@@ -405,6 +412,7 @@ impl TgChannelFetch {
                 let mut counter = 0;
                 let mut has_older = false;
                 let mut first_id = None;
+                let mut oldest_timestamp: Option<DateTime<Utc>> = None;
 
                 for msg in html.select(&TG_WEB_MESSAGE_SELECTOR) {
                     let Some(msg_id) = msg
@@ -422,6 +430,7 @@ impl TgChannelFetch {
                         has_older = true;
                         continue;
                     }
+                    oldest_timestamp = Some(oldest_timestamp.map_or(msg.time, |oldest| oldest.min(msg.time)));
                     if sender.blocking_send(TgEvent::Message(msg)).is_ok() {
                         counter += 1;
                     } else {
@@ -440,6 +449,7 @@ impl TgChannelFetch {
                         timeout,
                         before: Some(first_id),
                         backfill: Some(backfill),
+                        oldest_msg_ts: oldest_timestamp,
                     })).is_err() {
                         tracing::warn!(target: "mining::tg_channel", id=channel_id.as_str(), "Failed to send backfill event");
                     }
@@ -515,6 +525,7 @@ where
             timeout,
             before: None,
             backfill: channel_backfill,
+            oldest_msg_ts: None,
         });
 
         task_group.spawn(task.spawn());
