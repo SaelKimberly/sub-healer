@@ -3,7 +3,6 @@ use std::pin::Pin;
 use std::str::FromStr;
 use std::sync::{Arc, LazyLock};
 use std::time::Duration;
-
 use bytes::Bytes;
 use chrono::{DateTime, TimeDelta, Utc};
 use ego_tree::iter::Edge;
@@ -12,11 +11,10 @@ use scraper::{ElementRef, Node};
 use tokio::sync::mpsc::Receiver;
 use tokio::task::JoinSet;
 
-use crate::proto_spec::{ProtoSpec, ProtocolConfig};
-use crate::urlx::{RawUrlX, SchemeX, TinyText};
+use crate::urlx::{SchemeX, TinyText};
 
-use super::registry::{SourceMetadata, SourceRegistry};
-use super::traced_config::TracedProtocolConfig;
+use super::raw_event::RawSourceItemBatch;
+use super::registry::SourceRegistry;
 
 /// Selector for outer message container
 static TG_WEB_MESSAGE_SELECTOR: LazyLock<scraper::Selector> =
@@ -32,21 +30,12 @@ static TG_WEB_TEXT_SELECTOR: LazyLock<scraper::Selector> =
     LazyLock::new(|| scraper::Selector::parse("div.tgme_widget_message_text").unwrap());
 
 #[derive(Debug, Clone)]
-pub struct UnparseableRecord {
-    pub raw_url: String,
-    pub scheme: String,
-    pub error: String,
-}
-
-#[allow(dead_code, reason = "")]
-#[derive(Debug, Clone)]
 pub struct TgWebMessage {
     pub user: TinyText,
     pub time: DateTime<Utc>,
     pub msg_id: u32,
     pub source_url: TinyText,
-    pub msg_urls: Option<Box<[ProtocolConfig]>>,
-    pub unparseable_urls: Option<Box<[UnparseableRecord]>>,
+    pub raw_urls: Option<Vec<String>>,
 }
 
 enum TgEvent {
@@ -60,37 +49,16 @@ struct TracedConfigStream {
     receiver: Receiver<TgEvent>,
     join_set: JoinSet<()>,
     registry: Arc<SourceRegistry>,
-    pending_iter: std::vec::IntoIter<ProtocolConfig>,
-    pending_source: Option<Arc<SourceMetadata>>,
-    pending_time: Option<DateTime<Utc>>,
 }
 
 impl Stream for TracedConfigStream {
-    type Item = TracedProtocolConfig;
+    type Item = RawSourceItemBatch;
 
     fn poll_next(
         self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Option<Self::Item>> {
         let this = self.get_mut();
-
-        // Drain any remaining configs from a previous message first
-        if let Some(config) = this.pending_iter.next() {
-            let source = this
-                .pending_source
-                .clone()
-                .expect("pending_source must be set when pending_iter is non-empty");
-            let timestamp = this
-                .pending_time
-                .expect("pending_time must be set when pending_iter is non-empty");
-            return std::task::Poll::Ready(Some(TracedProtocolConfig {
-                config,
-                timestamp,
-                source,
-            }));
-        }
-        this.pending_source = None;
-        this.pending_time = None;
 
         loop {
             match this.receiver.poll_recv(cx) {
@@ -102,30 +70,17 @@ impl Stream for TracedConfigStream {
                         );
                         continue;
                     };
-                    let ts = msg.time.timestamp();
 
-                    if let Some(ref unparseable) = msg.unparseable_urls {
-                        for u in unparseable {
-                            crate::mining::emit_unparseable_entry(
-                                &u.raw_url, &u.scheme, &u.error, source.id, "telegram", ts,
-                            );
-                        }
+                    let raw_urls = msg.raw_urls.unwrap_or_default();
+                    if raw_urls.is_empty() {
+                        continue;
                     }
 
-                    if let Some(msg_urls) = msg.msg_urls {
-                        let mut iter = msg_urls.into_vec().into_iter();
-                        if let Some(first) = iter.next() {
-                            this.pending_iter = iter;
-                            this.pending_source = Some(source.clone());
-                            this.pending_time = Some(msg.time);
-                            return std::task::Poll::Ready(Some(TracedProtocolConfig {
-                                config: first,
-                                timestamp: msg.time,
-                                source,
-                            }));
-                        }
-                    }
-                    // No parseable configs — continue to next message
+                    return std::task::Poll::Ready(Some(RawSourceItemBatch {
+                        source,
+                        timestamp: msg.time,
+                        raw_urls: raw_urls.into_boxed_slice(),
+                    }));
                 }
                 std::task::Poll::Ready(Some(TgEvent::Timeout(t))) => {
                     tracing::info!(target: "mining::tg_channel", id=t.as_str(), "Timeout");
@@ -151,30 +106,21 @@ impl Stream for TracedConfigStream {
     }
 }
 
-#[allow(
-    clippy::type_complexity,
-    clippy::too_many_lines,
-    reason = "This is a core parser function for single message"
-)]
-fn extract_urls(
-    channel_id: &str,
-    msg: ElementRef<'_>,
-) -> (
-    Option<Box<[ProtocolConfig]>>,
-    Option<Box<[UnparseableRecord]>>,
-) {
+/// Extract raw URL strings from a Telegram message's HTML.
+/// Returns `None` if no text content is found.
+fn extract_urls(_channel_id: &str, msg: ElementRef<'_>) -> Option<Vec<String>> {
     let mut msg_text = match msg.select(&TG_WEB_TEXT_SELECTOR).next() {
         Some(t) => t.traverse(),
-        None => return (None, None),
+        None => return None,
     };
 
     let mut msg_tail = Option::<&str>::None;
 
-    let mut msg_urls = Vec::<String>::new();
+    let mut raw_urls = Vec::<String>::new();
     {
         let mut is_found: bool = false;
 
-        let mut curr_url = msg_urls.push_mut(String::new());
+        let mut curr_url = raw_urls.push_mut(String::new());
         loop {
             let chunk = if let Some(tail) = msg_tail {
                 tail
@@ -202,7 +148,7 @@ fn extract_urls(
                     if !eof.is_empty() {
                         curr_url.push_str(eof);
                     }
-                    curr_url = msg_urls.push_mut(String::new());
+                    curr_url = raw_urls.push_mut(String::new());
                 } else {
                     curr_url.push_str(chunk);
                 }
@@ -218,7 +164,7 @@ fn extract_urls(
                     if !eof.is_empty() {
                         curr_url.push_str(eof);
                     }
-                    curr_url = msg_urls.push_mut(String::new());
+                    curr_url = raw_urls.push_mut(String::new());
                 } else {
                     is_found = true;
                     curr_url.push_str(rest);
@@ -227,51 +173,24 @@ fn extract_urls(
         }
     }
 
-    let mut parsed: Vec<ProtocolConfig> = Vec::new();
-    let mut unparseable: Vec<UnparseableRecord> = Vec::new();
-
-    for s in msg_urls
+    // Filter empty URLs and truncated ones, clean trailing backticks
+    let result: Vec<String> = raw_urls
         .into_iter()
         .filter(|s| !s.is_empty() && !s.ends_with('…') && !s.ends_with("…»"))
-    {
-        let clean =
+        .map(|s| {
             if let Some((i, _)) = s.char_indices().rev().take_while(|(_, c)| *c == '`').last() {
-                &s[..i]
+                s[..i].to_string()
             } else {
-                &s
-            };
-        let raw: RawUrlX = clean.into();
-        let raw_scheme = raw.schema.to_string();
-        match ProtocolConfig::try_parse(&raw) {
-            Ok(config) => parsed.push(config),
-            Err(e) => {
-                tracing::warn!(
-                    target: "mining::tg_channel",
-                    id = channel_id,
-                    "Failed to parse proxy URL: {} ({})",
-                    clean,
-                    e
-                );
-                unparseable.push(UnparseableRecord {
-                    raw_url: clean.to_string(),
-                    scheme: raw_scheme,
-                    error: e.to_string(),
-                });
+                s
             }
-        }
-    }
+        })
+        .collect();
 
-    let msg_urls = if parsed.is_empty() {
+    if result.is_empty() {
         None
     } else {
-        Some(parsed.into_boxed_slice())
-    };
-    let unparseable_urls = if unparseable.is_empty() {
-        None
-    } else {
-        Some(unparseable.into_boxed_slice())
-    };
-    (msg_urls, unparseable_urls)
+        Some(result)
+    }
 }
 
 /// Parse a single message
@@ -304,15 +223,14 @@ fn parse_message(
         Err(e) => panic!("Failed to parse time: {e}"),
     };
 
-    let (msg_urls, unparseable_urls) = extract_urls(channel_id, msg);
+    let raw_urls = extract_urls(channel_id, msg);
 
     TgWebMessage {
         user: user.into(),
         time,
         msg_id,
         source_url: source_url.into(),
-        msg_urls,
-        unparseable_urls,
+        raw_urls,
     }
 }
 
@@ -359,7 +277,6 @@ impl TgChannelFetch {
             };
 
             tracing::info!(target: "mining::tg_channel", id=channel_id.as_str(), "Start downloading");
-            // tracing::info!(target: "mining::v2ray_subs", id=channel_id, "Start fetching channel");
 
             // Wait for a permit (rate limit for each channel)
             let Ok(_permit) = limit.acquire().await else {
@@ -492,7 +409,7 @@ pub(crate) fn fetch_tg_channels<I, S>(
     backfill: Option<Backfill>,
     per_source_backfill: HashMap<TinyText, DateTime<Utc>>,
     registry: Arc<SourceRegistry>,
-) -> impl Stream<Item = TracedProtocolConfig>
+) -> impl Stream<Item = RawSourceItemBatch>
 where
     S: AsRef<str> + Send + 'static,
     I: Iterator<Item = S> + Send + 'static,
@@ -536,9 +453,6 @@ where
         receiver: rx,
         join_set: task_group,
         registry,
-        pending_iter: Vec::new().into_iter(),
-        pending_source: None,
-        pending_time: None,
     }
 }
 
@@ -559,7 +473,7 @@ mod tests {
     use crate::mining::PipelineLogWriter;
     use crate::mining::UnparseableLayer;
     use crate::mining::registry::{SourceRegistry, SourceType};
-
+    use crate::urlx::TinyText;
     use super::*;
 
     #[tokio::test]
@@ -667,7 +581,7 @@ mod tests {
             )
             .build()?;
 
-        // --- Fetch (registry handles flattening + unparseable emission) ---
+        // --- Fetch ---
         let mut tg_stream = fetch_tg_channels(
             client,
             16,
@@ -679,17 +593,16 @@ mod tests {
         );
 
         // --- Collect ---
-        let mut per_channel = BTreeMap::<TinyText, Vec<(DateTime<Utc>, String, String)>>::new();
+        let mut per_channel = BTreeMap::<TinyText, Vec<(DateTime<Utc>, String)>>::new();
 
         while let Some(item) = tg_stream.next().await {
-            per_channel
-                .entry(item.source.url.as_str().into())
-                .or_default()
-                .push((
-                    item.timestamp,
-                    item.config.schema().to_string(),
-                    item.config.reconstruct().unwrap_or_default(),
-                ));
+            let urls: Vec<String> = item.raw_urls.into_vec();
+            for url in urls {
+                per_channel
+                    .entry(item.source.url.as_str().into())
+                    .or_default()
+                    .push((item.timestamp, url));
+            }
         }
 
         // --- Sort per channel ---
@@ -704,10 +617,9 @@ mod tests {
             .map(|(channel, entries)| {
                 let entries: Vec<serde_json::Value> = entries
                     .iter()
-                    .map(|(time, schema, url)| {
+                    .map(|(time, url)| {
                         json!({
                             "time": time.to_rfc3339(),
-                            "schema": schema,
                             "url": url,
                         })
                     })

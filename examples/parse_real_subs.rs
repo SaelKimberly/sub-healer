@@ -1,16 +1,14 @@
 use std::collections::BTreeMap;
 use std::fs::OpenOptions;
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use chrono::{Local, Utc};
-use futures::StreamExt;
 use serde_json::json;
 use tracing_subscriber::fmt;
 use tracing_subscriber::prelude::*;
 
-use v2ray_heal::mining::{LiveFetcher, SourceRegistry, UnparseableLayer};
-use v2ray_heal::proto_spec::ProtoSpec;
+use v2ray_heal::mining::{self, Pipeline, RawSourceItemBatch, UnparseableLayer};
+use v2ray_heal::urlx::SchemeX;
 
 fn discover_txt_files(dir: &PathBuf) -> Vec<PathBuf> {
     let Ok(entries) = std::fs::read_dir(dir) else {
@@ -23,6 +21,27 @@ fn discover_txt_files(dir: &PathBuf) -> Vec<PathBuf> {
         .collect();
     files.sort();
     files
+}
+
+/// Pre-process raw subscription data and extract raw URL strings.
+fn parse_to_raw_urls(data: &[u8]) -> Vec<String> {
+    let text = v2ray_heal::preprocess_sub_data(data);
+    text.lines()
+        .flat_map(|line| {
+            let s = line.trim_start();
+            if s.starts_with('#') || s.starts_with("//") || s.is_empty() {
+                Vec::new()
+            } else {
+                s.split("<br/>")
+                    .flat_map(|segment| {
+                        SchemeX::slice_input(segment)
+                            .into_iter()
+                            .map(|(_, url)| url.to_string())
+                    })
+                    .collect()
+            }
+        })
+        .collect()
 }
 
 #[tokio::main]
@@ -59,29 +78,56 @@ async fn main() -> anyhow::Result<()> {
         .join("thirdparty")
         .join("v2ray-configs");
 
-    let mut registry = SourceRegistry::new();
+    // Use a throwaway DB — the example only counts by scheme, not persist.
+    let db_path = out_dir.join("pipeline.db");
+    let mut pipeline = Pipeline::new(&db_path)?;
+    let ts_now = Utc::now();
+    let mut batches = Vec::new();
+
     for file_path in discover_txt_files(&goida_dir)
         .into_iter()
         .chain(discover_txt_files(&v2ray_dir))
     {
-        let file_url = url::Url::from_file_path(&file_path)
-            .expect("valid file path");
-        registry.add_subscription(file_url.as_str());
+        let file_url = url::Url::from_file_path(&file_path).expect("valid file path");
+        let url_str = file_url.as_str().to_string();
+        pipeline.add_batch_source(&url_str);
+
+        let data = std::fs::read(&file_path)?;
+        let raw_urls = parse_to_raw_urls(&data);
+
+        if raw_urls.is_empty() {
+            continue;
+        }
+
+        let source = pipeline
+            .registry_ref()
+            .lookup(&url_str)
+            .expect("source just registered");
+
+        batches.push(RawSourceItemBatch {
+            source,
+            timestamp: ts_now,
+            raw_urls: raw_urls.into_boxed_slice(),
+        });
     }
 
-    eprintln!("Total files discovered: {}", registry.sources().len());
+    eprintln!(
+        "Total files discovered: {}",
+        pipeline.registry_ref().sources().len()
+    );
 
-    let registry = Arc::new(registry);
-    let client = reqwest::Client::builder()
-        .user_agent("v2ray-heal/1.0")
-        .build()?;
+    if !batches.is_empty() {
+        pipeline.add_batch_raw(batches);
+    }
+    pipeline.run().await?;
 
-    let mut stream = registry.run_fetcher_stream(&client, LiveFetcher::default());
+    // Count results from DB
+    let guard = pipeline.conn().write().await;
+    use v2ray_heal::proto_spec::ProtoSpec;
+    let servers = v2ray_heal::db::query_servers_filtered(&*guard, None, None, None)?;
     let mut by_scheme_ok = BTreeMap::<String, u64>::new();
-
-    while let Some(item) = stream.next().await {
-        let schema = item.config.schema().to_string();
-        *by_scheme_ok.entry(schema).or_default() += 1;
+    for server in &servers {
+        *by_scheme_ok.entry(server.schema.clone()).or_default() += 1;
     }
 
     let total_ok: u64 = by_scheme_ok.values().sum();

@@ -1,18 +1,15 @@
-use std::collections::HashMap;
 use std::collections::BTreeMap;
 use std::fs::OpenOptions;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::TimeDelta;
 use chrono::{Local, Utc};
-use futures::StreamExt;
 use serde_json::json;
 use tracing_subscriber::fmt;
 use tracing_subscriber::prelude::*;
 
-use v2ray_heal::mining::{Backfill, LiveFetcher, SourceRegistry, TgConfig, UnparseableLayer};
+use v2ray_heal::mining::{self, Backfill, Pipeline, SourceRegistry, SourceType, UnparseableLayer};
 use v2ray_heal::proto_spec::ProtoSpec;
 
 #[tokio::main]
@@ -41,32 +38,38 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let config_path = PathBuf::from("channels-collection-01.yaml");
-    let registry = Arc::new(SourceRegistry::from_config(&config_path)?);
+    let registry = SourceRegistry::from_config(&config_path)?;
 
-    let client = reqwest::Client::builder()
-        .user_agent(
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
-             (KHTML, like Gecko) Chrome/237.84.2.178 Safari/537.36",
-        )
-        .build()?;
+    // Use a throwaway DB — the example only counts by scheme, not persist.
+    let db_path = out_dir.join("pipeline.db");
+    let mut pipeline = Pipeline::new(&db_path)?;
 
-    let fetcher = LiveFetcher {
-        tg_config: TgConfig {
-            concurrency: 16,
-            timeout: Duration::from_secs(10),
-            backfill: Some(Backfill::Last(TimeDelta::hours(12))),
-            per_source_backfill: HashMap::new(),
-        },
-    };
-    let mut stream = registry.run_fetcher_stream(&client, fetcher);
+    // Add sources from the config registry
+    for meta in registry.sources() {
+        match meta.source_type {
+            SourceType::Telegram => pipeline.add_telegram(&meta.url),
+            SourceType::Subscription => pipeline.add_subscription(&meta.url),
+            SourceType::Other => {}
+        }
+    }
+
+    // Set backfill for last 12 hours
+    pipeline.set_backfill(Some(Backfill::Last(TimeDelta::hours(12))));
+
+    pipeline.run().await?;
+
+    // Count results from DB
+    let guard = pipeline.conn().write().await;
+    let servers = v2ray_heal::db::query_servers_filtered(&*guard, None, None, None)?;
     let mut by_scheme_ok = BTreeMap::<String, u64>::new();
     let mut by_channel = BTreeMap::<String, u64>::new();
 
-    while let Some(item) = stream.next().await {
-        let schema = item.config.schema().to_string();
-        *by_scheme_ok.entry(schema).or_default() += 1;
-        if !item.source.url.is_empty() {
-            *by_channel.entry(item.source.url.clone()).or_default() += 1;
+    for server in &servers {
+        *by_scheme_ok.entry(server.schema.clone()).or_default() += 1;
+        // Query source for this server
+        let sources = v2ray_heal::db::query_sources_by_server_ids(&*guard, &[server.id])?;
+        for src in &sources {
+            *by_channel.entry(src.url.clone()).or_default() += 1;
         }
     }
 

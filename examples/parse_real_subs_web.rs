@@ -1,16 +1,13 @@
 use std::collections::BTreeMap;
 use std::fs::OpenOptions;
 use std::path::PathBuf;
-use std::sync::Arc;
-use std::time::Duration;
 
 use chrono::{Local, Utc};
-use futures::StreamExt;
 use serde_json::json;
 use tracing_subscriber::fmt;
 use tracing_subscriber::prelude::*;
 
-use v2ray_heal::mining::{LiveFetcher, SourceRegistry, UnparseableLayer};
+use v2ray_heal::mining::{self, Pipeline, SourceRegistry, UnparseableLayer};
 use v2ray_heal::proto_spec::ProtoSpec;
 
 #[tokio::main]
@@ -39,20 +36,30 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let config_path = PathBuf::from("subscriptions-01.yaml");
-    let registry = Arc::new(SourceRegistry::from_config(&config_path)?);
+    let registry = SourceRegistry::from_config(&config_path)?;
 
-    let client = reqwest::Client::builder()
-        .user_agent("v2ray-heal/1.0")
-        .timeout(Duration::from_secs(30))
-        .build()?;
+    // Use a throwaway DB — the example only counts by scheme, not persist.
+    let db_path = out_dir.join("pipeline.db");
+    let mut pipeline = Pipeline::new(&db_path)?;
 
-    let fetcher = LiveFetcher::default();
-    let mut stream = registry.run_fetcher_stream(&client, fetcher);
+    // Add sources from the config registry
+    for meta in registry.sources() {
+        use v2ray_heal::mining::SourceType;
+        match meta.source_type {
+            SourceType::Telegram => pipeline.add_telegram(&meta.url),
+            SourceType::Subscription => pipeline.add_subscription(&meta.url),
+            SourceType::Other => {}
+        }
+    }
+
+    pipeline.run().await?;
+
+    // Count results from DB
+    let guard = pipeline.conn().write().await;
+    let servers = v2ray_heal::db::query_servers_filtered(&*guard, None, None, None)?;
     let mut by_scheme_ok = BTreeMap::<String, u64>::new();
-
-    while let Some(item) = stream.next().await {
-        let schema = item.config.schema().to_string();
-        *by_scheme_ok.entry(schema).or_default() += 1;
+    for server in &servers {
+        *by_scheme_ok.entry(server.schema.clone()).or_default() += 1;
     }
 
     let total_ok: u64 = by_scheme_ok.values().sum();

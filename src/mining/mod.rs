@@ -1,52 +1,27 @@
+mod pipeline;
 mod registry;
 mod sub;
 pub mod telegram;
-mod traced_config;
 mod unparseable_log;
 mod writer;
-
-use std::collections::HashMap;
-use std::collections::HashSet;
+pub mod raw_event;
 use std::path::Path;
-use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context;
-use chrono::{DateTime, Utc};
-use futures::StreamExt;
 use tracing::info;
 
-pub use registry::{LiveFetcher, SourceFetcher, SourceMetadata, SourceRegistry, SourceType};
-pub use sub::lines_to_traced;
-pub use traced_config::TracedProtocolConfig;
+pub use pipeline::Pipeline;
+pub use raw_event::RawSourceItemBatch;
+pub use registry::{SourceMetadata, SourceRegistry, SourceType};
 pub use unparseable_log::UnparseableLayer;
 pub use writer::PipelineLogWriter;
 
 pub use self::telegram::Backfill;
-use crate::urlx::TinyText;
 
 pub const PROXY_URL: &str = "http://127.0.0.1:20172";
 pub const SEMAPHORE_PERMITS: usize = 64;
 pub const USER_AGENT: &str = "clash-verge/v2.0.2";
-
-#[derive(Debug, Clone)]
-pub struct TgConfig {
-    pub concurrency: usize,
-    pub timeout: Duration,
-    pub backfill: Option<Backfill>,
-    pub per_source_backfill: HashMap<TinyText, DateTime<Utc>>,
-}
-
-impl Default for TgConfig {
-    fn default() -> Self {
-        Self {
-            concurrency: 8,
-            timeout: Duration::from_secs(30),
-            backfill: None,
-            per_source_backfill: HashMap::new(),
-        }
-    }
-}
 
 /// # Panics
 ///
@@ -80,39 +55,6 @@ pub fn build_client() -> Result<reqwest::Client, anyhow::Error> {
         .build()?)
 }
 
-/// Process a stream of traced configs, writing each source and server to the database.
-/// Sources are upserted lazily on first encounter. Fatal on DB error (aborts pipeline).
-///
-/// # Errors
-///
-/// Returns an error if the database connection fails.
-#[allow(
-    clippy::future_not_send,
-    reason = "need some research. this is not a problem, as all works fine, but clippy complains"
-)]
-pub async fn process_config_stream(
-    mut stream: impl StreamExt<Item = TracedProtocolConfig> + std::marker::Unpin,
-    conn: &rusqlite::Connection,
-) -> Result<usize, anyhow::Error> {
-    let mut count = 0usize;
-    let mut seen_sources = HashSet::new();
-    while let Some(item) = stream.next().await {
-        if seen_sources.insert(item.source.id) {
-            crate::db::upsert_source(conn, &item.source.url)
-                .context("source upsert failed (aborting)")?;
-        }
-        crate::db::upsert_server(
-            conn,
-            &item.config,
-            item.source.id,
-            item.timestamp.timestamp(),
-        )
-        .context("upsert failed (aborting)")?;
-        count += 1;
-    }
-    Ok(count)
-}
-
 /// Emit a single unparseable entry to the NDJSON tracing layer.
 /// Filters out promotion URLs. Used by telegram, subscription, and local paths.
 pub fn emit_unparseable_entry(
@@ -140,67 +82,33 @@ pub fn emit_unparseable_entry(
 /// # Errors
 ///
 /// Will return `Err` if the config file is invalid or the database cannot be opened.
-#[allow(
-    clippy::future_not_send,
-    reason = "need some research. this is not a problem, as all works fine, but clippy complains"
-)]
 pub async fn run_with_config(config_path: &Path, db_path: &Path) -> Result<(), anyhow::Error> {
     info!("Starting mining run with config: {}", config_path.display());
-    let client = build_client()?;
-    let conn = open_db(db_path)?;
-    let registry = Arc::new(SourceRegistry::from_config(config_path)?);
-    registry.run_pipeline(&client, &conn).await
+    let mut pipeline = Pipeline::from_config(config_path, db_path)?;
+    let count = pipeline.run().await?;
+    info!(count, "Mining pipeline completed");
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::proto_spec::ProtoSpec;
-    use crate::proto_spec::ProtocolConfig;
+    use crate::proto_spec::{ProtoSpec, ProtocolConfig};
     use crate::urlx::RawUrlX;
     use chrono::DateTime;
-    use futures::StreamExt;
-
-    struct StubFetcher {
-        items: Vec<TracedProtocolConfig>,
-    }
-
-    impl StubFetcher {
-        fn new(items: Vec<TracedProtocolConfig>) -> Self {
-            Self { items }
-        }
-    }
-
-    impl SourceFetcher for StubFetcher {
-        fn fetch(
-            &self,
-            _client: &reqwest::Client,
-            _registry: Arc<SourceRegistry>,
-            _channels: Vec<String>,
-            _subscriptions: Vec<String>,
-        ) -> futures::stream::BoxStream<'static, TracedProtocolConfig> {
-            futures::stream::iter(self.items.clone()).boxed()
-        }
-    }
-
+    use std::sync::Arc;
     fn make_in_memory_conn() -> rusqlite::Connection {
         let conn = rusqlite::Connection::open_in_memory().expect("in-memory db");
         crate::db::init_db(&conn).expect("init schema");
         conn
     }
-
-    fn make_vmess_config() -> ProtocolConfig {
-        let raw = RawUrlX::from(
-            "vmess://eyJhZGQiOiIxLjIuMy40IiwicG9ydCI6ODAsImlkIjoiYWJjZGUtMTIzNDUtNjc4OTAiLCJuZXQiOiJ0Y3AiLCJ0eXBlIjoibm9uZSJ9",
-        );
-        ProtocolConfig::try_parse(&raw).expect("valid vmess")
+    fn vmess_raw_url() -> &'static str {
+        "vmess://eyJhZGQiOiIxLjIuMy40IiwicG9ydCI6ODAsImlkIjoiYWJjZGUtMTIzNDUtNjc4OTAiLCJuZXQiOiJ0Y3AiLCJ0eXBlIjoibm9uZSJ9"
     }
-
     fn source_id_for(url: &str) -> i64 {
         crate::db::hash_source_url(url)
     }
-
-    fn make_traced_config(source_id: i64, source_url: &str, ts: i64) -> TracedProtocolConfig {
+    fn make_raw_batch(source_id: i64, source_url: &str, ts: i64) -> RawSourceItemBatch {
         let source = Arc::new(SourceMetadata::new(
             source_url.to_string(),
             SourceType::Other,
@@ -210,90 +118,57 @@ mod tests {
             id: source_id,
             ..(*source).clone()
         });
-        TracedProtocolConfig {
-            config: make_vmess_config(),
-            timestamp: DateTime::from_timestamp(ts, 0).unwrap(),
+        RawSourceItemBatch {
             source,
+            timestamp: DateTime::from_timestamp(ts, 0).unwrap(),
+            raw_urls: Box::new([vmess_raw_url().to_string()]),
         }
     }
-
     #[tokio::test]
     async fn test_pipeline_empty_sources() {
-        let registry = Arc::new(SourceRegistry::from_sources(&[], &[]));
-        let fetcher = StubFetcher::new(vec![]);
         let conn = make_in_memory_conn();
-
-        let client = reqwest::Client::new();
-        let result = registry.run_pipeline_with(&client, &conn, fetcher).await;
-        assert!(result.is_ok());
+        let mut pipeline = Pipeline::new_test(conn);
+        let count = pipeline.run().await.unwrap();
+        assert_eq!(count, 0);
     }
-
-    #[tokio::test]
-    async fn test_pipeline_registry_upserts_sources() {
-        let registry = Arc::new(SourceRegistry::from_sources(
-            &[],
-            &["https://example.com/sub".to_string()],
-        ));
-        let fetcher = StubFetcher::new(vec![]);
-        let conn = make_in_memory_conn();
-
-        let client = reqwest::Client::new();
-        registry
-            .run_pipeline_with(&client, &conn, fetcher)
-            .await
-            .unwrap();
-
-        let sid = source_id_for("https://example.com/sub");
-        let server = crate::db::get_server(&conn, sid).unwrap();
-        assert!(server.is_none(), "no server for source ID");
-    }
-
     #[tokio::test]
     async fn test_pipeline_upserts_config_to_db() {
-        let config = make_vmess_config();
         let source_url = "https://example.com/sub";
         let sid = source_id_for(source_url);
-
-        let registry = Arc::new(SourceRegistry::from_sources(&[], &[source_url.to_string()]));
-        let items = vec![make_traced_config(sid, source_url, 1_700_000_000)];
-        let fetcher = StubFetcher::new(items);
         let conn = make_in_memory_conn();
-
-        let client = reqwest::Client::new();
-        registry
-            .run_pipeline_with(&client, &conn, fetcher)
-            .await
-            .unwrap();
-
+        crate::db::upsert_source(&conn, source_url).unwrap();
+        let mut pipeline = Pipeline::new_test(conn);
+        pipeline.add_batch_raw(vec![make_raw_batch(sid, source_url, 1_700_000_000)]);
+        let count = pipeline.run().await.unwrap();
+        assert_eq!(count, 1);
+        let guard = pipeline.conn().write().await;
+        let raw = RawUrlX::from(vmess_raw_url());
+        let config = ProtocolConfig::try_parse(&raw).expect("valid vmess");
         let server_id = config.uid().cast_signed();
-        let server = crate::db::get_server(&conn, server_id).unwrap();
+        let server = crate::db::get_server(&*guard, server_id).unwrap();
         assert!(server.is_some(), "server should exist after upsert");
         if let Some(s) = server {
             assert_eq!(s.schema, "vmess");
         }
     }
-
     #[tokio::test]
     async fn test_pipeline_multiple_configs() {
         let source_url = "https://example.com/sub";
         let sid = source_id_for(source_url);
-
-        let registry = Arc::new(SourceRegistry::from_sources(&[], &[source_url.to_string()]));
-        let items = vec![
-            make_traced_config(sid, source_url, 1_700_000_000),
-            make_traced_config(sid, source_url, 1_700_000_001),
-        ];
-        let fetcher = StubFetcher::new(items);
         let conn = make_in_memory_conn();
-
-        let client = reqwest::Client::new();
-        registry
-            .run_pipeline_with(&client, &conn, fetcher)
-            .await
-            .unwrap();
-
-        let server_id = make_vmess_config().uid().cast_signed();
-        let sightings = crate::db::get_sightings(&conn, server_id).unwrap();
+        crate::db::upsert_source(&conn, source_url).unwrap();
+        let mut pipeline = Pipeline::new_test(conn);
+        pipeline.add_batch_raw(vec![
+            make_raw_batch(sid, source_url, 1_700_000_000),
+            make_raw_batch(sid, source_url, 1_700_000_001),
+        ]);
+        let count = pipeline.run().await.unwrap();
+        assert_eq!(count, 2);
+        let guard = pipeline.conn().write().await;
+        let raw = RawUrlX::from(vmess_raw_url());
+        let config = ProtocolConfig::try_parse(&raw).expect("valid vmess");
+        let server_id = config.uid().cast_signed();
+        let sightings = crate::db::get_sightings(&*guard, server_id).unwrap();
         assert!(
             sightings.len() >= 2,
             "should have 2+ sightings for same server"

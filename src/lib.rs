@@ -55,29 +55,35 @@ mod macros {
 }
 
 pub(crate) use macros::nom_bail;
-
-pub fn parse_sub(url: &url::Url, sub: &[u8]) -> Lines<'static> {
-    let sub = sub.trim_end_with(|c| c.is_whitespace() || c == '=');
-    let sub = base64::prelude::BASE64_STANDARD_NO_PAD
-        .decode(sub)
+/// Pre-process raw subscription data: trim padding, base64 decode, normalize
+/// extras, and lossily convert to UTF-8.
+///
+/// Returns an owned `String` of decoded-and-normalized text suitable for
+/// line splitting and URL extraction.
+#[must_use]
+pub fn preprocess_sub_data(data: &[u8]) -> String {
+    let data = data.trim_end_with(|c| c.is_whitespace() || c == '=');
+    let data = base64::prelude::BASE64_STANDARD_NO_PAD
+        .decode(data)
         .map_err(|_| tracing::info!("Not a Standard Base64"))
         .or_else(|()| {
             base64::prelude::BASE64_URL_SAFE_NO_PAD
-                .decode(sub)
+                .decode(data)
                 .map_err(|_| tracing::info!("Not a URL Safe Base64"))
         })
-        .map_or_else(|()| Cow::Borrowed(sub), Cow::Owned);
-
-    tracing::info!("Total length of incoming data: {}", sub.len());
-
-    let sub = normalize_extras(sub.as_ref());
-    if let Cow::Owned(_) = sub {
+        .map_or_else(|()| Cow::Borrowed(data), Cow::Owned);
+    tracing::info!("Total length of incoming data: {}", data.len());
+    let data = normalize_extras(data.as_ref());
+    if let Cow::Owned(_) = data {
         tracing::info!("Some extras was fixed");
     }
-    let sub = String::from_utf8_lossy(sub.as_ref());
-    if let Cow::Owned(_) = sub {
+    let data = String::from_utf8_lossy(data.as_ref());
+    if let Cow::Owned(_) = data {
         tracing::info!("Some characters was replaced");
     }
-
-    Lines::new_raw(url, sub.as_ref()).processed()
+    data.into_owned()
+}
+pub fn parse_sub(url: &url::Url, sub: &[u8]) -> Lines<'static> {
+    let processed = preprocess_sub_data(sub);
+    Lines::new_raw(url, processed.as_ref()).processed()
 }

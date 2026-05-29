@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use anyhow::Context;
 
@@ -8,8 +7,8 @@ use chrono::{DateTime, Utc};
 use clap::Parser;
 use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 use v2ray_heal::mining;
-use v2ray_heal::proto_spec::ProtoSpec;
-use v2ray_heal::urlx::TinyText;
+use v2ray_heal::mining::RawSourceItemBatch;
+use v2ray_heal::urlx::{SchemeX, TinyText};
 
 fn is_telegram_url(url: &url::Url) -> bool {
     url.host_str() == Some("t.me")
@@ -31,7 +30,6 @@ enum PullScope {
 }
 
 #[derive(Debug, clap::Subcommand)]
-
 enum Commands {
     Stdin,
     Config {
@@ -44,23 +42,64 @@ enum Commands {
         file: Vec<PathBuf>,
     },
     Emit {
-        #[arg(long, short)]
+        #[arg(
+            long,
+            value_delimiter = ',',
+            help = "Filter by protocol (repeatable)"
+        )]
         protocol: Vec<String>,
-        #[arg(long)]
+        #[arg(
+            long,
+            help = "Minimum first-seen timestamp (humantime duration, e.g. '7d', '30m')"
+        )]
         min_first_seen_ts: Option<humantime::Duration>,
-        #[arg(long)]
+        #[arg(
+            long,
+            help = "Minimum last-seen timestamp (humantime duration, e.g. '7d', '30m')"
+        )]
         min_last_seen_ts: Option<humantime::Duration>,
-        #[arg(long, default_missing_value = "all", num_args = 0..=1)]
+        #[arg(
+            long,
+            value_enum,
+            help = "Scope of sources to pull before emitting"
+        )]
         pull: Option<PullScope>,
     },
 }
 
 #[derive(Debug, clap::Parser)]
+#[command(name = "v2ray-heal")]
 struct Cli {
-    #[arg(global = true, default_value = "v2ray-heal.db", long)]
-    db: PathBuf,
     #[command(subcommand)]
     command: Option<Commands>,
+    #[arg(
+        long,
+        default_value = "v2ray-heal.db",
+        help = "Path to the SQLite database"
+    )]
+    db: PathBuf,
+}
+
+/// Pre-process a raw subscription payload into decoded/normalized text, then
+/// extract raw URL strings using SchemeX::slice_input.
+fn parse_to_raw_urls(data: &[u8]) -> Vec<String> {
+    let text = v2ray_heal::preprocess_sub_data(data);
+    text.lines()
+        .flat_map(|line| {
+            let s = line.trim_start();
+            if s.starts_with('#') || s.starts_with("//") || s.is_empty() {
+                Vec::new()
+            } else {
+                s.split("<br/>")
+                    .flat_map(|segment| {
+                        SchemeX::slice_input(segment)
+                            .into_iter()
+                            .map(|(_, url)| url.to_string())
+                    })
+                    .collect()
+            }
+        })
+        .collect()
 }
 
 #[tokio::main]
@@ -87,48 +126,52 @@ async fn main() -> anyhow::Result<()> {
                 anyhow::bail!("No data received from stdin");
             }
 
-            let conn = mining::open_db(&cli.db)?;
             let source_url = url::Url::parse("stdin://local")?;
+            let url_str = source_url.as_str().to_string();
 
-            let mut registry = mining::SourceRegistry::new();
-            registry.pre_populate("stdin://local", mining::SourceType::Other);
-            registry.upsert_all(&conn)?;
+            let mut pipeline = mining::Pipeline::new(&cli.db)?;
+            pipeline.add_batch_source(&url_str);
 
-            let lines = v2ray_heal::parse_sub(&source_url, &buf);
-            let items = mining::lines_to_traced(
-                &lines,
-                &registry,
-                "stdin://local",
-                mining::get_current_timestamp(),
-            );
-            let count = mining::process_config_stream(futures::stream::iter(items), &conn).await?;
+            let raw_urls = parse_to_raw_urls(&buf);
+            if raw_urls.is_empty() {
+                tracing::warn!("No proxy URLs found in stdin data");
+                return Ok(());
+            }
+
+            let source = pipeline
+                .registry_ref()
+                .lookup(&url_str)
+                .expect("source just registered");
+
+            let batch = RawSourceItemBatch {
+                source,
+                timestamp: Utc::now(),
+                raw_urls: raw_urls.into_boxed_slice(),
+            };
+
+            pipeline.add_batch_raw(vec![batch]);
+            let count = pipeline.run().await?;
             tracing::info!(count, "Stdin mining completed");
         }
         Some(Commands::Remote { url }) => {
-            let conn = mining::open_db(&cli.db)?;
-            let client = mining::build_client()?;
-
-            let mut registry = mining::SourceRegistry::new();
+            let mut pipeline = mining::Pipeline::new(&cli.db)?;
             for u in &url {
                 if is_telegram_url(u) {
-                    registry.add_telegram_channel(u.as_str());
+                    pipeline.add_telegram(u.as_str());
                 } else {
-                    registry.add_subscription(u.as_str());
+                    pipeline.add_subscription(u.as_str());
                 }
             }
-
-            let registry = Arc::new(registry);
-            registry.run_pipeline(&client, &conn).await?;
+            pipeline.run().await?;
         }
         Some(Commands::Local { file }) => {
             if file.is_empty() {
                 anyhow::bail!("No file paths provided");
             }
 
-            let conn = mining::open_db(&cli.db)?;
-            let mut registry = mining::SourceRegistry::new();
+            let mut pipeline = mining::Pipeline::new(&cli.db)?;
+            let mut batches = Vec::new();
 
-            let mut resolved: Vec<(PathBuf, url::Url, String)> = Vec::new();
             for path in &file {
                 let abs = std::fs::canonicalize(path)
                     .with_context(|| format!("Failed to resolve path: {}", path.display()))?;
@@ -136,22 +179,35 @@ async fn main() -> anyhow::Result<()> {
                     anyhow::anyhow!("Cannot convert path to file URL: {}", abs.display())
                 })?;
                 let url_str = source_url.as_str().to_string();
-                registry.pre_populate(&url_str, mining::SourceType::Other);
-                resolved.push((abs, source_url, url_str));
-            }
-            registry.upsert_all(&conn)?;
+                pipeline.add_batch_source(&url_str);
 
-            let ts = mining::get_current_timestamp();
-            let mut items = Vec::new();
-            for (abs_path, source_url, url_str) in &resolved {
-                let data = std::fs::read(abs_path)
-                    .with_context(|| format!("Failed to read file: {}", abs_path.display()))?;
-                let lines = v2ray_heal::parse_sub(source_url, &data);
-                let traced = mining::lines_to_traced(&lines, &registry, url_str, ts);
-                items.extend(traced);
+                let data = std::fs::read(&abs)
+                    .with_context(|| format!("Failed to read file: {}", abs.display()))?;
+
+                let raw_urls = parse_to_raw_urls(&data);
+                if raw_urls.is_empty() {
+                    continue;
+                }
+
+                let source = pipeline
+                    .registry_ref()
+                    .lookup(&url_str)
+                    .expect("source just registered");
+
+                batches.push(RawSourceItemBatch {
+                    source,
+                    timestamp: Utc::now(),
+                    raw_urls: raw_urls.into_boxed_slice(),
+                });
             }
 
-            let count = mining::process_config_stream(futures::stream::iter(items), &conn).await?;
+            if batches.is_empty() {
+                tracing::warn!("No proxy URLs found in any file");
+                return Ok(());
+            }
+
+            pipeline.add_batch_raw(batches);
+            let count = pipeline.run().await?;
             tracing::info!(count, "Local file mining completed");
         }
         Some(Commands::Emit {
@@ -160,16 +216,14 @@ async fn main() -> anyhow::Result<()> {
             min_last_seen_ts,
             pull,
         }) => {
-            let conn = mining::open_db(&cli.db)?;
+            let mut pipeline = mining::Pipeline::new(&cli.db)?;
+
             if let Some(scope) = pull {
-                let sources = v2ray_heal::db::query_all_sources(&conn)
-                    .context("Failed to query sources for --pull")?;
+                let sources = pipeline.all_sources().await?;
 
                 if sources.is_empty() {
                     tracing::warn!("--pull: no sources in database, nothing to fetch");
                 } else {
-                    let client = mining::build_client()?;
-                    let mut registry = mining::SourceRegistry::new();
                     let mut per_source_backfill: HashMap<TinyText, DateTime<Utc>> = HashMap::new();
 
                     for source in &sources {
@@ -177,55 +231,54 @@ async fn main() -> anyhow::Result<()> {
                         match scope {
                             PullScope::Sub => {
                                 if !is_tg {
-                                    registry.add_subscription(&source.url);
+                                    pipeline.add_subscription(&source.url);
                                 }
                             }
                             PullScope::Tg => {
-                                if is_tg
-                                    && let Some(ts) =
-                                        v2ray_heal::db::query_latest_ts_for_source(&conn, source.id)
-                                            .context("Failed to query latest ts for source")?
-                                {
-                                    registry.add_telegram_channel(&source.url);
-                                    per_source_backfill.insert(
-                                        TinyText::from(&source.url),
-                                        DateTime::from_timestamp(ts, 0).unwrap(),
-                                    );
+                                if is_tg {
+                                    let ts = {
+                                        let guard = pipeline.conn().write().await;
+                                        v2ray_heal::db::query_latest_ts_for_source(
+                                            &*guard, source.id,
+                                        )
+                                        .context("Failed to query latest ts for source")?
+                                    };
+                                    if let Some(ts) = ts {
+                                        pipeline.add_telegram(&source.url);
+                                        per_source_backfill.insert(
+                                            TinyText::from(&source.url),
+                                            DateTime::from_timestamp(ts, 0).unwrap(),
+                                        );
+                                    }
                                 }
                             }
                             PullScope::All => {
                                 if is_tg {
-                                    if let Some(ts) =
-                                        v2ray_heal::db::query_latest_ts_for_source(&conn, source.id)
-                                            .context("Failed to query latest ts for source")?
-                                    {
-                                        registry.add_telegram_channel(&source.url);
+                                    let ts = {
+                                        let guard = pipeline.conn().write().await;
+                                        v2ray_heal::db::query_latest_ts_for_source(
+                                            &*guard, source.id,
+                                        )
+                                        .context("Failed to query latest ts for source")?
+                                    };
+                                    if let Some(ts) = ts {
+                                        pipeline.add_telegram(&source.url);
                                         per_source_backfill.insert(
                                             TinyText::from(&source.url),
                                             DateTime::from_timestamp(ts, 0).unwrap(),
                                         );
                                     }
                                 } else {
-                                    registry.add_subscription(&source.url);
+                                    pipeline.add_subscription(&source.url);
                                 }
                             }
                         }
                     }
-                    registry.upsert_all(&conn)?;
 
-                    let fetcher = if per_source_backfill.is_empty() {
-                        mining::LiveFetcher::default()
-                    } else {
-                        mining::LiveFetcher {
-                            tg_config: mining::TgConfig {
-                                per_source_backfill,
-                                ..Default::default()
-                            },
-                        }
-                    };
-                    Arc::new(registry)
-                        .run_pipeline_with(&client, &conn, fetcher)
-                        .await?;
+                    if !per_source_backfill.is_empty() {
+                        pipeline.set_per_source_backfill(per_source_backfill);
+                    }
+                    pipeline.run().await?;
                 }
             }
 
@@ -251,70 +304,29 @@ async fn main() -> anyhow::Result<()> {
                 Some(protocol.as_slice())
             };
 
-            let servers =
-                v2ray_heal::db::query_servers_filtered(&conn, protocol_filter, min_first, min_last)
-                    .context("Failed to query servers")?;
-
-            let server_ids: Vec<i64> = servers.iter().map(|s| s.id).collect();
-            let sources = v2ray_heal::db::query_sources_by_server_ids(&conn, &server_ids)
-                .context("Failed to query sources")?;
-
-            println!("# v2ray-heal generated at {}", Utc::now().to_rfc3339());
-            if !sources.is_empty() {
-                println!("# Sources:");
-                for src in &sources {
-                    println!("#   - {}", src.url);
-                }
-            }
-            println!();
-
-            for server in &servers {
-                let config: v2ray_heal::proto_spec::ProtocolConfig =
-                    match serde_json::from_str(&server.raw_config) {
-                        Ok(c) => c,
-                        Err(e) => {
-                            tracing::warn!(
-                                server_id = server.id,
-                                error = %e,
-                                "Failed to deserialize config"
-                            );
-                            continue;
-                        }
-                    };
-                match config.reconstruct() {
-                    Ok(url) => println!("{url}"),
-                    Err(e) => {
-                        tracing::warn!(
-                            server_id = server.id,
-                            error = %e,
-                            "Failed to reconstruct URL"
-                        );
-                    }
-                }
-            }
+            let output = pipeline
+                .export(protocol_filter, min_first, min_last)
+                .await?;
+            print!("{output}");
         }
         None => {
-            let conn = mining::open_db(&cli.db)?;
-            let client = mining::build_client()?;
+            let pipeline = mining::Pipeline::new(&cli.db)?;
 
-            let sources =
-                v2ray_heal::db::query_all_sources(&conn).context("Failed to query sources")?;
-
+            let sources = pipeline.all_sources().await?;
             if sources.is_empty() {
                 tracing::warn!("No sources found in database");
                 return Ok(());
             }
 
-            let mut registry = mining::SourceRegistry::new();
+            let mut pipeline = pipeline;
             for source in &sources {
                 if is_telegram_url_str(&source.url) {
-                    registry.add_telegram_channel(&source.url);
+                    pipeline.add_telegram(&source.url);
                 } else {
-                    registry.add_subscription(&source.url);
+                    pipeline.add_subscription(&source.url);
                 }
             }
-            registry.upsert_all(&conn)?;
-            Arc::new(registry).run_pipeline(&client, &conn).await?;
+            pipeline.run().await?;
         }
     }
 

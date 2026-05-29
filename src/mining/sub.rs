@@ -7,15 +7,14 @@ use chrono::Utc;
 use futures::Stream;
 use tokio::task::JoinSet;
 
+use crate::mining::raw_event::RawSourceItemBatch;
 use crate::mining::registry::SourceRegistry;
-use crate::mining::traced_config::TracedProtocolConfig;
-use crate::utils::line::{Data, Lines};
+use crate::urlx::SchemeX;
 
 /// Events emitted by subscription fetching tasks.
-#[allow(clippy::large_enum_variant, reason = "todo: refactor")]
 enum SubEvent {
-    /// A successfully parsed proxy config.
-    Item(TracedProtocolConfig),
+    /// A batch of raw URL strings from one subscription download.
+    Item(RawSourceItemBatch),
     /// A non-fatal error (logged, stream continues).
     Error { url: String, error: String },
 }
@@ -91,18 +90,39 @@ impl SubFetcher {
                 let download_ts = Utc::now();
 
                 // Clone fields needed inside spawn_blocking
-                let url_clone = url.clone();
                 let url_str_clone = url_str.clone();
                 let registry_clone = registry.clone();
 
                 let result = tokio::task::spawn_blocking(move || {
-                    let lines = crate::parse_sub(&url_clone, &data);
+                    // Pre-process: decode base64, normalize extras, lossy to UTF-8
+                    let text = crate::preprocess_sub_data(&data);
+
+                    // Split into lines and extract (scheme, url) pairs
+                    let raw_urls: Vec<String> = text
+                        .lines()
+                        .flat_map(|line| {
+                            let s = line.trim_start();
+                            if s.starts_with('#') || s.starts_with("//") || s.is_empty() {
+                                Vec::new()
+                            } else {
+                                // Split by <br/> to handle HTML line breaks
+                                s.split("<br/>")
+                                    .flat_map(|segment| {
+                                        SchemeX::slice_input(segment)
+                                            .into_iter()
+                                            .map(|(_, url)| url.to_string())
+                                    })
+                                    .collect()
+                            }
+                        })
+                        .collect();
+
                     let source = registry_clone.lookup(&url_str_clone);
-                    (lines, source)
+                    (raw_urls, source)
                 })
                 .await;
 
-                let Ok((lines, Some(source))) = result else {
+                let Ok((raw_urls, Some(source))) = result else {
                     _ = sender
                         .send(SubEvent::Error {
                             url: url_str.clone(),
@@ -112,36 +132,16 @@ impl SubFetcher {
                     return;
                 };
 
-                let ts = download_ts.timestamp();
-
-                // Emit unparseable entries via tracing
-                for line in lines.raw_entries() {
-                    if let Data::Raw { scheme, url } = &line.url {
-                        super::emit_unparseable_entry(
-                            url.as_ref(),
-                            scheme.as_ref(),
-                            line.err.as_deref().unwrap_or("unknown"),
-                            source.id,
-                            "subscription",
-                            ts,
-                        );
-                    }
+                if raw_urls.is_empty() {
+                    return;
                 }
 
-                // Send parsed configs
-                for line in lines.iter() {
-                    let Data::Url(config) = &line.url else {
-                        continue;
-                    };
-                    let item = SubEvent::Item(TracedProtocolConfig {
-                        config: config.clone(),
-                        timestamp: download_ts,
-                        source: source.clone(),
-                    });
-                    if sender.send(item).await.is_err() {
-                        break;
-                    }
-                }
+                let item = SubEvent::Item(RawSourceItemBatch {
+                    source,
+                    timestamp: download_ts,
+                    raw_urls: raw_urls.into_boxed_slice(),
+                });
+                _ = sender.send(item).await;
             };
 
             if tokio::time::timeout(TASK_TIMEOUT, task).await.is_err() {
@@ -149,50 +149,6 @@ impl SubFetcher {
             }
         })
     }
-}
-
-/// Convert parsed subscription lines into [`TracedProtocolConfig`] items,
-/// emitting unparseable entries via the tracing layer.
-///
-/// Returns an empty vec if the source URL is not found in the registry.
-pub fn lines_to_traced(
-    lines: &Lines,
-    registry: &SourceRegistry,
-    url_str: &str,
-    ts: i64,
-) -> Vec<TracedProtocolConfig> {
-    let Some(source) = registry.lookup(url_str) else {
-        tracing::warn!(url = %url_str, "Source not found in registry (should not happen)");
-        return Vec::new();
-    };
-    let timestamp = Utc::now();
-
-    for line in lines.raw_entries() {
-        if let Data::Raw { scheme, url } = &line.url {
-            super::emit_unparseable_entry(
-                url.as_ref(),
-                scheme.as_ref(),
-                line.err.as_deref().unwrap_or("unknown"),
-                source.id,
-                "local",
-                ts,
-            );
-        }
-    }
-
-    lines
-        .iter()
-        .filter_map(|line| {
-            let Data::Url(config) = &line.url else {
-                return None;
-            };
-            Some(TracedProtocolConfig {
-                config: config.clone(),
-                timestamp,
-                source: source.clone(),
-            })
-        })
-        .collect()
 }
 
 /// # Errors
@@ -223,14 +179,14 @@ async fn download_sub_data(client: &reqwest::Client, url: &url::Url) -> Result<V
         .to_vec())
 }
 
-/// Fetch all subscriptions as a stream of traced protocol configs.
+/// Fetch all subscriptions as a stream of raw URL batches.
 /// Each subscription URL is spawned as a separate [`SubFetcher`] task.
 #[allow(clippy::needless_pass_by_value, reason = "Should be owned by Future")]
 pub(super) fn fetch_subscriptions(
     client: reqwest::Client,
     registry: Arc<SourceRegistry>,
     subscriptions: Vec<String>,
-) -> impl Stream<Item = TracedProtocolConfig> {
+) -> impl Stream<Item = RawSourceItemBatch> {
     let (tx, rx) = tokio::sync::mpsc::channel::<SubEvent>(1024);
     let mut join_set = JoinSet::new();
 
@@ -264,7 +220,7 @@ struct SubscriptionStream {
 }
 
 impl Stream for SubscriptionStream {
-    type Item = TracedProtocolConfig;
+    type Item = RawSourceItemBatch;
 
     fn poll_next(
         self: std::pin::Pin<&mut Self>,

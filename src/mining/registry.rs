@@ -1,11 +1,8 @@
 use anyhow::Context;
-use futures::StreamExt;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
-use tracing::info;
 use yaml_rust2::{Yaml, YamlLoader};
-
 use crate::db::hash_source_url;
 
 /// Type of proxy source
@@ -38,7 +35,7 @@ impl SourceMetadata {
 
 /// Registry of all proxy sources
 /// Pre-populated before creating any streams, then becomes immutable
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct SourceRegistry {
     sources: HashMap<String, Arc<SourceMetadata>>,
 }
@@ -91,7 +88,7 @@ impl SourceRegistry {
     }
 
     /// Partition sources into (`telegram_channels`, `subscriptions`) lists
-    fn partition_sources(&self) -> (Vec<String>, Vec<String>) {
+    pub(super) fn partition_sources(&self) -> (Vec<String>, Vec<String>) {
         let mut channels = Vec::new();
         let mut subscriptions = Vec::new();
         for meta in self.sources() {
@@ -103,7 +100,6 @@ impl SourceRegistry {
         }
         (channels, subscriptions)
     }
-
     /// Construct registry from channel and subscription URL lists
     pub(crate) fn from_sources(channels: &[String], subscriptions: &[String]) -> Self {
         let mut registry = Self::new();
@@ -115,7 +111,6 @@ impl SourceRegistry {
         }
         registry
     }
-
     /// Load config from YAML file, normalize channels, pre-populate registry
     ///
     /// # Errors
@@ -126,11 +121,9 @@ impl SourceRegistry {
     pub fn from_config(path: &Path) -> Result<Self, anyhow::Error> {
         let content = std::fs::read_to_string(path).context("Failed to read config file")?;
         let docs = YamlLoader::load_from_str(&content).context("Failed to parse YAML")?;
-
         let Some(Yaml::Hash(h)) = docs.first() else {
             return Err(anyhow::anyhow!("Invalid or empty config file"));
         };
-
         let channels: Vec<String> = h
             .get(&Yaml::String("tgchannel".into()))
             .and_then(|v| v.as_vec())
@@ -143,7 +136,6 @@ impl SourceRegistry {
                     .collect()
             })
             .unwrap_or_default();
-
         let subscriptions: Vec<String> = h
             .get(&Yaml::String("subscriptions".into()))
             .and_then(|v| v.as_vec())
@@ -156,67 +148,9 @@ impl SourceRegistry {
                     .collect()
             })
             .unwrap_or_default();
-
         Ok(Self::from_sources(&channels, &subscriptions))
     }
-
-    /// Run the full mining pipeline with the given fetcher
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the pipeline fails
-    #[allow(
-        clippy::future_not_send,
-        reason = "need some research. this is not a problem, as all works fine, but clippy complains"
-    )]
-    pub async fn run_pipeline_with<F: SourceFetcher>(
-        self: Arc<Self>,
-        client: &reqwest::Client,
-        conn: &rusqlite::Connection,
-        fetcher: F,
-    ) -> Result<(), anyhow::Error> {
-        let (channels, subscriptions) = self.partition_sources();
-        info!(
-            channels = channels.len(),
-            subscriptions = subscriptions.len(),
-            "Running mining pipeline"
-        );
-        let stream = fetcher.fetch(client, self, channels, subscriptions);
-        let total = super::process_config_stream(stream, conn).await?;
-        info!(count = total, "Mining pipeline completed");
-        Ok(())
-    }
-
-    /// Run the full mining pipeline with the default `LiveFetcher`
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the pipeline fails
-    #[allow(
-        clippy::future_not_send,
-        reason = "need some research. this is not a problem, as all works fine, but clippy complains"
-    )]
-    pub async fn run_pipeline(
-        self: Arc<Self>,
-        client: &reqwest::Client,
-        conn: &rusqlite::Connection,
-    ) -> Result<(), anyhow::Error> {
-        self.run_pipeline_with(client, conn, LiveFetcher::default())
-            .await
-    }
-
-    /// Run a fetcher stream from the registry sources, returning a boxed stream of traced configs
-    #[allow(clippy::needless_pass_by_value, reason = "we need to own the fetcher")]
-    pub fn run_fetcher_stream<F: SourceFetcher>(
-        self: Arc<Self>,
-        client: &reqwest::Client,
-        fetcher: F,
-    ) -> futures::stream::BoxStream<'static, TracedProtocolConfig> {
-        let (channels, subscriptions) = self.partition_sources();
-        fetcher.fetch(client, self, channels, subscriptions)
-    }
 }
-
 pub(super) fn normalize_channel_url(raw: &str) -> String {
     let channel_id = raw
         .strip_prefix("https://t.me/s/")
@@ -225,63 +159,6 @@ pub(super) fn normalize_channel_url(raw: &str) -> String {
         .trim_start_matches('@');
     format!("https://t.me/s/{channel_id}")
 }
-
-pub trait SourceFetcher {
-    fn fetch(
-        &self,
-        client: &reqwest::Client,
-        registry: Arc<SourceRegistry>,
-        channels: Vec<String>,
-        subscriptions: Vec<String>,
-    ) -> futures::stream::BoxStream<'static, TracedProtocolConfig>;
-}
-
-#[derive(Default)]
-pub struct LiveFetcher {
-    pub tg_config: super::TgConfig,
-}
-
-impl SourceFetcher for LiveFetcher {
-    fn fetch(
-        &self,
-        client: &reqwest::Client,
-        registry: Arc<SourceRegistry>,
-        channels: Vec<String>,
-        subscriptions: Vec<String>,
-    ) -> futures::stream::BoxStream<'static, TracedProtocolConfig> {
-        let tg_stream = if channels.is_empty() {
-            None
-        } else {
-            Some(
-                super::telegram::fetch_tg_channels(
-                    client.clone(),
-                    self.tg_config.concurrency,
-                    channels.into_iter(),
-                    self.tg_config.timeout,
-                    self.tg_config.backfill.clone(),
-                    self.tg_config.per_source_backfill.clone(),
-                    registry.clone(),
-                )
-                .boxed(),
-            )
-        };
-
-        let sub_stream = if subscriptions.is_empty() {
-            None
-        } else {
-            Some(super::sub::fetch_subscriptions(client.clone(), registry, subscriptions).boxed())
-        };
-
-        match (tg_stream, sub_stream) {
-            (Some(tg), Some(sub)) => futures::stream::select(tg, sub).boxed(),
-            (Some(tg), None) => tg,
-            (None, Some(sub)) => sub,
-            (None, None) => futures::stream::empty().boxed(),
-        }
-    }
-}
-
-use super::TracedProtocolConfig;
 
 #[cfg(test)]
 mod tests {

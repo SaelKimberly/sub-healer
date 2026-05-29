@@ -63,6 +63,82 @@ pub enum ParseError {
     InvalidPrivateHost(Cow<'static, str>),
 }
 
+#[derive(Debug, Clone)]
+pub struct FallbackInfo {
+    pub raw_url: String,
+    pub original_scheme: SchemeX,
+    pub original_error: String,
+}
+
+pub enum ParseResult {
+    Direct(ProtocolConfig),
+    Fallback(ProtocolConfig, FallbackInfo),
+}
+
+impl ProtocolConfig {
+    /// Like [`ProtoSpec::try_parse`] but distinguishes direct vs. fallback parses.
+    ///
+    /// # Errors
+    ///
+    /// If the URL is not a valid proxy URL for any supported protocol.
+    pub fn try_parse_detailed(raw: &RawUrlX<'_>) -> Result<ParseResult, ParseError> {
+        let r = match raw.schema {
+            SchemeX::Vless => VlessConfig::try_parse(raw).map(Self::Vless),
+            SchemeX::Trojan => TrojanConfig::try_parse(raw).map(Self::Trojan),
+            SchemeX::Vmess => VmessConfig::try_parse(raw).map(Self::Vmess),
+            SchemeX::Hysteria | SchemeX::Hysteria2 => {
+                Hysteria2Config::try_parse(raw).map(Self::Hysteria2)
+            }
+            SchemeX::SS => SsConfig::try_parse(raw).map(Self::Ss),
+            SchemeX::SSR => SsrConfig::try_parse(raw).map(Self::Ssr),
+            SchemeX::Slipnet => SlipnetConfig::try_parse(raw).map(Self::Slipnet),
+            SchemeX::SlipnetEnc => SlipnetEncConfig::try_parse(raw).map(Self::SlipnetEnc),
+            SchemeX::Stormdns => StormdnsConfig::try_parse(raw).map(Self::Stormdns),
+            SchemeX::TUIC => TuicConfig::try_parse(raw).map(Self::Tuic),
+            SchemeX::WireGuard => WireguardConfig::try_parse(raw).map(Self::Wireguard),
+            SchemeX::Https if raw.userinfo == "t.me" => TgConfig::try_parse(raw).map(Self::Tg),
+            SchemeX::Tg => TgConfig::try_parse(raw).map(Self::Tg),
+            SchemeX::Undefined | SchemeX::Https => return Err(ParseError::PromotionUrl),
+
+            ref other => return Err(ParseError::UnsupportedScheme(other.clone())),
+        };
+
+        let original_err = match r {
+            Ok(r) => return Ok(ParseResult::Direct(r)),
+            Err(
+                e @ (ParseError::InvalidStructure(_)
+                | ParseError::MissingHost
+                | ParseError::MissingPort
+                | ParseError::InvalidUserInfo(_)
+                | ParseError::InvalidHostPort(_)
+                | ParseError::InvalidHost(_)
+                | ParseError::Unknown(_)),
+            ) => e,
+            unrecoverable @ Err(_) => return Err(unrecoverable.unwrap_err()),
+        };
+        let original_scheme = raw.schema.clone();
+        let original_error = original_err.to_string();
+        let v = SsConfig::try_parse(raw)
+            .map(Self::Ss)
+            .or_else(|_| SsrConfig::try_parse(raw).map(Self::Ssr))
+            .or_else(|_| VmessConfig::try_parse(raw).map(Self::Vmess))
+            .or_else(|_| VlessConfig::try_parse(raw).map(Self::Vless))
+            .or_else(|_| TrojanConfig::try_parse(raw).map(Self::Trojan))
+            .or_else(|_| Hysteria2Config::try_parse(raw).map(Self::Hysteria2))
+            .or_else(|_| SlipnetConfig::try_parse(raw).map(Self::Slipnet))
+            .or_else(|_| TgConfig::try_parse(raw).map(Self::Tg))
+            .or(Err(original_err))?;
+        Ok(ParseResult::Fallback(
+            v,
+            FallbackInfo {
+                raw_url: raw.raw.to_string(),
+                original_scheme,
+                original_error,
+            },
+        ))
+    }
+}
+
 pub trait ProtoSpec: Serialize + DeserializeOwned + std::fmt::Debug + Clone {
     /// # Errors
     ///
@@ -167,60 +243,10 @@ impl ProtoSpec for ProtocolConfig {
     ///
     /// If the URL is not a valid proxy URL for any supported protocol.
     fn try_parse(raw: &RawUrlX<'_>) -> Result<Self, ParseError> {
-        let r = match raw.schema {
-            SchemeX::Vless => VlessConfig::try_parse(raw).map(Self::Vless),
-            SchemeX::Trojan => TrojanConfig::try_parse(raw).map(Self::Trojan),
-            SchemeX::Vmess => VmessConfig::try_parse(raw).map(Self::Vmess),
-            SchemeX::Hysteria | SchemeX::Hysteria2 => {
-                Hysteria2Config::try_parse(raw).map(Self::Hysteria2)
-            }
-            SchemeX::SS => SsConfig::try_parse(raw).map(Self::Ss),
-            SchemeX::SSR => SsrConfig::try_parse(raw).map(Self::Ssr),
-            SchemeX::Slipnet => SlipnetConfig::try_parse(raw).map(Self::Slipnet),
-            SchemeX::SlipnetEnc => SlipnetEncConfig::try_parse(raw).map(Self::SlipnetEnc),
-            SchemeX::Stormdns => StormdnsConfig::try_parse(raw).map(Self::Stormdns),
-            SchemeX::TUIC => TuicConfig::try_parse(raw).map(Self::Tuic),
-            SchemeX::WireGuard => WireguardConfig::try_parse(raw).map(Self::Wireguard),
-            SchemeX::Https if raw.userinfo == "t.me" => TgConfig::try_parse(raw).map(Self::Tg),
-            SchemeX::Tg => TgConfig::try_parse(raw).map(Self::Tg),
-            SchemeX::Undefined | SchemeX::Https => return Err(ParseError::PromotionUrl),
-
-            ref other => return Err(ParseError::UnsupportedScheme(other.clone())),
-        };
-
-        let original_err = match r {
-            Ok(r) => return Ok(r),
-            Err(
-                e @ (ParseError::InvalidStructure(_)
-                | ParseError::MissingHost
-                | ParseError::MissingPort
-                | ParseError::InvalidUserInfo(_)
-                | ParseError::InvalidHostPort(_)
-                | ParseError::InvalidHost(_)
-                | ParseError::Unknown(_)),
-            ) => e,
-            unrecoverable @ Err(_) => return unrecoverable,
-        };
-
-        let original_schema = raw.schema.clone();
-        let v = SsConfig::try_parse(raw)
-            .map(Self::Ss)
-            .or_else(|_| SsrConfig::try_parse(raw).map(Self::Ssr))
-            .or_else(|_| VmessConfig::try_parse(raw).map(Self::Vmess))
-            .or_else(|_| VlessConfig::try_parse(raw).map(Self::Vless))
-            .or_else(|_| TrojanConfig::try_parse(raw).map(Self::Trojan))
-            .or_else(|_| Hysteria2Config::try_parse(raw).map(Self::Hysteria2))
-            .or_else(|_| SlipnetConfig::try_parse(raw).map(Self::Slipnet))
-            .or_else(|_| TgConfig::try_parse(raw).map(Self::Tg))
-            .or(Err(original_err))?;
-        tracing::warn!(
-            target: "mining::unparseable",
-            raw_url = raw.raw,
-            "Schema fallback success: [{original} => {restored}]",
-            original = original_schema,
-            restored = v.schema(),
-        );
-        Ok(v)
+        match Self::try_parse_detailed(raw) {
+            Ok(ParseResult::Direct(c) | ParseResult::Fallback(c, _)) => Ok(c),
+            Err(e) => Err(e),
+        }
     }
 }
 
