@@ -35,12 +35,13 @@ use std::{fmt::Write, num::NonZeroU64};
 
 use serde::{Deserialize, Serialize};
 
-use crate::urlx::{HostSpec, RawUrlX, SchemeX, host_serde, port_serde};
+use crate::urlx::{HostSpec, RawUrlX, SchemeX, TinyText, host_serde, port_serde};
 
 use super::common::{SecurityConfig, TlsConfig, TlsOpts};
 use super::utils;
 use super::{ParseError, ProtoSpec};
 
+#[serde_with::skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(test, derive(PartialEq, Eq))]
 #[serde(rename_all = "snake_case")]
@@ -54,11 +55,11 @@ pub struct TuicConfig {
     pub host: HostSpec,
     #[serde(with = "port_serde")]
     pub port: u16,
-    pub congestion_control: Option<String>,
-    pub udp_relay_mode: Option<String>,
+    pub congestion_control: Option<TinyText>,
+    pub udp_relay_mode: Option<TinyText>,
     #[serde(default, skip_serializing_if = "SecurityConfig::is_empty")]
     pub security: SecurityConfig,
-    pub remarks: Option<String>,
+    pub remarks: Option<TinyText>,
 }
 
 impl ProtoSpec for TuicConfig {
@@ -93,13 +94,13 @@ impl ProtoSpec for TuicConfig {
         let query = utils::parse_query(raw.query);
 
         // congestion_control: cubic/bbr/new_reno/bbr3. Defaults to bbr.
-        let congestion_control = query.get("congestion_control").cloned();
+        let congestion_control = query.get("congestion_control").cloned().map(TinyText::from);
         // udp_relay_mode: native/quic. Defaults to native.
-        let udp_relay_mode = query.get("udp_relay_mode").cloned();
+        let udp_relay_mode = query.get("udp_relay_mode").cloned().map(TinyText::from);
         let security = SecurityConfig {
             tls: Some(TlsConfig::Tls(TlsOpts {
-                sni: query.get("sni").cloned(),
-                alpn: query.get("alpn").cloned(),
+                sni: query.get("sni").cloned().map(TinyText::from),
+                alpn: query.get("alpn").cloned().map(TinyText::from),
                 fp: None,
                 insecure: query
                     .get("allow_insecure")

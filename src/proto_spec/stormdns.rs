@@ -40,7 +40,8 @@ use crate::urlx::{HostSpec, RawUrlX, SchemeX, TinyText, host_serde, port_serde};
 use super::common::SecurityConfig;
 use super::utils;
 use super::{ParseError, ProtoSpec};
-
+ 
+#[serde_with::skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(test, derive(PartialEq, Eq))]
 #[serde(rename_all = "snake_case")]

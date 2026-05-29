@@ -50,12 +50,13 @@ use std::num::NonZeroU64;
 use base64::Engine;
 use serde::{Deserialize, Serialize};
 
-use crate::urlx::{HostSpec, RawUrlX, SchemeX, host_serde, port_serde};
+use crate::urlx::{HostSpec, RawUrlX, SchemeX, TinyText, host_serde, port_serde};
 
 use super::common::SecurityConfig;
 use super::utils;
 use super::{ParseError, ProtoSpec};
 
+#[serde_with::skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(test, derive(PartialEq, Eq))]
 #[serde(rename_all = "snake_case")]
@@ -63,7 +64,7 @@ pub struct SsConfig {
     #[serde(skip)]
     sig_cache: std::sync::OnceLock<NonZeroU64>,
 
-    pub method: String,
+    pub method: TinyText,
     pub password: String,
     #[serde(with = "host_serde")]
     pub host: HostSpec,
@@ -71,7 +72,7 @@ pub struct SsConfig {
     pub port: u16,
     #[serde(default, skip_serializing_if = "SecurityConfig::is_empty")]
     pub security: SecurityConfig,
-    pub remarks: Option<String>,
+    pub remarks: Option<TinyText>,
 }
 
 impl ProtoSpec for SsConfig {
@@ -122,7 +123,7 @@ impl ProtoSpec for SsConfig {
 
         Ok(Self {
             sig_cache: std::sync::OnceLock::new(),
-            method: method.to_string(),
+            method: TinyText::from(method),
             password: password.to_string(),
             host: parsed_host,
             port: parsed_port,

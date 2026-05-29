@@ -55,12 +55,13 @@ use std::num::NonZeroU64;
 
 use serde::{Deserialize, Serialize};
 
-use crate::urlx::{HostSpec, RawUrlX, SchemeX, host_serde, port_serde};
+use crate::urlx::{HostSpec, RawUrlX, SchemeX, TinyText, host_serde, port_serde};
 
 use super::common::{SecurityConfig, TlsConfig, TlsOpts, TransportConfig};
 use super::utils;
 use super::{ParseError, ProtoSpec};
 
+#[serde_with::skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(test, derive(PartialEq, Eq))]
 #[serde(rename_all = "snake_case")]
@@ -76,9 +77,9 @@ pub struct VmessConfig {
     #[serde(default, skip_serializing_if = "SecurityConfig::is_empty")]
     pub security: SecurityConfig,
     pub transport: TransportConfig,
-    pub alter_id: Option<String>,
-    pub path: Option<String>,
-    pub remarks: Option<String>,
+    pub alter_id: Option<TinyText>,
+    pub path: Option<TinyText>,
+    pub remarks: Option<TinyText>,
 }
 
 impl ProtoSpec for VmessConfig {
@@ -129,30 +130,29 @@ impl ProtoSpec for VmessConfig {
             .and_then(|v| v.as_str())
             .filter(|s| !s.is_empty() && s != &"null")
             .map(String::from);
-
-        // "path" — transport-specific path (WS endpoint, gRPC serviceName, KCP seed)
+        
+        // "path" — transport-specific path
         let path = json
             .get("path")
             .and_then(|v| v.as_str())
             .filter(|s| !s.is_empty())
-            .map(String::from);
+            .map(TinyText::from);
 
-        // Extract TLS fields from JSON
         let sni = json
             .get("sni")
             .and_then(|v| v.as_str())
             .filter(|s| !s.is_empty())
-            .map(String::from);
+            .map(TinyText::from);
         let alpn = json
             .get("alpn")
             .and_then(|v| v.as_str())
             .filter(|s| !s.is_empty() && s != &"\"\"")
-            .map(String::from);
+            .map(TinyText::from);
         let fp = json
             .get("fp")
             .and_then(|v| v.as_str())
             .filter(|s| !s.is_empty())
-            .map(String::from);
+            .map(TinyText::from);
         let tls_str = json
             .get("tls")
             .and_then(|v| v.as_str())
@@ -184,15 +184,14 @@ impl ProtoSpec for VmessConfig {
             .get("aid")
             .and_then(|v| v.as_str())
             .filter(|s| !s.is_empty() && s != &"\"\"" && s != &"0")
-            .map(String::from);
-
+            .map(TinyText::from);
+        
         // "ps" — remarks/friendly name, also strips wrapping quotes
         let remarks = json
             .get("ps")
             .and_then(|v| v.as_str())
             .filter(|s| !s.is_empty())
-            .map(|s| s.trim_matches(['"', '\'']).to_string());
-
+            .map(|s| TinyText::from(s.trim_matches(['"', '\''])));
         // Build typed TransportConfig from net field
         let mut transport = TransportConfig::from_type_and_path(
             net_str.as_deref(),
@@ -209,7 +208,7 @@ impl ProtoSpec for VmessConfig {
             .filter(|s| !s.is_empty())
             .map(String::from);
         let server_addr = Some(parsed_host.to_str().into_owned());
-        transport = transport.with_host(vmess_host, sni, server_addr);
+        transport = transport.with_host(vmess_host, sni.map(|s| s.to_string()), server_addr);
 
         // For XHttp: mode comes from VMess JSON `type` field
         if let TransportConfig::XHttp(ref mut xcfg) = transport
@@ -217,7 +216,7 @@ impl ProtoSpec for VmessConfig {
         {
             match mode {
                 "auto" | "packet-up" | "stream-up" | "stream-one" => {
-                    xcfg.mode = Some(mode.to_string());
+                    xcfg.mode = Some(TinyText::from(mode));
                 }
                 other => {
                     return Err(ParseError::InvalidConf(
@@ -233,7 +232,7 @@ impl ProtoSpec for VmessConfig {
             json.get("host")
                 .and_then(|v| v.as_str())
                 .filter(|s| s.starts_with('/'))
-                .map(String::from)
+                .map(TinyText::from)
         } else {
             path
         };
@@ -268,13 +267,13 @@ impl ProtoSpec for VmessConfig {
         if let Some(TlsConfig::Tls(opts)) = &self.security.tls {
             map.insert("tls".into(), serde_json::Value::String("tls".into()));
             if let Some(ref v) = opts.sni {
-                map.insert("sni".into(), serde_json::Value::String(v.clone()));
+                map.insert("sni".into(), serde_json::Value::String(v.to_string()));
             }
             if let Some(ref v) = opts.alpn {
-                map.insert("alpn".into(), serde_json::Value::String(v.clone()));
+                map.insert("alpn".into(), serde_json::Value::String(v.to_string()));
             }
             if let Some(ref v) = opts.fp {
-                map.insert("fp".into(), serde_json::Value::String(v.clone()));
+                map.insert("fp".into(), serde_json::Value::String(v.to_string()));
             }
         }
         if let Some(ref v) = self.security.enc {
@@ -287,13 +286,13 @@ impl ProtoSpec for VmessConfig {
             );
         }
         if let Some(ref v) = self.path {
-            map.insert("path".into(), serde_json::Value::String(v.clone()));
+            map.insert("path".into(), serde_json::Value::String(v.to_string()));
         }
         if let Some(ref v) = self.alter_id {
-            map.insert("aid".into(), serde_json::Value::String(v.clone()));
+            map.insert("aid".into(), serde_json::Value::String(v.to_string()));
         }
         if let Some(ref v) = self.remarks {
-            map.insert("ps".into(), serde_json::Value::String(v.clone()));
+            map.insert("ps".into(), serde_json::Value::String(v.to_string()));
         }
 
         let json = serde_json::Value::Object(map);

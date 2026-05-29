@@ -40,12 +40,13 @@ use std::num::NonZeroU64;
 
 use serde::{Deserialize, Serialize};
 
-use crate::urlx::{HostSpec, RawUrlX, SchemeX, host_serde, port_serde};
+use crate::urlx::{HostSpec, RawUrlX, SchemeX, TinyText, host_serde, port_serde};
 
 use super::common::{RealityOpts, SecurityConfig, TlsConfig, TlsOpts, TransportConfig};
 use super::utils;
 use super::{ParseError, ProtoSpec};
 
+#[serde_with::skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(test, derive(PartialEq, Eq))]
 #[serde(rename_all = "snake_case")]
@@ -61,8 +62,8 @@ pub struct TrojanConfig {
     #[serde(default, skip_serializing_if = "SecurityConfig::is_empty")]
     pub security: SecurityConfig,
     pub transport: TransportConfig,
-    pub path: Option<String>,
-    pub remarks: Option<String>,
+    pub path: Option<TinyText>,
+    pub remarks: Option<TinyText>,
 }
 
 impl ProtoSpec for TrojanConfig {
@@ -93,20 +94,20 @@ impl ProtoSpec for TrojanConfig {
         let security = match query.get("security").map(String::as_str) {
             Some("tls") | None => SecurityConfig {
                 tls: Some(TlsConfig::Tls(TlsOpts {
-                    sni: query.get("sni").cloned(),
-                    alpn: query.get("alpn").cloned(),
-                    fp: query.get("fp").cloned(),
+                    sni: query.get("sni").cloned().map(TinyText::from),
+                    alpn: query.get("alpn").cloned().map(TinyText::from),
+                    fp: query.get("fp").cloned().map(TinyText::from),
                     insecure: None,
                 })),
                 enc: None,
             },
             Some("reality") => SecurityConfig {
                 tls: Some(TlsConfig::Reality(RealityOpts {
-                    sni: query.get("sni").cloned(),
-                    fp: query.get("fp").cloned(),
+                    sni: query.get("sni").cloned().map(TinyText::from),
+                    fp: query.get("fp").cloned().map(TinyText::from),
                     pbk: query.get("pbk").cloned(),
-                    sid: query.get("sid").cloned(),
-                    spx: query.get("spx").cloned(),
+                    sid: query.get("sid").cloned().map(TinyText::from),
+                    spx: query.get("spx").cloned().map(TinyText::from),
                 })),
                 enc: None,
             },
@@ -114,7 +115,7 @@ impl ProtoSpec for TrojanConfig {
         };
         // Transport type: tcp (default), ws, grpc, http, quic, kcp
         let transport_type = query.get("type").map_or("tcp", |s| s.as_str()).to_string();
-        let path = query.get("path").cloned();
+        let path = query.get("path").cloned().map(TinyText::from);
 
         let remarks = utils::decode_fragment(raw)?;
 

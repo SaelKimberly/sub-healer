@@ -41,6 +41,7 @@ use super::common::SecurityConfig;
 use super::utils;
 use super::{ParseError, ProtoSpec};
 
+#[serde_with::skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(test, derive(PartialEq, Eq))]
 #[serde(rename_all = "snake_case")]
@@ -54,12 +55,13 @@ pub struct SlipnetConfig {
     pub port: u16,
     #[serde(default, skip_serializing_if = "SecurityConfig::is_empty")]
     pub security: SecurityConfig,
-    pub tunnel_type: Option<String>,
+    pub tunnel_type: Option<TinyText>,
     pub public_key: Option<String>,
-    pub remarks: Option<String>,
+    pub remarks: Option<TinyText>,
     pub raw_fields: Vec<TinyText>,
 }
-
+ 
+#[serde_with::skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(test, derive(PartialEq, Eq))]
 #[serde(rename_all = "snake_case")]
@@ -128,7 +130,7 @@ impl ProtoSpec for SlipnetConfig {
             host,
             port,
             security: SecurityConfig::default(),
-            tunnel_type: tunnel_type.map(String::from),
+            tunnel_type: tunnel_type.map(TinyText::from),
             public_key: public_key.map(String::from),
             remarks,
             raw_fields,

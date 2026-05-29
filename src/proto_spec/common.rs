@@ -39,26 +39,26 @@ impl TransportConfig {
         match protocol_type {
             None | Some("tcp") => Some(Self::Tcp),
             Some("ws" | "websocket") => Some(Self::Ws(WebSocketConfig {
-                path: path.map(std::string::ToString::to_string),
+                path: path.map(TinyText::from),
                 ..WebSocketConfig::default()
             })),
             Some("grpc") => Some(Self::Grpc(GrpcConfig {
-                path: path.map(std::string::ToString::to_string),
+                path: path.map(TinyText::from),
                 ..GrpcConfig::default()
             })),
             Some("http" | "h2" | "https") => Some(Self::Http(HttpConfig {
-                path: path.map(std::string::ToString::to_string),
+                path: path.map(TinyText::from),
                 ..HttpConfig::default()
             })),
             Some("quic") => Some(Self::Quic),
             Some("kcp" | "mkcp") => Some(Self::Kcp(KcpConfig::default())),
             Some("httpupgrade") => Some(Self::HttpUpgrade(HttpUpgradeConfig {
-                path: Some(path.unwrap_or("/").to_string()),
+                path: Some(TinyText::from(path.unwrap_or("/"))),
                 ..HttpUpgradeConfig::default()
             })),
             Some("xhttp" | "splithttp") => Some(Self::XHttp(XHttpConfig {
-                path: Some(path.unwrap_or("/").to_string()),
-                mode: Some("auto".into()),
+                path: Some(TinyText::from(path.unwrap_or("/"))),
+                mode: Some(TinyText::from("auto")),
                 ..XHttpConfig::default()
             })),
             Some(other) => {
@@ -75,7 +75,7 @@ impl TransportConfig {
         sni: Option<String>,
         server_addr: Option<String>,
     ) -> Self {
-        let resolved = host.or(sni).or(server_addr);
+        let resolved: Option<TinyText> = host.or(sni).or(server_addr).map(TinyText::from);
         match self {
             Self::HttpUpgrade(cfg) => Self::HttpUpgrade(HttpUpgradeConfig {
                 host: cfg.host.or(resolved),
@@ -90,48 +90,49 @@ impl TransportConfig {
     }
 }
 
+#[serde_with::skip_serializing_none]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub struct WebSocketConfig {
-    pub path: Option<String>,
-    pub host: Option<String>,
+    pub path: Option<TinyText>,
+    pub host: Option<TinyText>,
     pub headers: Option<std::collections::HashMap<String, String>>,
     pub max_early_data: Option<u32>,
-    pub early_data_header_name: Option<String>,
+    pub early_data_header_name: Option<TinyText>,
 }
-
+#[serde_with::skip_serializing_none]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub struct GrpcConfig {
-    pub path: Option<String>,
-    pub authority: Option<String>,
-    pub service_name: Option<String>,
+    pub path: Option<TinyText>,
+    pub authority: Option<TinyText>,
+    pub service_name: Option<TinyText>,
 }
 
+#[serde_with::skip_serializing_none]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub struct HttpConfig {
-    pub path: Option<String>,
-    pub host: Option<String>,
-    pub method: Option<String>,
+    pub path: Option<TinyText>,
+    pub host: Option<TinyText>,
+    pub method: Option<TinyText>,
     pub headers: Option<std::collections::HashMap<String, String>>,
 }
-
 /// `HTTPUpgrade` transport config (fake WebSocket upgrade).
 ///
 /// Sends HTTP GET with `Upgrade: websocket` → `101 Switching Protocols`,
 /// then pipes raw bytes. No actual WebSocket framing.
 ///
 /// Reference: `thirdparty/Xray-core/transport/internet/httpupgrade/config.proto`
+#[serde_with::skip_serializing_none]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub struct HttpUpgradeConfig {
-    pub path: Option<String>,
-    pub host: Option<String>,
+    pub path: Option<TinyText>,
+    pub host: Option<TinyText>,
     pub headers: Option<std::collections::HashMap<String, String>>,
     pub ed: Option<u32>,
 }
-
 /// SplitHTTP/XHTTP transport config — full HTTP-based transport.
 ///
 /// Supports 4 modes (`auto`, `packet-up`, `stream-up`, `stream-one`),
@@ -140,16 +141,18 @@ pub struct HttpUpgradeConfig {
 ///
 /// Reference config proto: `thirdparty/Xray-core/transport/internet/splithttp/config.proto`
 /// Reference client config: `thirdparty/mihomo/transport/xhttp/config.go`
+#[serde_with::skip_serializing_none]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub struct XHttpConfig {
-    pub path: Option<String>,
-    pub host: Option<String>,
-    pub mode: Option<String>,
+    pub path: Option<TinyText>,
+    pub host: Option<TinyText>,
+    pub mode: Option<TinyText>,
     pub headers: Option<std::collections::HashMap<String, String>>,
     pub extra: Option<Value>,
 }
-
+ 
+#[serde_with::skip_serializing_none]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub struct KcpConfig {
@@ -160,7 +163,7 @@ pub struct KcpConfig {
     pub congestion: Option<bool>,
     pub read_buffer: Option<u32>,
     pub write_buffer: Option<u32>,
-    pub seed: Option<String>,
+    pub seed: Option<TinyText>,
 }
 
 #[serde_with::skip_serializing_none]
@@ -178,9 +181,8 @@ impl SecurityConfig {
             Some(ref c @ (TlsConfig::Reality(_) | TlsConfig::Tls(_))) => Some(c.type_str()),
         }
     }
-
     #[must_use]
-    pub const fn sni(&self) -> Option<&str> {
+    pub fn sni(&self) -> Option<&str> {
         match self.tls {
             Some(
                 TlsConfig::Tls(TlsOpts {
@@ -193,9 +195,9 @@ impl SecurityConfig {
             _ => None,
         }
     }
-
+    
     #[must_use]
-    pub const fn alpn(&self) -> Option<&str> {
+    pub fn alpn(&self) -> Option<&str> {
         if let Some(TlsConfig::Tls(TlsOpts {
             alpn: Some(ref alpn),
             ..
@@ -206,9 +208,9 @@ impl SecurityConfig {
             None
         }
     }
-
+    
     #[must_use]
-    pub const fn fp(&self) -> Option<&str> {
+    pub fn fp(&self) -> Option<&str> {
         match self.tls {
             Some(
                 TlsConfig::Tls(TlsOpts {
@@ -221,7 +223,7 @@ impl SecurityConfig {
             _ => None,
         }
     }
-
+    
     #[must_use]
     pub const fn insecure(&self) -> Option<bool> {
         if let Some(TlsConfig::Tls(TlsOpts { insecure, .. })) = self.tls {
@@ -230,7 +232,7 @@ impl SecurityConfig {
             None
         }
     }
-
+    
     #[must_use]
     pub const fn pbk(&self) -> Option<&str> {
         if let Some(TlsConfig::Reality(RealityOpts {
@@ -242,9 +244,9 @@ impl SecurityConfig {
             None
         }
     }
-
+    
     #[must_use]
-    pub const fn sid(&self) -> Option<&str> {
+    pub fn sid(&self) -> Option<&str> {
         if let Some(TlsConfig::Reality(RealityOpts {
             sni: Some(ref sni), ..
         })) = self.tls
@@ -281,21 +283,20 @@ impl TlsConfig {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub struct TlsOpts {
-    pub sni: Option<String>,
-    pub alpn: Option<String>,
-    pub fp: Option<String>,
+    pub sni: Option<TinyText>,
+    pub alpn: Option<TinyText>,
+    pub fp: Option<TinyText>,
     pub insecure: Option<bool>,
 }
-
 #[serde_with::skip_serializing_none]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub struct RealityOpts {
-    pub sni: Option<String>,
-    pub fp: Option<String>,
+    pub sni: Option<TinyText>,
+    pub fp: Option<TinyText>,
     pub pbk: Option<String>,
-    pub sid: Option<String>,
-    pub spx: Option<String>,
+    pub sid: Option<TinyText>,
+    pub spx: Option<TinyText>,
 }
 
 #[cfg(test)]

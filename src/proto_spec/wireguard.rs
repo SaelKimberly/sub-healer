@@ -36,12 +36,13 @@ use std::num::NonZeroU64;
 
 use serde::{Deserialize, Serialize};
 
-use crate::urlx::{HostSpec, RawUrlX, SchemeX, host_serde, port_serde};
+use crate::urlx::{HostSpec, RawUrlX, SchemeX, TinyText, host_serde, port_serde};
 
 use super::common::SecurityConfig;
 use super::utils;
 use super::{ParseError, ProtoSpec};
 
+#[serde_with::skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(test, derive(PartialEq, Eq))]
 #[serde(rename_all = "snake_case")]
@@ -56,12 +57,12 @@ pub struct WireguardConfig {
     pub port: u16,
     #[serde(default, skip_serializing_if = "SecurityConfig::is_empty")]
     pub security: SecurityConfig,
-    pub address: String,
+    pub address: TinyText,
     pub public_key: String,
     pub preshared_key: Option<String>,
-    pub reserved: Option<String>,
-    pub mtu: Option<String>,
-    pub remarks: Option<String>,
+    pub reserved: Option<TinyText>,
+    pub mtu: Option<TinyText>,
+    pub remarks: Option<TinyText>,
 }
 
 impl ProtoSpec for WireguardConfig {
@@ -89,27 +90,27 @@ impl ProtoSpec for WireguardConfig {
         let address = query
             .get("address")
             .ok_or_else(|| ParseError::MissingConf("address".into()))
-            .cloned()?;
-
+            .map(|s| TinyText::from(s.as_str()))?;
+        
         // publickey/public_key: peer's base64-encoded public key (required)
         let public_key = query
             .get("publickey")
             .or_else(|| query.get("public_key"))
             .ok_or_else(|| ParseError::MissingConf("publickey".into()))
             .cloned()?;
-
+        
         // presharedkey/psk: optional pre-shared key
         let preshared_key = query
             .get("presharedkey")
             .or_else(|| query.get("psk"))
             .cloned()
             .filter(|s| !s.is_empty());
-
+        
         // reserved: 3 bytes, comma-separated decimal or base64
-        let reserved = query.get("reserved").cloned();
-
+        let reserved = query.get("reserved").cloned().map(TinyText::from);
+        
         // mtu: interface MTU (defaults vary: 1420 Xray, 1280 WireGuard-go)
-        let mtu = query.get("mtu").cloned();
+        let mtu = query.get("mtu").cloned().map(TinyText::from);
 
         let remarks = utils::decode_fragment(raw)?;
 

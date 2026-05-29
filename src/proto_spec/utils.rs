@@ -4,7 +4,7 @@ use base64::Engine;
 use bstr::ByteSlice;
 use rustls::pki_types::{IpAddr::V4, IpAddr::V6};
 
-use crate::urlx::{HostSpec, PortSpec, RawUrlX};
+use crate::urlx::{HostSpec, PortSpec, RawUrlX, TinyText};
 
 use super::ParseError;
 
@@ -182,12 +182,10 @@ pub fn compute_cred_hash(
 ///
 /// # Errors
 /// - If the fragment is not valid UTF-8
-pub fn decode_fragment(raw: &RawUrlX<'_>) -> Result<Option<String>, crate::proto_spec::ParseError> {
-    raw.fragment()
-        .map_err(|e| {
-            crate::proto_spec::ParseError::InvalidConf("remarks".into(), e.to_string().into())
-        })
-        .map(|f| f.map(|s| s.to_string()))
+pub fn decode_fragment(raw: &RawUrlX<'_>) -> Result<Option<TinyText>, crate::proto_spec::ParseError> {
+    raw.fragment().map_err(|e| {
+        crate::proto_spec::ParseError::InvalidConf("remarks".into(), e.to_string().into())
+    })
 }
 
 // ========================================

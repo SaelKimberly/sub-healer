@@ -43,12 +43,13 @@ use std::num::NonZeroU64;
 use base64::Engine;
 use serde::{Deserialize, Serialize};
 
-use crate::urlx::{HostSpec, RawUrlX, SchemeX, host_serde, port_serde};
+use crate::urlx::{HostSpec, RawUrlX, SchemeX, TinyText, host_serde, port_serde};
 
 use super::common::SecurityConfig;
 use super::utils;
 use super::{ParseError, ProtoSpec};
 
+#[serde_with::skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(test, derive(PartialEq, Eq))]
 #[serde(rename_all = "snake_case")]
@@ -62,12 +63,12 @@ pub struct SsrConfig {
     pub port: u16,
     #[serde(default, skip_serializing_if = "SecurityConfig::is_empty")]
     pub security: SecurityConfig,
-    pub protocol: String,
-    pub method: String,
-    pub obfs: String,
+    pub protocol: TinyText,
+    pub method: TinyText,
+    pub obfs: TinyText,
     pub password: String,
     pub params: std::collections::HashMap<String, String>,
-    pub remarks: Option<String>,
+    pub remarks: Option<TinyText>,
 }
 
 impl ProtoSpec for SsrConfig {
@@ -87,20 +88,20 @@ impl ProtoSpec for SsrConfig {
         // Everything before is the host (handles IPv6 with colons).
         let raw_host = parts[..parts.len() - 5].join(":");
         let raw_port = parts[parts.len() - 5];
-        let protocol = parts[parts.len() - 4].to_string();
-        let method = parts[parts.len() - 3].to_string();
-        let obfs = parts[parts.len() - 2].to_string();
+        let protocol = TinyText::from(parts[parts.len() - 4]);
+        let method = TinyText::from(parts[parts.len() - 3]);
+        let obfs = TinyText::from(parts[parts.len() - 2]);
         let raw_password = parts[parts.len() - 1..].join(":");
-
+        
         let (password, query_part) = raw_password
             .split_once("/?")
             .or_else(|| raw_password.split_once('?'))
             .unwrap_or((&raw_password, ""));
-
+        
         let mut params = std::collections::HashMap::new();
-        params.insert("protocol".into(), protocol.clone());
-        params.insert("obfs".into(), obfs.clone());
-
+        params.insert("protocol".into(), protocol.to_string());
+        params.insert("obfs".into(), obfs.to_string());
+        
         if !query_part.is_empty() {
             for pair in query_part.split('&') {
                 if let Some((k, v)) = pair.split_once('=') {
@@ -108,13 +109,14 @@ impl ProtoSpec for SsrConfig {
                 }
             }
         }
-
+        
         let remarks = params.remove("remarks").map(|r| {
             base64::prelude::BASE64_URL_SAFE_NO_PAD
                 .decode(r.trim_end_matches('='))
                 .ok()
                 .and_then(|d| String::from_utf8(d).ok())
-                .unwrap_or(r)
+                .map(TinyText::from)
+                .unwrap_or_else(|| TinyText::from(r.as_str()))
         });
 
         let parsed_host = utils::parse_host(&raw_host)?;

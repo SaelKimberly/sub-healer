@@ -54,12 +54,13 @@ use std::num::NonZeroU64;
 
 use serde::{Deserialize, Serialize};
 
-use crate::urlx::{HostSpec, PortSpec, RawUrlX, SchemeX, host_serde, port_spec_serde};
+use crate::urlx::{HostSpec, PortSpec, RawUrlX, SchemeX, TinyText, host_serde, port_spec_serde};
 
 use super::common::{SecurityConfig, TlsConfig, TlsOpts};
 use super::utils;
 use super::{ParseError, ProtoSpec};
 
+#[serde_with::skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(test, derive(PartialEq, Eq))]
 #[serde(rename_all = "snake_case")]
@@ -74,11 +75,11 @@ pub struct Hysteria2Config {
     pub port: PortSpec,
     #[serde(default, skip_serializing_if = "SecurityConfig::is_empty")]
     pub security: SecurityConfig,
-    pub obfs: Option<String>,
-    pub obfs_password: Option<String>,
-    pub up: Option<String>,
-    pub down: Option<String>,
-    pub remarks: Option<String>,
+    pub obfs: Option<TinyText>,
+    pub obfs_password: Option<TinyText>,
+    pub up: Option<TinyText>,
+    pub down: Option<TinyText>,
+    pub remarks: Option<TinyText>,
 }
 
 impl ProtoSpec for Hysteria2Config {
@@ -103,14 +104,14 @@ impl ProtoSpec for Hysteria2Config {
         let query = utils::parse_query(raw.query);
 
         // obfs: obfuscation type (e.g., "salamander")
-        let obfs = query.get("obfs").cloned();
+        let obfs = query.get("obfs").cloned().map(TinyText::from);
         // obfs-password: pre-shared key for salamander obfuscation
-        let obfs_password = query.get("obfs-password").cloned();
+        let obfs_password = query.get("obfs-password").cloned().map(TinyText::from);
         // up/down: bandwidth limits (canonical impl doesn't parse these from URL)
-        let up = query.get("up").cloned();
+        let up = query.get("up").cloned().map(TinyText::from);
         let security = SecurityConfig {
             tls: Some(TlsConfig::Tls(TlsOpts {
-                sni: query.get("sni").cloned(),
+                sni: query.get("sni").cloned().map(TinyText::from),
                 alpn: None,
                 fp: None,
                 insecure: query.get("insecure").and_then(|v| match v.as_str() {
@@ -121,7 +122,7 @@ impl ProtoSpec for Hysteria2Config {
             })),
             enc: None,
         };
-        let down = query.get("down").cloned();
+        let down = query.get("down").cloned().map(TinyText::from);
         let remarks = utils::decode_fragment(raw)?;
 
         Ok(Self {
@@ -244,7 +245,7 @@ impl Hysteria2Config {
             [&self.obfs, &self.obfs_password]
                 .into_iter()
                 .flatten()
-                .map(String::as_bytes),
+                .map(|s| s.as_bytes()),
         );
         if let Some(v) = self.security.insecure() {
             parts.push(if v { b"true" } else { b"false" });

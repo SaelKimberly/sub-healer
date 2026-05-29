@@ -45,12 +45,13 @@ use std::num::NonZeroU64;
 
 use serde::{Deserialize, Serialize};
 
-use crate::urlx::{HostSpec, RawUrlX, SchemeX, host_serde, port_serde};
+use crate::urlx::{HostSpec, RawUrlX, SchemeX, TinyText, host_serde, port_serde};
 
 use super::common::{RealityOpts, SecurityConfig, TlsConfig, TlsOpts, TransportConfig};
 use super::utils;
 use super::{ParseError, ProtoSpec};
 
+#[serde_with::skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(test, derive(PartialEq, Eq))]
 #[serde(rename_all = "snake_case")]
@@ -59,8 +60,7 @@ pub struct VlessConfig {
     sig_cache: std::sync::OnceLock<NonZeroU64>,
 
     pub uuid: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub uuid_origin: Option<String>,
+    pub uuid_origin: Option<TinyText>,
     #[serde(with = "host_serde")]
     pub host: HostSpec,
     #[serde(with = "port_serde")]
@@ -68,11 +68,11 @@ pub struct VlessConfig {
     #[serde(default, skip_serializing_if = "SecurityConfig::is_empty")]
     pub security: SecurityConfig,
     pub transport: TransportConfig,
-    pub encryption: Option<String>,
-    pub flow: Option<String>,
-    pub path: Option<String>,
+    pub encryption: Option<TinyText>,
+    pub flow: Option<TinyText>,
+    pub path: Option<TinyText>,
     pub splice: Option<bool>,
-    pub remarks: Option<String>,
+    pub remarks: Option<TinyText>,
 }
 
 impl ProtoSpec for VlessConfig {
@@ -104,7 +104,7 @@ impl ProtoSpec for VlessConfig {
             Err(_) => {
                 let generated =
                     uuid::Uuid::new_v5(&uuid::Uuid::nil(), username.as_bytes()).to_string();
-                (generated, Some(username.to_string()))
+                (generated, Some(TinyText::from(username)))
             }
         };
 
@@ -113,11 +113,11 @@ impl ProtoSpec for VlessConfig {
 
         // type/transport: tcp/ws/grpc/http/kcp/quic/httpupgrade. Defaults to "tcp".
         let transport_type = query.get("type").map_or("tcp", |s| s.as_str()).to_string();
-        let path = query.get("path").cloned();
+        let path = query.get("path").cloned().map(TinyText::from);
         // encryption: typically "none" (VLESS relies on TLS, not payload encryption)
-        let encryption = query.get("encryption").filter(|v| v != &"none").cloned();
+        let encryption = query.get("encryption").filter(|v| v != &"none").cloned().map(TinyText::from);
         // flow: xtls-rprx-vision for XTLS direct transmission (TLS 1.3 required)
-        let flow = query.get("flow").cloned();
+        let flow = query.get("flow").cloned().map(TinyText::from);
         // splice: boolean splice mode flag
         let splice = query.get("splice").and_then(|v| match v.as_str() {
             "1" | "true" | "yes" => Some(true),
@@ -129,20 +129,20 @@ impl ProtoSpec for VlessConfig {
         let security = match query.get("security").map(String::as_str) {
             Some("tls") => SecurityConfig {
                 tls: Some(TlsConfig::Tls(TlsOpts {
-                    sni: query.get("sni").cloned(),
-                    alpn: query.get("alpn").cloned(),
-                    fp: query.get("fp").cloned(),
+                    sni: query.get("sni").cloned().map(TinyText::from),
+                    alpn: query.get("alpn").cloned().map(TinyText::from),
+                    fp: query.get("fp").cloned().map(TinyText::from),
                     insecure: None,
                 })),
                 enc: None,
             },
             Some("reality") => SecurityConfig {
                 tls: Some(TlsConfig::Reality(RealityOpts {
-                    sni: query.get("sni").cloned(),
-                    fp: query.get("fp").cloned(),
+                    sni: query.get("sni").cloned().map(TinyText::from),
+                    fp: query.get("fp").cloned().map(TinyText::from),
                     pbk: query.get("pbk").cloned(),
-                    sid: query.get("sid").cloned(),
-                    spx: query.get("spx").cloned(),
+                    sid: query.get("sid").cloned().map(TinyText::from),
+                    spx: query.get("spx").cloned().map(TinyText::from),
                 })),
                 enc: None,
             },
@@ -165,7 +165,7 @@ impl ProtoSpec for VlessConfig {
             if let Some(mode) = query.get("mode") {
                 match mode.as_str() {
                     "auto" | "packet-up" | "stream-up" | "stream-one" => {
-                        xcfg.mode = Some(mode.clone());
+                        xcfg.mode = Some(TinyText::from(mode.as_str()));
                     }
                     other => {
                         return Err(ParseError::InvalidConf(
