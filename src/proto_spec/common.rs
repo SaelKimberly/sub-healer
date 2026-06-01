@@ -37,7 +37,7 @@ impl TransportConfig {
 
     pub fn from_type_and_path(protocol_type: Option<&str>, path: Option<&str>) -> Option<Self> {
         match protocol_type {
-            None | Some("tcp") => Some(Self::Tcp),
+            None | Some("tcp") | Some("raw") => Some(Self::Tcp),
             Some("ws" | "websocket") => Some(Self::Ws(WebSocketConfig {
                 path: path.map(TinyText::from),
                 ..WebSocketConfig::default()
