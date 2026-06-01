@@ -21,9 +21,9 @@ cargo bench                      # criterion benchmarks
 ## CLI
 
 - **`config`**: Full pipeline from YAML. Optional `tgchannel:` (list) and `subscriptions:` list — supports `https://` (HTTP download, GITHUB_TOKEN env for github.com) and `file://`. Unsupported schemes → skip with `tracing::error!`.
-- **`stdin`**: Pipe → `parse_sub()` → DB upsert. Source type: `Other`, registry key `stdin://local`.
+- **`stdin`**: Pipe → `parse_to_raw_urls()` → DB upsert. Source type: `Other`, registry key `stdin://local`.
 - **`remote`**: Download subs from URLs or scrape Telegram (t.me auto-detected via host check). Mixed batch OK.
-- **`local`**: Filesystem → `parse_sub()` → DB upsert. Source URL = `file://` absolute path.
+- **`local`**: Filesystem → `parse_to_raw_urls()` → DB upsert. Source URL = `file://` absolute path.
 - **`emit`**: Filtered server export. `--protocol` (repeatable, case-insensitive), `--min-first-seen-ts`, `--min-last-seen-ts` (humantime durations), `--pull` (re-mine all DB sources, optionally with per-source Telegram backfill). Reconstructs native URLs from stored `ProtocolConfig` JSON.
 
 Global `--db` flag (default `v2ray-heal.db`). Unparseable log: `V2RAY_HEAL_UNPARSEABLE_LOG` env (default `unparseable.ndjson`).

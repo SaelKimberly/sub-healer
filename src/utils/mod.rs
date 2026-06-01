@@ -1,6 +1,5 @@
 mod fast_perc;
 pub mod host_port;
-pub mod line;
 pub mod norm_extras;
 pub mod permissive_json;
 pub mod unescaper;

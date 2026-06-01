@@ -5,11 +5,8 @@ mod sub;
 pub mod telegram;
 mod unparseable_log;
 mod writer;
-use std::path::Path;
 use std::time::Duration;
 
-use anyhow::Context;
-use tracing::info;
 
 pub use pipeline::Pipeline;
 pub use raw_event::RawSourceItemBatch;
@@ -33,15 +30,6 @@ pub fn get_current_timestamp() -> i64 {
         .cast_signed()
 }
 
-/// # Errors
-///
-/// Will return `Err` if the database cannot be opened or the schema cannot be initialized.
-pub fn open_db(path: &Path) -> Result<rusqlite::Connection, anyhow::Error> {
-    let conn = rusqlite::Connection::open(path)
-        .with_context(|| format!("Failed to open database: {}", path.display()))?;
-    crate::db::init_db(&conn).context("Failed to initialize database schema")?;
-    Ok(conn)
-}
 
 /// # Errors
 ///
@@ -77,16 +65,6 @@ pub fn emit_unparseable_entry(
     );
 }
 
-/// # Errors
-///
-/// Will return `Err` if the config file is invalid or the database cannot be opened.
-pub async fn run_with_config(config_path: &Path, db_path: &Path) -> Result<(), anyhow::Error> {
-    info!("Starting mining run with config: {}", config_path.display());
-    let mut pipeline = Pipeline::from_config(config_path, db_path)?;
-    let count = pipeline.run().await?;
-    info!(count, "Mining pipeline completed");
-    Ok(())
-}
 
 #[cfg(test)]
 mod tests {

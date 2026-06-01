@@ -24,7 +24,7 @@ See workspace tree in `AGENTS.md` or use `find src/` for the current layout.
 
 Key modules:
 - `src/main.rs` — CLI: clap-based subcommands (Stdin, Config, Remote, Local, Emit)
-- `src/lib.rs` — Core library: `parse_sub()`, global allocator, re-exports
+- `src/lib.rs` — Core library: `preprocess_sub_data()`, global allocator, re-exports
 - `src/db.rs` — SQLite: `Database` struct, `init_db`, upserts, queries
 - `src/mining/` — Pipeline orchestration: `Pipeline`, `RawSourceItemBatch`, `SourceRegistry`, Telegram scraper, subscription downloader, unparseable log, writer
 - `src/proto_spec/` — Protocol parsing: `ProtocolConfig` enum, `ProtoSpec` trait, `dispatch!` macro, 12 config parsers
@@ -298,7 +298,6 @@ Pipeline::new(db_path)
   → For each RawSourceItemBatch: lazy source upsert → try_parse_detailed → upsert_server
 ```
 
-`run_with_config()` in `mining/mod.rs` wraps the Pipeline builder for the Config subcommand: calls `build_client()`, `open_db()`, `SourceRegistry::from_config()`, then `Pipeline::new().add_source(registry).run(client)`.
 
 ### SourceRegistry (`src/mining/registry.rs`)
 
@@ -334,7 +333,7 @@ Key operations:
 2. Each `SubFetcher`:
    - `https://`/`http://`: HTTP download via shared client (GITHUB_TOKEN for github.com, 90s timeout)
    - `file://`: `std::fs::read()` from filesystem
-3. `parse_sub()` → base64 decode → `normalize_extras()` → `Lines::new_raw().processed()`
+3. `preprocess_sub_data()` → base64 decode → `normalize_extras()` → lines → `SchemeX::slice_input()` per segment
 4. Returns `RawSourceItemBatch` items, emits unparseable entries
 
 ### Pipeline Processing (`Pipeline::run_raw`)
@@ -375,10 +374,10 @@ A `tracing_subscriber::Layer` that:
 
 | Subcommand | Description |
 |-----------|-------------|
-| **`Stdin`** | Pipe data → `parse_sub()` → DB upsert. Source type: `Other`, registry key `stdin://local` |
-| **`Config`** | Full pipeline from YAML. Channels + subscriptions from `config.yaml`. Uses `run_with_config()` |
+| **`Stdin`** | Pipe data → `parse_to_raw_urls()` → DB upsert. Source type: `Other`, registry key `stdin://local` |
+| **`Config`** | Full pipeline from YAML. Channels + subscriptions from `config.yaml`. Uses `Pipeline::from_config()` + `.run()`. |
 | **`Remote`** | Download subs from URLs or scrape Telegram (t.me auto-detected). Mixed batch OK. |
-| **`Local`** | Filesystem → `parse_sub()` → DB upsert. Source URL = `file://` absolute path |
+| **`Local`** | Filesystem → `parse_to_raw_urls()` → DB upsert. Source URL = `file://` absolute path |
 | **`Emit`** | Filtered server export. `--protocol` filter (repeatable), `--min-first-seen-ts`/`--min-last-seen-ts` (humantime duration), `--pull` (re-mine all DB sources with optional `Backfill`). Reconstructs URLs from stored `ProtocolConfig` JSON. |
 
 ### Global Flags

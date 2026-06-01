@@ -18,7 +18,6 @@ pub(crate) use utils::unescaper::Unescaper;
 // exported
 
 pub use urlx::SchemeX;
-pub use utils::line::{Line, Lines};
 
 pub(crate) use urlx::PortSpec;
 
@@ -82,8 +81,4 @@ pub fn preprocess_sub_data(data: &[u8]) -> String {
         tracing::info!("Some characters was replaced");
     }
     data.into_owned()
-}
-pub fn parse_sub(url: &url::Url, sub: &[u8]) -> Lines<'static> {
-    let processed = preprocess_sub_data(sub);
-    Lines::new_raw(url, processed.as_ref()).processed()
 }
