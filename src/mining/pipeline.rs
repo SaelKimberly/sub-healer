@@ -275,10 +275,15 @@ pub(super) fn process_single_raw_url(
             Ok(true)
         }
         Ok(ParseResult::Fallback(config, info)) => {
+            let fallback_msg = format!(
+                "{} (parsed as {})",
+                info.original_error,
+                config.schema(),
+            );
             super::emit_unparseable_entry(
                 &info.raw_url,
                 &info.original_scheme.to_string(),
-                &info.original_error,
+                &fallback_msg,
                 source_id,
                 source_type,
                 ts,
