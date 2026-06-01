@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS servers (
     raw_config TEXT NOT NULL,
     first_seen_ts INTEGER NOT NULL,
     first_seen_source_id INTEGER NOT NULL,
+    sig INTEGER NOT NULL DEFAULT 0,
     FOREIGN KEY (first_seen_source_id) REFERENCES sources(id)
 );
 ";
@@ -63,6 +64,7 @@ pub struct ServerRecord {
     pub raw_config: String,
     pub first_seen_ts: i64,
     pub first_seen_source_id: i64,
+    pub sig: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -297,10 +299,11 @@ pub(crate) fn upsert_server(
     incoming_ts: i64,
 ) -> Result<()> {
     let server_id = config.uid().cast_signed();
+    let sig_i64 = config.sig().cast_signed();
 
     let existing: Option<ServerRecord> = conn
         .query_row(
-            "SELECT id, schema, host, port, transport, security, remarks, raw_config, first_seen_ts, first_seen_source_id FROM servers WHERE id = ?1",
+            "SELECT id, schema, host, port, transport, security, remarks, raw_config, first_seen_ts, first_seen_source_id, sig FROM servers WHERE id = ?1",
             [server_id],
             |row| {
                 Ok(ServerRecord {
@@ -314,6 +317,7 @@ pub(crate) fn upsert_server(
                     raw_config: row.get(7)?,
                     first_seen_ts: row.get(8)?,
                     first_seen_source_id: row.get(9)?,
+                    sig: row.get(10)?,
                 })
             },
         )
@@ -336,8 +340,8 @@ pub(crate) fn upsert_server(
                 serde_json::to_string(config).expect("Failed to serialize ProtocolConfig");
 
             conn.execute(
-                "INSERT INTO servers (id, schema, host, port, transport, security, remarks, raw_config, first_seen_ts, first_seen_source_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
-                params![server_id, schema, host, port, transport, security, remarks, raw_config, incoming_ts, source_id],
+                "INSERT INTO servers (id, schema, host, port, transport, security, remarks, raw_config, first_seen_ts, first_seen_source_id, sig) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                params![server_id, schema, host, port, transport, security, remarks, raw_config, incoming_ts, source_id, sig_i64],
             )?;
 
             conn.execute(
@@ -378,7 +382,7 @@ pub(crate) fn upsert_server(
 /// Will return `Err` if the database query fails.
 fn get_server(conn: &Connection, id: i64) -> Result<Option<ServerRecord>> {
     let result = conn.query_row(
-        "SELECT id, schema, host, port, transport, security, remarks, raw_config, first_seen_ts, first_seen_source_id FROM servers WHERE id = ?1",
+        "SELECT id, schema, host, port, transport, security, remarks, raw_config, first_seen_ts, first_seen_source_id, sig FROM servers WHERE id = ?1",
         [id],
         |row| {
             Ok(ServerRecord {
@@ -392,6 +396,7 @@ fn get_server(conn: &Connection, id: i64) -> Result<Option<ServerRecord>> {
                 raw_config: row.get(7)?,
                 first_seen_ts: row.get(8)?,
                 first_seen_source_id: row.get(9)?,
+                sig: row.get(10)?,
             })
         },
     );
@@ -482,7 +487,7 @@ fn query_servers_filtered(
     };
 
     let sql = format!(
-        "SELECT id, schema, host, port, transport, security, remarks, raw_config, first_seen_ts, first_seen_source_id \
+        "SELECT id, schema, host, port, transport, security, remarks, raw_config, first_seen_ts, first_seen_source_id, sig \
          FROM servers {where_clause} \
          ORDER BY schema ASC, remarks ASC NULLS LAST"
     );
@@ -503,6 +508,7 @@ fn query_servers_filtered(
             raw_config: row.get(7)?,
             first_seen_ts: row.get(8)?,
             first_seen_source_id: row.get(9)?,
+            sig: row.get(10)?,
         })
     })?;
 
@@ -745,6 +751,12 @@ mod tests {
         let sid_a = server_id(&config_a);
         let sid_b = server_id(&config_b);
         assert_ne!(sid_a, sid_b);
+        // Verify stored sigs differ and match computed values
+        let server_a = get_server(&conn, sid_a).unwrap().unwrap();
+        let server_b = get_server(&conn, sid_b).unwrap().unwrap();
+        assert_ne!(server_a.sig, server_b.sig);
+        assert_eq!(server_a.sig, config_a.sig().cast_signed());
+        assert_eq!(server_b.sig, config_b.sig().cast_signed());
 
         assert!(
             get_server(&conn, sid_a).unwrap().is_some(),
@@ -778,5 +790,25 @@ mod tests {
         assert_eq!(sightings.len(), 2);
         assert!(sightings.iter().any(|s| s.source_id == source_a));
         assert!(sightings.iter().any(|s| s.source_id == source_b));
+    }
+
+    #[test]
+    fn test_sig_stored() {
+        let conn = setup_db();
+        let source_id = setup_source(&conn, "https://example.com/sub1");
+        let config = parse_config(CONFIG_A);
+
+        upsert_server(&conn, &config, source_id, 100).unwrap();
+
+        let sid = server_id(&config);
+        let server = get_server(&conn, sid)
+            .unwrap()
+            .expect("server should exist");
+        let expected_sig = config.sig().cast_signed();
+        assert_eq!(
+            server.sig, expected_sig,
+            "sig column should match ProtocolConfig::sig()"
+        );
+        assert_ne!(server.sig, 0, "sig should be non-zero for valid config");
     }
 }

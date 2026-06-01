@@ -8,7 +8,7 @@ use crate::urlx::TinyText;
 // ========================================
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum TransportConfig {
     Tcp,
     Ws(WebSocketConfig),
@@ -169,6 +169,7 @@ pub struct KcpConfig {
 #[serde_with::skip_serializing_none]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct SecurityConfig {
+    #[serde(flatten)]
     pub tls: Option<TlsConfig>,
     pub enc: Option<TinyText>,
 }
@@ -263,7 +264,7 @@ impl SecurityConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum TlsConfig {
     Tls(TlsOpts),
     Reality(RealityOpts),
