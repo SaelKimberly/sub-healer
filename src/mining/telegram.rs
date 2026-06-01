@@ -384,7 +384,6 @@ impl TgChannelFetch {
 }
 
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub enum Backfill {
     Upto(DateTime<Utc>),
     Last(TimeDelta),

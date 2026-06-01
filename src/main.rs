@@ -26,9 +26,21 @@ enum Commands {
     Stdin,
     Config {
         file: Option<PathBuf>,
+        #[arg(long, conflicts_with = "upto",
+              help = "Backfill Telegram channels for the last duration (e.g. '5h', '7d')")]
+        last: Option<humantime::Duration>,
+        #[arg(long, conflicts_with = "last",
+              help = "Backfill Telegram channels up to this RFC 3339 datetime (e.g. '2026-06-01T00:00:00Z')")]
+        upto: Option<String>,
     },
     Remote {
         url: Vec<url::Url>,
+        #[arg(long, conflicts_with = "upto",
+              help = "Backfill Telegram channels for the last duration (e.g. '5h', '7d')")]
+        last: Option<humantime::Duration>,
+        #[arg(long, conflicts_with = "last",
+              help = "Backfill Telegram channels up to this RFC 3339 datetime (e.g. '2026-06-01T00:00:00Z')")]
+        upto: Option<String>,
     },
     Local {
         file: Vec<PathBuf>,
@@ -86,6 +98,34 @@ fn parse_to_raw_urls(data: &[u8]) -> Vec<String> {
         .collect()
 }
 
+/// Parse the `--last` and `--upto` CLI flags into a [`mining::Backfill`] option.
+///
+/// # Errors
+///
+/// Returns an error if `--upto` cannot be parsed as RFC 3339 or if the duration is out of range.
+fn parse_backfill(
+    last: Option<humantime::Duration>,
+    upto: Option<String>,
+) -> anyhow::Result<Option<mining::Backfill>> {
+    match (last, upto) {
+        (Some(dur), None) => {
+            let std_dur: std::time::Duration = dur.into();
+            let delta =
+                chrono::TimeDelta::from_std(std_dur).context("Backfill duration out of range")?;
+            Ok(Some(mining::Backfill::Last(delta)))
+        }
+        (None, Some(dt_str)) => {
+            let dt = chrono::DateTime::parse_from_rfc3339(&dt_str)
+                .context("Invalid --upto datetime (expected RFC 3339, e.g. '2026-06-01T00:00:00Z')")?;
+            Ok(Some(mining::Backfill::Upto(
+                dt.with_timezone(&chrono::Utc),
+            )))
+        }
+        (None, None) => Ok(None),
+        (Some(_), Some(_)) => unreachable!("clap enforces mutual exclusivity"),
+    }
+}
+
 /// Create a spinner progress bar (managed by MultiProgress) showing URL count and elapsed time.
 fn make_progress_bar(mp: &indicatif::MultiProgress) -> indicatif::ProgressBar {
     let pb = mp.add(indicatif::ProgressBar::new_spinner());
@@ -113,9 +153,11 @@ async fn main() -> anyhow::Result<()> {
 
     let cli = Cli::parse();
     match cli.command {
-        Some(Commands::Config { file }) => {
+        Some(Commands::Config { file, last, upto }) => {
+            let backfill = parse_backfill(last, upto)?;
             let config_path = file.unwrap_or(PathBuf::from("config.yaml"));
             let mut pipeline = mining::Pipeline::from_config(&config_path, &cli.db)?;
+            pipeline.set_backfill(backfill);
             pipeline.set_progress_bar(make_progress_bar(&mp));
             let count = pipeline.run().await?;
             tracing::info!(count, "Mining pipeline completed");
@@ -155,11 +197,13 @@ async fn main() -> anyhow::Result<()> {
             let count = pipeline.run().await?;
             tracing::info!(count, "Stdin mining completed");
         }
-        Some(Commands::Remote { url }) => {
+        Some(Commands::Remote { url, last, upto }) => {
+            let backfill = parse_backfill(last, upto)?;
             let mut pipeline = mining::Pipeline::new(&cli.db)?;
             for u in &url {
                 pipeline.add_source(u.as_str());
             }
+            pipeline.set_backfill(backfill);
             pipeline.set_progress_bar(make_progress_bar(&mp));
             pipeline.run().await?;
         }
