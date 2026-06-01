@@ -39,6 +39,7 @@ use crate::urlx::{HostSpec, RawUrlX, SchemeX, TinyText, host_serde, port_serde};
 
 use super::common::SecurityConfig;
 use super::utils;
+use super::impl_sig_cache;
 use super::{ParseError, ProtoSpec};
 
 #[serde_with::skip_serializing_none]
@@ -48,6 +49,8 @@ use super::{ParseError, ProtoSpec};
 pub struct SlipnetConfig {
     #[serde(skip)]
     sig_cache: std::sync::OnceLock<NonZeroU64>,
+    #[serde(skip)]
+    cred_hash_cache: std::sync::OnceLock<NonZeroU64>,
 
     #[serde(with = "host_serde")]
     pub host: HostSpec,
@@ -68,6 +71,8 @@ pub struct SlipnetConfig {
 pub struct SlipnetEncConfig {
     #[serde(skip)]
     sig_cache: std::sync::OnceLock<NonZeroU64>,
+    #[serde(skip)]
+    cred_hash_cache: std::sync::OnceLock<NonZeroU64>,
 
     #[serde(default, skip_serializing_if = "SecurityConfig::is_empty")]
     pub security: SecurityConfig,
@@ -127,6 +132,7 @@ impl ProtoSpec for SlipnetConfig {
 
         Ok(Self {
             sig_cache: std::sync::OnceLock::new(),
+            cred_hash_cache: std::sync::OnceLock::new(),
             host,
             port,
             security: SecurityConfig::default(),
@@ -158,20 +164,18 @@ impl ProtoSpec for SlipnetConfig {
     }
 
     fn cred_hash(&self) -> u64 {
-        utils::compute_cred_hash(Some(&self.host), Some(self.port), None, "", "")
-    }
-
-    fn sig(&self) -> u64 {
-        let v = self.sig_cache.get_or_init(|| {
-            let val = self.compute_sig();
+        let v = self.cred_hash_cache.get_or_init(|| {
+            let val = utils::compute_cred_hash(Some(&self.host), Some(self.port), None, "", "");
             NonZeroU64::new(val).unwrap_or(NonZeroU64::MIN)
         });
         v.get()
     }
 
-    fn set_sig_cache(&self, v: NonZeroU64) {
-        _ = self.sig_cache.set(v);
+    fn set_cred_hash_cache(&self, v: NonZeroU64) {
+        _ = self.cred_hash_cache.set(v);
     }
+
+    impl_sig_cache!();
 
     fn transport_type(&self) -> Option<&str> {
         None
@@ -206,11 +210,13 @@ impl SlipnetConfig {
     }
 
     fn compute_sig(&self) -> u64 {
-        let mut parts: Vec<&[u8]> = vec![b"slipnet"];
+        use rapidhash::v3::RapidStreamHasherV3;
+        let mut hasher = RapidStreamHasherV3::new(&rapidhash::v3::DEFAULT_RAPID_SECRETS);
+        hasher.write(b"slipnet");
         if let Some(ref v) = self.tunnel_type {
-            parts.push(v.as_bytes());
+            hasher.write(v.as_bytes());
         }
-        rapidhash::v3::rapidhash_v3(&parts.concat())
+        hasher.finish()
     }
 }
 
@@ -222,6 +228,7 @@ impl ProtoSpec for SlipnetEncConfig {
     fn try_parse(raw: &RawUrlX<'_>) -> Result<Self, ParseError> {
         Ok(Self {
             sig_cache: std::sync::OnceLock::new(),
+            cred_hash_cache: std::sync::OnceLock::new(),
             security: SecurityConfig::default(),
             data: raw.userinfo.to_string(),
         })
@@ -248,23 +255,30 @@ impl ProtoSpec for SlipnetEncConfig {
     }
 
     fn cred_hash(&self) -> u64 {
-        0
-    }
-
-    fn sig(&self) -> u64 {
-        let v = self.sig_cache.get_or_init(|| {
-            let val = rapidhash::v3::rapidhash_v3(b"slipnet-enc");
-            NonZeroU64::new(val).unwrap_or(NonZeroU64::MIN)
+        let v = self.cred_hash_cache.get_or_init(|| {
+            NonZeroU64::new(0).unwrap_or(NonZeroU64::MIN)
         });
         v.get()
     }
 
-    fn set_sig_cache(&self, v: NonZeroU64) {
-        _ = self.sig_cache.set(v);
+    fn set_cred_hash_cache(&self, v: NonZeroU64) {
+        _ = self.cred_hash_cache.set(v);
     }
+
+    impl_sig_cache!();
 
     fn transport_type(&self) -> Option<&str> {
         None
+    }
+}
+
+#[allow(clippy::unused_self)]
+impl SlipnetEncConfig {
+    fn compute_sig(&self) -> u64 {
+        use rapidhash::v3::RapidStreamHasherV3;
+        let mut hasher = RapidStreamHasherV3::new(&rapidhash::v3::DEFAULT_RAPID_SECRETS);
+        hasher.write(b"slipnet-enc");
+        hasher.finish()
     }
 }
 

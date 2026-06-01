@@ -58,6 +58,7 @@ use crate::urlx::{HostSpec, PortSpec, RawUrlX, SchemeX, TinyText, host_serde, po
 
 use super::common::{SecurityConfig, TlsConfig, TlsOpts};
 use super::utils;
+use super::impl_sig_cache;
 use super::{ParseError, ProtoSpec};
 
 #[serde_with::skip_serializing_none]
@@ -67,6 +68,8 @@ use super::{ParseError, ProtoSpec};
 pub struct Hysteria2Config {
     #[serde(skip)]
     sig_cache: std::sync::OnceLock<NonZeroU64>,
+    #[serde(skip)]
+    cred_hash_cache: std::sync::OnceLock<NonZeroU64>,
 
     pub auth: String,
     #[serde(with = "host_serde")]
@@ -127,6 +130,7 @@ impl ProtoSpec for Hysteria2Config {
 
         Ok(Self {
             sig_cache: std::sync::OnceLock::new(),
+            cred_hash_cache: std::sync::OnceLock::new(),
             auth: auth.to_string(),
             host: parsed_host,
             port: parsed_port,
@@ -206,26 +210,24 @@ impl ProtoSpec for Hysteria2Config {
     }
 
     fn cred_hash(&self) -> u64 {
-        utils::compute_cred_hash(
-            Some(&self.host),
-            None,
-            Some(&self.port),
-            &self.auth,
-            &self.auth,
-        )
-    }
-
-    fn sig(&self) -> u64 {
-        let v = self.sig_cache.get_or_init(|| {
-            let val = self.compute_sig();
+        let v = self.cred_hash_cache.get_or_init(|| {
+            let val = utils::compute_cred_hash(
+                Some(&self.host),
+                None,
+                Some(&self.port),
+                &self.auth,
+                &self.auth,
+            );
             NonZeroU64::new(val).unwrap_or(NonZeroU64::MIN)
         });
         v.get()
     }
 
-    fn set_sig_cache(&self, v: NonZeroU64) {
-        _ = self.sig_cache.set(v);
+    fn set_cred_hash_cache(&self, v: NonZeroU64) {
+        _ = self.cred_hash_cache.set(v);
     }
+
+    impl_sig_cache!();
 
     fn transport_type(&self) -> Option<&str> {
         None
@@ -238,28 +240,30 @@ impl ProtoSpec for Hysteria2Config {
 
 impl Hysteria2Config {
     fn compute_sig(&self) -> u64 {
-        let mut parts: Vec<&[u8]> = vec![b"hysteria2"];
+        use rapidhash::v3::RapidStreamHasherV3;
+        let mut hasher = RapidStreamHasherV3::new(&rapidhash::v3::DEFAULT_RAPID_SECRETS);
+        hasher.write(b"hysteria2");
         let sec_type = self.security.type_str().unwrap_or("none");
-        parts.push(sec_type.as_bytes());
-        parts.extend(
-            [&self.obfs, &self.obfs_password]
-                .into_iter()
-                .flatten()
-                .map(|s| s.as_bytes()),
-        );
+        hasher.write(sec_type.as_bytes());
+        if let Some(ref v) = self.obfs {
+            hasher.write(v.as_bytes());
+        }
+        if let Some(ref v) = self.obfs_password {
+            hasher.write(v.as_bytes());
+        }
         if let Some(v) = self.security.insecure() {
-            parts.push(if v { b"true" } else { b"false" });
+            hasher.write(if v { b"true" } else { b"false" });
         }
         if let Some(v) = self.security.sni() {
-            parts.push(v.as_bytes());
+            hasher.write(v.as_bytes());
         }
         if let Some(ref v) = self.up {
-            parts.push(v.as_bytes());
+            hasher.write(v.as_bytes());
         }
         if let Some(ref v) = self.down {
-            parts.push(v.as_bytes());
+            hasher.write(v.as_bytes());
         }
-        rapidhash::v3::rapidhash_v3(&parts.concat())
+        hasher.finish()
     }
 }
 

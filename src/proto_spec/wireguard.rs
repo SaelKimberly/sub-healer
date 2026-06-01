@@ -40,6 +40,7 @@ use crate::urlx::{HostSpec, RawUrlX, SchemeX, TinyText, host_serde, port_serde};
 
 use super::common::SecurityConfig;
 use super::utils;
+use super::impl_sig_cache;
 use super::{ParseError, ProtoSpec};
 
 #[serde_with::skip_serializing_none]
@@ -49,6 +50,8 @@ use super::{ParseError, ProtoSpec};
 pub struct WireguardConfig {
     #[serde(skip)]
     sig_cache: std::sync::OnceLock<NonZeroU64>,
+    #[serde(skip)]
+    cred_hash_cache: std::sync::OnceLock<NonZeroU64>,
 
     pub private_key: String,
     #[serde(with = "host_serde")]
@@ -116,6 +119,7 @@ impl ProtoSpec for WireguardConfig {
 
         Ok(Self {
             sig_cache: std::sync::OnceLock::new(),
+            cred_hash_cache: std::sync::OnceLock::new(),
             private_key,
             host: parsed_host,
             port: parsed_port,
@@ -190,26 +194,24 @@ impl ProtoSpec for WireguardConfig {
     }
 
     fn cred_hash(&self) -> u64 {
-        utils::compute_cred_hash(
-            Some(&self.host),
-            Some(self.port),
-            None,
-            &self.private_key,
-            &self.private_key,
-        )
-    }
-
-    fn sig(&self) -> u64 {
-        let v = self.sig_cache.get_or_init(|| {
-            let val = self.compute_sig();
+        let v = self.cred_hash_cache.get_or_init(|| {
+            let val = utils::compute_cred_hash(
+                Some(&self.host),
+                Some(self.port),
+                None,
+                &self.private_key,
+                &self.private_key,
+            );
             NonZeroU64::new(val).unwrap_or(NonZeroU64::MIN)
         });
         v.get()
     }
 
-    fn set_sig_cache(&self, v: NonZeroU64) {
-        _ = self.sig_cache.set(v);
+    fn set_cred_hash_cache(&self, v: NonZeroU64) {
+        _ = self.cred_hash_cache.set(v);
     }
+
+    impl_sig_cache!();
 
     fn transport_type(&self) -> Option<&str> {
         None
@@ -219,19 +221,21 @@ impl ProtoSpec for WireguardConfig {
 
 impl WireguardConfig {
     fn compute_sig(&self) -> u64 {
-        let mut parts: Vec<&[u8]> = vec![b"wireguard"];
-        parts.push(self.address.as_bytes());
-        parts.push(self.public_key.as_bytes());
+        use rapidhash::v3::RapidStreamHasherV3;
+        let mut hasher = RapidStreamHasherV3::new(&rapidhash::v3::DEFAULT_RAPID_SECRETS);
+        hasher.write(b"wireguard");
+        hasher.write(self.address.as_bytes());
+        hasher.write(self.public_key.as_bytes());
         if let Some(ref v) = self.preshared_key {
-            parts.push(v.as_bytes());
+            hasher.write(v.as_bytes());
         }
         if let Some(ref v) = self.reserved {
-            parts.push(v.as_bytes());
+            hasher.write(v.as_bytes());
         }
         if let Some(ref v) = self.mtu {
-            parts.push(v.as_bytes());
+            hasher.write(v.as_bytes());
         }
-        rapidhash::v3::rapidhash_v3(&parts.concat())
+        hasher.finish()
     }
 }
 

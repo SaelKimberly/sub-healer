@@ -155,6 +155,7 @@ pub trait ProtoSpec: Serialize + DeserializeOwned + std::fmt::Debug + Clone {
     fn cred_hash(&self) -> u64;
     fn sig(&self) -> u64;
     fn set_sig_cache(&self, v: std::num::NonZeroU64);
+    fn set_cred_hash_cache(&self, v: std::num::NonZeroU64);
     fn uid(&self) -> u64 {
         self.sig() ^ self.cred_hash()
     }
@@ -203,6 +204,20 @@ macro_rules! dispatch {
         }
     };
 }
+macro_rules! impl_sig_cache {
+    () => {
+        fn sig(&self) -> u64 {
+            let v = self.sig_cache.get_or_init(|| {
+                std::num::NonZeroU64::new(self.compute_sig()).unwrap_or(std::num::NonZeroU64::MIN)
+            });
+            v.get()
+        }
+        fn set_sig_cache(&self, v: std::num::NonZeroU64) {
+            _ = self.sig_cache.set(v);
+        }
+    };
+}
+pub(crate) use impl_sig_cache;
 
 impl ProtoSpec for ProtocolConfig {
     fn reconstruct(&self) -> Result<String, ParseError> {
@@ -228,6 +243,9 @@ impl ProtoSpec for ProtocolConfig {
     }
     fn set_sig_cache(&self, v: std::num::NonZeroU64) {
         dispatch!(self, set_sig_cache, v);
+    }
+    fn set_cred_hash_cache(&self, v: std::num::NonZeroU64) {
+        dispatch!(self, set_cred_hash_cache, v);
     }
     fn security(&self) -> Option<&SecurityConfig> {
         dispatch!(self, security)

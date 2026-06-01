@@ -49,6 +49,7 @@ use crate::urlx::{HostSpec, RawUrlX, SchemeX, TinyText, host_serde, port_serde};
 
 use super::common::{RealityOpts, SecurityConfig, TlsConfig, TlsOpts, TransportConfig};
 use super::utils;
+use super::impl_sig_cache;
 use super::{ParseError, ProtoSpec};
 
 #[serde_with::skip_serializing_none]
@@ -58,6 +59,8 @@ use super::{ParseError, ProtoSpec};
 pub struct VlessConfig {
     #[serde(skip)]
     sig_cache: std::sync::OnceLock<NonZeroU64>,
+    #[serde(skip)]
+    cred_hash_cache: std::sync::OnceLock<NonZeroU64>,
 
     pub uuid: String,
     pub uuid_origin: Option<TinyText>,
@@ -198,7 +201,9 @@ impl ProtoSpec for VlessConfig {
         };
 
         Ok(Self {
+
             sig_cache: std::sync::OnceLock::new(),
+            cred_hash_cache: std::sync::OnceLock::new(),
             uuid,
             uuid_origin,
             host: parsed_host,
@@ -331,26 +336,24 @@ impl ProtoSpec for VlessConfig {
     }
 
     fn cred_hash(&self) -> u64 {
-        utils::compute_cred_hash(
-            Some(&self.host),
-            Some(self.port),
-            None,
-            &self.uuid,
-            &self.uuid,
-        )
-    }
-
-    fn sig(&self) -> u64 {
-        let v = self.sig_cache.get_or_init(|| {
-            let val = self.compute_sig();
+        let v = self.cred_hash_cache.get_or_init(|| {
+            let val = utils::compute_cred_hash(
+                Some(&self.host),
+                Some(self.port),
+                None,
+                &self.uuid,
+                &self.uuid,
+            );
             NonZeroU64::new(val).unwrap_or(NonZeroU64::MIN)
         });
         v.get()
     }
 
-    fn set_sig_cache(&self, v: NonZeroU64) {
-        _ = self.sig_cache.set(v);
+    fn set_cred_hash_cache(&self, v: NonZeroU64) {
+        _ = self.cred_hash_cache.set(v);
     }
+
+    impl_sig_cache!();
 
     fn transport_type(&self) -> Option<&str> {
         Some(self.transport.type_str())
@@ -363,51 +366,53 @@ impl ProtoSpec for VlessConfig {
 
 impl VlessConfig {
     fn compute_sig(&self) -> u64 {
-        let mut parts: Vec<&[u8]> = vec![b"vless"];
+        use rapidhash::v3::RapidStreamHasherV3;
+        let mut hasher = RapidStreamHasherV3::new(&rapidhash::v3::DEFAULT_RAPID_SECRETS);
+        hasher.write(b"vless");
         let sec_type = self.security.type_str().unwrap_or("none");
-        parts.push(sec_type.as_bytes());
-        parts.push(self.transport.type_str().as_bytes());
+        hasher.write(sec_type.as_bytes());
+        hasher.write(self.transport.type_str().as_bytes());
         match &self.transport {
             TransportConfig::HttpUpgrade(cfg) => {
                 if let Some(ref v) = cfg.host {
-                    parts.push(v.as_bytes());
+                    hasher.write(v.as_bytes());
                 }
             }
             TransportConfig::XHttp(cfg) => {
                 if let Some(ref v) = cfg.host {
-                    parts.push(v.as_bytes());
+                    hasher.write(v.as_bytes());
                 }
             }
             _ => {}
         }
         if let Some(ref path) = self.path {
-            parts.push(path.as_bytes());
+            hasher.write(path.as_bytes());
         }
         if let Some(ref v) = self.encryption {
-            parts.push(v.as_bytes());
+            hasher.write(v.as_bytes());
         }
         if let Some(v) = self.security.sni() {
-            parts.push(v.as_bytes());
+            hasher.write(v.as_bytes());
         }
         if let Some(ref v) = self.flow {
-            parts.push(v.as_bytes());
+            hasher.write(v.as_bytes());
         }
         if let Some(v) = self.security.alpn() {
-            parts.push(v.as_bytes());
+            hasher.write(v.as_bytes());
         }
         if let Some(v) = self.security.fp() {
-            parts.push(v.as_bytes());
+            hasher.write(v.as_bytes());
         }
         if let Some(v) = self.security.pbk() {
-            parts.push(v.as_bytes());
+            hasher.write(v.as_bytes());
         }
         if let Some(v) = self.security.sid() {
-            parts.push(v.as_bytes());
+            hasher.write(v.as_bytes());
         }
         if let Some(v) = self.splice {
-            parts.push(if v { b"true" } else { b"false" });
+            hasher.write(if v { b"true" } else { b"false" });
         }
-        rapidhash::v3::rapidhash_v3(&parts.concat())
+        hasher.finish()
     }
 }
 

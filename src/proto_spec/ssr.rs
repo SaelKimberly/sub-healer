@@ -47,6 +47,7 @@ use crate::urlx::{HostSpec, RawUrlX, SchemeX, TinyText, host_serde, port_serde};
 
 use super::common::SecurityConfig;
 use super::utils;
+use super::impl_sig_cache;
 use super::{ParseError, ProtoSpec};
 
 #[serde_with::skip_serializing_none]
@@ -56,6 +57,8 @@ use super::{ParseError, ProtoSpec};
 pub struct SsrConfig {
     #[serde(skip)]
     sig_cache: std::sync::OnceLock<NonZeroU64>,
+    #[serde(skip)]
+    cred_hash_cache: std::sync::OnceLock<NonZeroU64>,
 
     #[serde(with = "host_serde")]
     pub host: HostSpec,
@@ -126,6 +129,7 @@ impl ProtoSpec for SsrConfig {
 
         Ok(Self {
             sig_cache: std::sync::OnceLock::new(),
+            cred_hash_cache: std::sync::OnceLock::new(),
             host: parsed_host,
             port: parsed_port,
             security: SecurityConfig::default(),
@@ -182,26 +186,24 @@ impl ProtoSpec for SsrConfig {
     }
 
     fn cred_hash(&self) -> u64 {
-        utils::compute_cred_hash(
-            Some(&self.host),
-            Some(self.port),
-            None,
-            &self.method,
-            &self.password,
-        )
-    }
-
-    fn sig(&self) -> u64 {
-        let v = self.sig_cache.get_or_init(|| {
-            let val = self.compute_sig();
+        let v = self.cred_hash_cache.get_or_init(|| {
+            let val = utils::compute_cred_hash(
+                Some(&self.host),
+                Some(self.port),
+                None,
+                &self.method,
+                &self.password,
+            );
             NonZeroU64::new(val).unwrap_or(NonZeroU64::MIN)
         });
         v.get()
     }
 
-    fn set_sig_cache(&self, v: NonZeroU64) {
-        _ = self.sig_cache.set(v);
+    fn set_cred_hash_cache(&self, v: NonZeroU64) {
+        _ = self.cred_hash_cache.set(v);
     }
+
+    impl_sig_cache!();
 
     fn transport_type(&self) -> Option<&str> {
         None
@@ -254,19 +256,21 @@ fn clean_ssr_userinfo(s: &str) -> &str {
 
 impl SsrConfig {
     fn compute_sig(&self) -> u64 {
-        let mut parts: Vec<&[u8]> = vec![b"ssr"];
+        use rapidhash::v3::RapidStreamHasherV3;
+        let mut hasher = RapidStreamHasherV3::new(&rapidhash::v3::DEFAULT_RAPID_SECRETS);
+        hasher.write(b"ssr");
         let mut sorted_keys: Vec<&String> = self.params.keys().collect();
         sorted_keys.sort();
         for k in &sorted_keys {
             if k.as_str() == "remarks" {
                 continue;
             }
-            parts.push(k.as_bytes());
+            hasher.write(k.as_bytes());
             if let Some(v) = self.params.get(*k) {
-                parts.push(v.as_bytes());
+                hasher.write(v.as_bytes());
             }
         }
-        rapidhash::v3::rapidhash_v3(&parts.concat())
+        hasher.finish()
     }
 }
 
