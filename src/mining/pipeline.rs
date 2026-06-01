@@ -6,21 +6,24 @@ use anyhow::Context;
 use chrono::{DateTime, Utc};
 use futures::stream::BoxStream;
 use futures::StreamExt;
-use tokio::sync::RwLock;
 
-use crate::db::{self, SourceRecord};
+use crate::db::{Database, SourceRecord};
 use crate::proto_spec::{ParseResult, ProtoSpec, ProtocolConfig};
 use crate::urlx::{RawUrlX, TinyText};
 
 use super::raw_event::RawSourceItemBatch;
-use super::registry::{SourceRegistry, SourceType};
+use super::registry::{SourceMetadata, SourceRegistry, SourceType};
 use super::telegram::Backfill;
 
-/// Central pipeline that owns the database connection, HTTP client, and source
+fn is_telegram_url_str(url_str: &str) -> bool {
+    url::Url::parse(url_str).is_ok_and(|u| u.host_str() == Some("t.me"))
+}
+
+/// Central pipeline that owns the database adapter, HTTP client, and source
 /// registry. Every entry path (Stdin, Local, Remote, Config, Emit --pull, None)
 /// constructs a `Pipeline`, registers sources, and calls [`Pipeline::run`].
 pub struct Pipeline {
-    conn: Arc<RwLock<rusqlite::Connection>>,
+    db: Database,
     client: reqwest::Client,
     registry: SourceRegistry,
     raw_batch_items: Vec<RawSourceItemBatch>,
@@ -35,12 +38,12 @@ impl Pipeline {
     ///
     /// # Errors
     ///
-    /// Delegates to [`super::open_db`] and [`super::build_client`].
+    /// Delegates to [`Database::open`] and [`super::build_client`].
     pub fn new(db_path: &Path) -> anyhow::Result<Self> {
-        let conn = super::open_db(db_path)?;
+        let db = Database::open(db_path)?;
         let client = super::build_client()?;
         Ok(Self {
-            conn: Arc::new(RwLock::new(conn)),
+            db,
             client,
             registry: SourceRegistry::new(),
             raw_batch_items: Vec::new(),
@@ -60,25 +63,20 @@ impl Pipeline {
         let mut pipeline = Self::new(db_path)?;
         let registry = SourceRegistry::from_config(config_path)?;
         for meta in registry.sources() {
-            match meta.source_type {
-                SourceType::Telegram => pipeline.add_telegram(&meta.url),
-                SourceType::Subscription => pipeline.add_subscription(&meta.url),
-                SourceType::Other => {}
-            }
+            pipeline.add_source(&meta.url);
         }
         Ok(pipeline)
     }
 
     // --- Builder helpers ---
 
-    /// Register a Telegram channel source.
-    pub fn add_telegram(&mut self, url: &str) {
-        self.registry.add_telegram_channel(url);
-    }
-
-    /// Register a subscription (HTTP) source.
-    pub fn add_subscription(&mut self, url: &str) {
-        self.registry.add_subscription(url);
+    /// Register a source by URL, auto-classifying it as Telegram or subscription.
+    pub fn add_source(&mut self, url: &str) {
+        if is_telegram_url_str(url) {
+            self.registry.add_telegram_channel(url);
+        } else {
+            self.registry.add_subscription(url);
+        }
     }
 
     /// Add pre-processed raw URL batch items (used by Stdin/Local paths).
@@ -116,8 +114,11 @@ impl Pipeline {
     pub async fn run(&mut self) -> anyhow::Result<usize> {
         // 1. Upsert all registered sources
         {
-            let conn = self.conn.write().await;
-            self.registry.upsert_all(&*conn)?;
+            let reg = &self.registry;
+            self.db
+                .with_conn(|conn| reg.upsert_all(conn))
+                .await
+                .context("Failed to upsert registry sources")?;
         }
 
         // 2. Build fetcher streams (all RawSourceItemBatch)
@@ -185,8 +186,11 @@ impl Pipeline {
     ) -> anyhow::Result<usize> {
         // 1. Upsert all registered sources
         {
-            let conn = self.conn.write().await;
-            self.registry.upsert_all(&*conn)?;
+            let reg = &self.registry;
+            self.db
+                .with_conn(|conn| reg.upsert_all(conn))
+                .await
+                .context("Failed to upsert registry sources")?;
         }
 
         let mut count = 0usize;
@@ -194,8 +198,9 @@ impl Pipeline {
         tokio::pin!(combined);
         while let Some(batch) = combined.next().await {
             if seen_sources.insert(batch.source.id) {
-                let conn = self.conn.write().await;
-                crate::db::upsert_source(&*conn, &batch.source.url)
+                self.db
+                    .upsert_source(&batch.source.url)
+                    .await
                     .context("source upsert failed (aborting)")?;
             }
 
@@ -210,14 +215,10 @@ impl Pipeline {
                 let raw: RawUrlX = raw_url.as_str().into();
                 match ProtocolConfig::try_parse_detailed(&raw) {
                     Ok(ParseResult::Direct(config)) => {
-                        let conn = self.conn.write().await;
-                        crate::db::upsert_server(
-                            &*conn,
-                            &config,
-                            batch.source.id,
-                            ts,
-                        )
-                        .context("upsert failed (aborting)")?;
+                        self.db
+                            .upsert_server(&config, batch.source.id, ts)
+                            .await
+                            .context("upsert failed (aborting)")?;
                         count += 1;
                     }
                     Ok(ParseResult::Fallback(config, info)) => {
@@ -229,14 +230,10 @@ impl Pipeline {
                             source_type,
                             ts,
                         );
-                        let conn = self.conn.write().await;
-                        crate::db::upsert_server(
-                            &*conn,
-                            &config,
-                            batch.source.id,
-                            ts,
-                        )
-                        .context("upsert failed (aborting)")?;
+                        self.db
+                            .upsert_server(&config, batch.source.id, ts)
+                            .await
+                            .context("upsert failed (aborting)")?;
                         count += 1;
                     }
                     Err(e) => {
@@ -270,17 +267,19 @@ impl Pipeline {
         min_first_seen: Option<i64>,
         min_last_seen: Option<i64>,
     ) -> anyhow::Result<String> {
-        let conn = self.conn.write().await;
-
-        let servers =
-            db::query_servers_filtered(&*conn, protocols, min_first_seen, min_last_seen)
-                .context("Failed to query servers")?;
+        let servers = self
+            .db
+            .query_servers_filtered(protocols, min_first_seen, min_last_seen)
+            .await
+            .context("Failed to query servers")?;
 
         let server_ids: Vec<i64> = servers.iter().map(|s| s.id).collect();
         let sources = if server_ids.is_empty() {
             Vec::new()
         } else {
-            db::query_sources_by_server_ids(&*conn, &server_ids)
+            self.db
+                .query_sources_by_server_ids(&server_ids)
+                .await
                 .context("Failed to query sources")?
         };
 
@@ -333,14 +332,15 @@ impl Pipeline {
     ///
     /// Returns an error if the database query fails.
     pub async fn all_sources(&self) -> anyhow::Result<Vec<SourceRecord>> {
-        let conn = self.conn.write().await;
-        Ok(db::query_all_sources(&*conn)?)
+        self.db.query_all_sources().await.map_err(Into::into)
     }
 
-    /// Get a reference to the internal source registry.
+    // --- Accessors ---
+
+    /// Get a reference to the internal database adapter.
     #[must_use]
-    pub fn registry_ref(&self) -> &SourceRegistry {
-        &self.registry
+    pub fn db(&self) -> &Database {
+        &self.db
     }
 
     /// Pre-populate a source in the registry for batch items (Stdin/Local).
@@ -348,19 +348,20 @@ impl Pipeline {
         self.registry.pre_populate(url, SourceType::Other);
     }
 
-    /// Get a reference to the shared database connection.
+    /// Look up source metadata for a previously registered URL.
     #[must_use]
-    pub fn conn(&self) -> &Arc<RwLock<rusqlite::Connection>> {
-        &self.conn
+    pub fn lookup_source(&self, url: &str) -> Option<Arc<SourceMetadata>> {
+        self.registry.lookup(url)
     }
 
-    /// Create a Pipeline wrapping an existing connection (for tests).
+    /// Create a Pipeline wrapping an in-memory database (for tests).
     /// Uses a default `reqwest::Client` (no proxy).
     #[cfg(test)]
     #[must_use]
-    pub fn new_test(conn: rusqlite::Connection) -> Self {
+    pub fn new_test() -> Self {
+        let db = Database::in_memory().expect("in-memory db");
         Self {
-            conn: Arc::new(RwLock::new(conn)),
+            db,
             client: reqwest::Client::new(),
             registry: SourceRegistry::new(),
             raw_batch_items: Vec::new(),

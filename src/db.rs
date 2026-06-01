@@ -77,7 +77,7 @@ pub struct SightingRecord {
 /// # Errors
 ///
 /// Will return `Err` if the database operation fails.
-pub fn init_db(conn: &Connection) -> Result<()> {
+pub(crate) fn init_db(conn: &Connection) -> Result<()> {
     conn.execute_batch(
         &[
             SCHEMA_SOURCES,
@@ -90,11 +90,163 @@ pub fn init_db(conn: &Connection) -> Result<()> {
     )?;
     Ok(())
 }
+use std::path::Path;
+use std::sync::Arc;
+use tokio::sync::RwLock;
 
+/// Database adapter that wraps an `Arc<RwLock<Connection>>`.
+/// All methods handle locking internally — callers never touch the lock.
+#[derive(Debug, Clone)]
+pub struct Database {
+    conn: Arc<RwLock<Connection>>,
+}
+
+impl Database {
+    /// Open or create a database at `path` and initialize the schema.
+    ///
+    /// # Errors
+    ///
+    /// Returns `rusqlite::Error` if the database cannot be opened or the
+    /// schema cannot be initialized.
+    pub fn open(path: impl AsRef<Path>) -> Result<Self> {
+        let conn = Connection::open(path)?;
+        init_db(&conn)?;
+        Ok(Self {
+            conn: Arc::new(RwLock::new(conn)),
+        })
+    }
+
+    /// Create an in-memory database for testing.
+    ///
+    /// # Errors
+    ///
+    /// Returns `rusqlite::Error` if the database cannot be created.
+    pub fn in_memory() -> Result<Self> {
+        let conn = Connection::open_in_memory()?;
+        init_db(&conn)?;
+        Ok(Self {
+            conn: Arc::new(RwLock::new(conn)),
+        })
+    }
+
+    /// Compute deterministic hash for a source URL.
+    /// Delegates to [`hash_source_url`].
+    #[must_use]
+    pub fn hash_source_url(url: &str) -> i64 {
+        hash_source_url(url)
+    }
+
+    /// Upsert a source by URL, returning its ID.
+    ///
+    /// # Errors
+    ///
+    /// Returns `rusqlite::Error` if the operation fails.
+    pub async fn upsert_source(&self, url: &str) -> Result<i64> {
+        let conn = self.conn.write().await;
+        upsert_source(&*conn, url)
+    }
+
+    /// Upsert a server config, handling time-travel (sightings) logic.
+    ///
+    /// # Errors
+    ///
+    /// Returns `rusqlite::Error` if the operation fails.
+    pub async fn upsert_server(
+        &self,
+        config: &ProtocolConfig,
+        source_id: i64,
+        incoming_ts: i64,
+    ) -> Result<()> {
+        let conn = self.conn.write().await;
+        upsert_server(&*conn, config, source_id, incoming_ts)
+    }
+
+    /// Get a server record by ID.
+    ///
+    /// # Errors
+    ///
+    /// Returns `rusqlite::Error` if the query fails.
+    pub async fn get_server(&self, id: i64) -> Result<Option<ServerRecord>> {
+        let conn = self.conn.write().await;
+        get_server(&*conn, id)
+    }
+
+    /// Get all sightings for a server.
+    ///
+    /// # Errors
+    ///
+    /// Returns `rusqlite::Error` if the query fails.
+    pub async fn get_sightings(&self, server_id: i64) -> Result<Vec<SightingRecord>> {
+        let conn = self.conn.write().await;
+        get_sightings(&*conn, server_id)
+    }
+
+    /// Query servers with optional protocol/backfill filters.
+    ///
+    /// # Errors
+    ///
+    /// Returns `rusqlite::Error` if the query fails.
+    pub async fn query_servers_filtered(
+        &self,
+        protocols: Option<&[String]>,
+        min_first_seen: Option<i64>,
+        min_last_seen: Option<i64>,
+    ) -> Result<Vec<ServerRecord>> {
+        let conn = self.conn.write().await;
+        query_servers_filtered(&*conn, protocols, min_first_seen, min_last_seen)
+    }
+
+    /// Get distinct source records for the given server IDs.
+    ///
+    /// # Errors
+    ///
+    /// Returns `rusqlite::Error` if the query fails.
+    pub async fn query_sources_by_server_ids(
+        &self,
+        server_ids: &[i64],
+    ) -> Result<Vec<SourceRecord>> {
+        let conn = self.conn.write().await;
+        query_sources_by_server_ids(&*conn, server_ids)
+    }
+
+    /// Query all known sources.
+    ///
+    /// # Errors
+    ///
+    /// Returns `rusqlite::Error` if the query fails.
+    pub async fn query_all_sources(&self) -> Result<Vec<SourceRecord>> {
+        let conn = self.conn.write().await;
+        query_all_sources(&*conn)
+    }
+
+    /// Query the latest timestamp associated with a source.
+    ///
+    /// # Errors
+    ///
+    /// Returns `rusqlite::Error` if the query fails.
+    pub async fn query_latest_ts_for_source(
+        &self,
+        source_id: i64,
+    ) -> Result<Option<i64>> {
+        let conn = self.conn.write().await;
+        query_latest_ts_for_source(&*conn, source_id)
+    }
+
+    /// Run a closure with the underlying `Connection` (write lock held).
+    /// Used for operations that need the raw connection, like
+    /// [`SourceRegistry::upsert_all`].
+    pub async fn with_conn<F, T>(&self, f: F) -> T
+    where
+        F: FnOnce(&Connection) -> T,
+    {
+        let conn = self.conn.write().await;
+        f(&*conn)
+    }
+}
 /// Compute deterministic hash for source URL
 /// Used as primary key in sources table
 #[must_use]
-pub fn hash_source_url(url: &str) -> i64 {
+pub(crate) fn hash_source_url(url: &str) -> i64 {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
     let mut hasher = DefaultHasher::new();
@@ -105,7 +257,7 @@ pub fn hash_source_url(url: &str) -> i64 {
 /// # Errors
 ///
 /// Will return `Err` if the database operation fails.
-pub fn upsert_source(conn: &Connection, url: &str) -> Result<i64> {
+pub(crate) fn upsert_source(conn: &Connection, url: &str) -> Result<i64> {
     let url_id = hash_source_url(url);
 
     let existing: Option<i64> = conn
@@ -132,7 +284,7 @@ pub fn upsert_source(conn: &Connection, url: &str) -> Result<i64> {
 /// # Panics
 ///
 /// Will panic if the `config` is not a server URL.
-pub fn upsert_server(
+fn upsert_server(
     conn: &Connection,
     config: &ProtocolConfig,
     source_id: i64,
@@ -218,7 +370,7 @@ pub fn upsert_server(
 /// # Errors
 ///
 /// Will return `Err` if the database query fails.
-pub fn get_server(conn: &Connection, id: i64) -> Result<Option<ServerRecord>> {
+fn get_server(conn: &Connection, id: i64) -> Result<Option<ServerRecord>> {
     let result = conn.query_row(
         "SELECT id, schema, host, port, transport, security, remarks, raw_config, first_seen_ts, first_seen_source_id FROM servers WHERE id = ?1",
         [id],
@@ -248,7 +400,7 @@ pub fn get_server(conn: &Connection, id: i64) -> Result<Option<ServerRecord>> {
 /// # Errors
 ///
 /// Will return `Err` if the query fails.
-pub fn get_sightings(conn: &Connection, server_id: i64) -> Result<Vec<SightingRecord>> {
+fn get_sightings(conn: &Connection, server_id: i64) -> Result<Vec<SightingRecord>> {
     let mut stmt = conn.prepare(
         "SELECT id, server_id, source_id, seen_ts, remarks FROM sightings WHERE server_id = ?1 ORDER BY seen_ts ASC",
     )?;
@@ -281,7 +433,7 @@ pub fn get_sightings(conn: &Connection, server_id: i64) -> Result<Vec<SightingRe
 /// # Errors
 ///
 /// Returns `rusqlite::Error` if the query fails.
-pub fn query_servers_filtered(
+fn query_servers_filtered(
     conn: &Connection,
     protocols: Option<&[String]>,
     min_first_seen: Option<i64>,
@@ -360,7 +512,7 @@ pub fn query_servers_filtered(
 /// # Errors
 ///
 /// Returns `rusqlite::Error` if the query fails.
-pub fn query_sources_by_server_ids(
+fn query_sources_by_server_ids(
     conn: &Connection,
     server_ids: &[i64],
 ) -> Result<Vec<SourceRecord>> {
@@ -409,7 +561,7 @@ pub fn query_sources_by_server_ids(
 /// # Errors
 ///
 /// Returns `rusqlite::Error` if the query fails.
-pub fn query_all_sources(conn: &Connection) -> Result<Vec<SourceRecord>> {
+fn query_all_sources(conn: &Connection) -> Result<Vec<SourceRecord>> {
     let mut stmt = conn.prepare("SELECT id, url FROM sources ORDER BY url")?;
     let rows = stmt.query_map([], |row| {
         Ok(SourceRecord {
@@ -433,7 +585,7 @@ pub fn query_all_sources(conn: &Connection) -> Result<Vec<SourceRecord>> {
 /// # Errors
 ///
 /// Returns `rusqlite::Error` if the query fails.
-pub fn query_latest_ts_for_source(conn: &Connection, source_id: i64) -> Result<Option<i64>> {
+fn query_latest_ts_for_source(conn: &Connection, source_id: i64) -> Result<Option<i64>> {
     let result: Option<i64> = conn.query_row(
         "SELECT MAX(ts) FROM (
             SELECT MAX(seen_ts) AS ts FROM sightings WHERE source_id = ?1

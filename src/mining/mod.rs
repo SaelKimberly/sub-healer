@@ -93,27 +93,25 @@ pub async fn run_with_config(config_path: &Path, db_path: &Path) -> Result<(), a
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::db::Database;
     use crate::proto_spec::{ProtoSpec, ProtocolConfig};
     use crate::urlx::RawUrlX;
     use chrono::DateTime;
     use std::sync::Arc;
-    fn make_in_memory_conn() -> rusqlite::Connection {
-        let conn = rusqlite::Connection::open_in_memory().expect("in-memory db");
-        crate::db::init_db(&conn).expect("init schema");
-        conn
-    }
+
     fn vmess_raw_url() -> &'static str {
         "vmess://eyJhZGQiOiIxLjIuMy40IiwicG9ydCI6ODAsImlkIjoiYWJjZGUtMTIzNDUtNjc4OTAiLCJuZXQiOiJ0Y3AiLCJ0eXBlIjoibm9uZSJ9"
     }
+
     fn source_id_for(url: &str) -> i64 {
-        crate::db::hash_source_url(url)
+        Database::hash_source_url(url)
     }
+
     fn make_raw_batch(source_id: i64, source_url: &str, ts: i64) -> RawSourceItemBatch {
         let source = Arc::new(SourceMetadata::new(
             source_url.to_string(),
             SourceType::Other,
         ));
-        // override id since SourceMetadata::new computes hash from url, but test wants specific id
         let source = Arc::new(SourceMetadata {
             id: source_id,
             ..(*source).clone()
@@ -124,51 +122,57 @@ mod tests {
             raw_urls: Box::new([vmess_raw_url().to_string()]),
         }
     }
+
     #[tokio::test]
     async fn test_pipeline_empty_sources() {
-        let conn = make_in_memory_conn();
-        let mut pipeline = Pipeline::new_test(conn);
+        let mut pipeline = Pipeline::new_test();
         let count = pipeline.run().await.unwrap();
         assert_eq!(count, 0);
     }
+
     #[tokio::test]
     async fn test_pipeline_upserts_config_to_db() {
         let source_url = "https://example.com/sub";
         let sid = source_id_for(source_url);
-        let conn = make_in_memory_conn();
-        crate::db::upsert_source(&conn, source_url).unwrap();
-        let mut pipeline = Pipeline::new_test(conn);
+        let mut pipeline = Pipeline::new_test();
+        pipeline
+            .db()
+            .upsert_source(source_url)
+            .await
+            .unwrap();
         pipeline.add_batch_raw(vec![make_raw_batch(sid, source_url, 1_700_000_000)]);
         let count = pipeline.run().await.unwrap();
         assert_eq!(count, 1);
-        let guard = pipeline.conn().write().await;
         let raw = RawUrlX::from(vmess_raw_url());
         let config = ProtocolConfig::try_parse(&raw).expect("valid vmess");
         let server_id = config.uid().cast_signed();
-        let server = crate::db::get_server(&*guard, server_id).unwrap();
+        let server = pipeline.db().get_server(server_id).await.unwrap();
         assert!(server.is_some(), "server should exist after upsert");
         if let Some(s) = server {
             assert_eq!(s.schema, "vmess");
         }
     }
+
     #[tokio::test]
     async fn test_pipeline_multiple_configs() {
         let source_url = "https://example.com/sub";
         let sid = source_id_for(source_url);
-        let conn = make_in_memory_conn();
-        crate::db::upsert_source(&conn, source_url).unwrap();
-        let mut pipeline = Pipeline::new_test(conn);
+        let mut pipeline = Pipeline::new_test();
+        pipeline
+            .db()
+            .upsert_source(source_url)
+            .await
+            .unwrap();
         pipeline.add_batch_raw(vec![
             make_raw_batch(sid, source_url, 1_700_000_000),
             make_raw_batch(sid, source_url, 1_700_000_001),
         ]);
         let count = pipeline.run().await.unwrap();
         assert_eq!(count, 2);
-        let guard = pipeline.conn().write().await;
         let raw = RawUrlX::from(vmess_raw_url());
         let config = ProtocolConfig::try_parse(&raw).expect("valid vmess");
         let server_id = config.uid().cast_signed();
-        let sightings = crate::db::get_sightings(&*guard, server_id).unwrap();
+        let sightings = pipeline.db().get_sightings(server_id).await.unwrap();
         assert!(
             sightings.len() >= 2,
             "should have 2+ sightings for same server"

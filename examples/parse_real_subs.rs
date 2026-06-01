@@ -7,7 +7,7 @@ use serde_json::json;
 use tracing_subscriber::fmt;
 use tracing_subscriber::prelude::*;
 
-use v2ray_heal::mining::{self, Pipeline, RawSourceItemBatch, UnparseableLayer};
+use v2ray_heal::mining::{Pipeline, RawSourceItemBatch, UnparseableLayer};
 use v2ray_heal::urlx::SchemeX;
 
 fn discover_txt_files(dir: &PathBuf) -> Vec<PathBuf> {
@@ -100,8 +100,7 @@ async fn main() -> anyhow::Result<()> {
         }
 
         let source = pipeline
-            .registry_ref()
-            .lookup(&url_str)
+            .lookup_source(&url_str)
             .expect("source just registered");
 
         batches.push(RawSourceItemBatch {
@@ -111,10 +110,8 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
-    eprintln!(
-        "Total files discovered: {}",
-        pipeline.registry_ref().sources().len()
-    );
+    let file_count = batches.len();
+    eprintln!("Total files discovered: {file_count}");
 
     if !batches.is_empty() {
         pipeline.add_batch_raw(batches);
@@ -122,9 +119,10 @@ async fn main() -> anyhow::Result<()> {
     pipeline.run().await?;
 
     // Count results from DB
-    let guard = pipeline.conn().write().await;
-    use v2ray_heal::proto_spec::ProtoSpec;
-    let servers = v2ray_heal::db::query_servers_filtered(&*guard, None, None, None)?;
+    let servers = pipeline
+        .db()
+        .query_servers_filtered(None, None, None)
+        .await?;
     let mut by_scheme_ok = BTreeMap::<String, u64>::new();
     for server in &servers {
         *by_scheme_ok.entry(server.schema.clone()).or_default() += 1;

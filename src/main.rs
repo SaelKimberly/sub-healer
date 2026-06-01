@@ -10,14 +10,6 @@ use v2ray_heal::mining;
 use v2ray_heal::mining::RawSourceItemBatch;
 use v2ray_heal::urlx::{SchemeX, TinyText};
 
-fn is_telegram_url(url: &url::Url) -> bool {
-    url.host_str() == Some("t.me")
-}
-
-fn is_telegram_url_str(url_str: &str) -> bool {
-    url::Url::parse(url_str).is_ok_and(|u| u.host_str() == Some("t.me"))
-}
-
 /// Scope of sources to re-fetch when using `--pull` on emit
 #[derive(clap::ValueEnum, Clone, Debug)]
 enum PullScope {
@@ -139,8 +131,7 @@ async fn main() -> anyhow::Result<()> {
             }
 
             let source = pipeline
-                .registry_ref()
-                .lookup(&url_str)
+                .lookup_source(&url_str)
                 .expect("source just registered");
 
             let batch = RawSourceItemBatch {
@@ -156,11 +147,7 @@ async fn main() -> anyhow::Result<()> {
         Some(Commands::Remote { url }) => {
             let mut pipeline = mining::Pipeline::new(&cli.db)?;
             for u in &url {
-                if is_telegram_url(u) {
-                    pipeline.add_telegram(u.as_str());
-                } else {
-                    pipeline.add_subscription(u.as_str());
-                }
+                pipeline.add_source(u.as_str());
             }
             pipeline.run().await?;
         }
@@ -190,8 +177,7 @@ async fn main() -> anyhow::Result<()> {
                 }
 
                 let source = pipeline
-                    .registry_ref()
-                    .lookup(&url_str)
+                    .lookup_source(&url_str)
                     .expect("source just registered");
 
                 batches.push(RawSourceItemBatch {
@@ -227,24 +213,23 @@ async fn main() -> anyhow::Result<()> {
                     let mut per_source_backfill: HashMap<TinyText, DateTime<Utc>> = HashMap::new();
 
                     for source in &sources {
-                        let is_tg = is_telegram_url_str(&source.url);
+                        let is_tg =
+                            url::Url::parse(&source.url).is_ok_and(|u| u.host_str() == Some("t.me"));
                         match scope {
                             PullScope::Sub => {
                                 if !is_tg {
-                                    pipeline.add_subscription(&source.url);
+                                    pipeline.add_source(&source.url);
                                 }
                             }
                             PullScope::Tg => {
                                 if is_tg {
-                                    let ts = {
-                                        let guard = pipeline.conn().write().await;
-                                        v2ray_heal::db::query_latest_ts_for_source(
-                                            &*guard, source.id,
-                                        )
-                                        .context("Failed to query latest ts for source")?
-                                    };
+                                    let ts = pipeline
+                                        .db()
+                                        .query_latest_ts_for_source(source.id)
+                                        .await
+                                        .context("Failed to query latest ts for source")?;
                                     if let Some(ts) = ts {
-                                        pipeline.add_telegram(&source.url);
+                                        pipeline.add_source(&source.url);
                                         per_source_backfill.insert(
                                             TinyText::from(&source.url),
                                             DateTime::from_timestamp(ts, 0).unwrap(),
@@ -254,22 +239,20 @@ async fn main() -> anyhow::Result<()> {
                             }
                             PullScope::All => {
                                 if is_tg {
-                                    let ts = {
-                                        let guard = pipeline.conn().write().await;
-                                        v2ray_heal::db::query_latest_ts_for_source(
-                                            &*guard, source.id,
-                                        )
-                                        .context("Failed to query latest ts for source")?
-                                    };
+                                    let ts = pipeline
+                                        .db()
+                                        .query_latest_ts_for_source(source.id)
+                                        .await
+                                        .context("Failed to query latest ts for source")?;
                                     if let Some(ts) = ts {
-                                        pipeline.add_telegram(&source.url);
+                                        pipeline.add_source(&source.url);
                                         per_source_backfill.insert(
                                             TinyText::from(&source.url),
                                             DateTime::from_timestamp(ts, 0).unwrap(),
                                         );
                                     }
                                 } else {
-                                    pipeline.add_subscription(&source.url);
+                                    pipeline.add_source(&source.url);
                                 }
                             }
                         }
@@ -320,11 +303,7 @@ async fn main() -> anyhow::Result<()> {
 
             let mut pipeline = pipeline;
             for source in &sources {
-                if is_telegram_url_str(&source.url) {
-                    pipeline.add_telegram(&source.url);
-                } else {
-                    pipeline.add_subscription(&source.url);
-                }
+                pipeline.add_source(&source.url);
             }
             pipeline.run().await?;
         }

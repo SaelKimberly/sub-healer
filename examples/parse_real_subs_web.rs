@@ -7,8 +7,7 @@ use serde_json::json;
 use tracing_subscriber::fmt;
 use tracing_subscriber::prelude::*;
 
-use v2ray_heal::mining::{self, Pipeline, SourceRegistry, UnparseableLayer};
-use v2ray_heal::proto_spec::ProtoSpec;
+use v2ray_heal::mining::{Pipeline, SourceRegistry, UnparseableLayer};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -44,19 +43,16 @@ async fn main() -> anyhow::Result<()> {
 
     // Add sources from the config registry
     for meta in registry.sources() {
-        use v2ray_heal::mining::SourceType;
-        match meta.source_type {
-            SourceType::Telegram => pipeline.add_telegram(&meta.url),
-            SourceType::Subscription => pipeline.add_subscription(&meta.url),
-            SourceType::Other => {}
-        }
+        pipeline.add_source(&meta.url);
     }
 
     pipeline.run().await?;
 
     // Count results from DB
-    let guard = pipeline.conn().write().await;
-    let servers = v2ray_heal::db::query_servers_filtered(&*guard, None, None, None)?;
+    let servers = pipeline
+        .db()
+        .query_servers_filtered(None, None, None)
+        .await?;
     let mut by_scheme_ok = BTreeMap::<String, u64>::new();
     for server in &servers {
         *by_scheme_ok.entry(server.schema.clone()).or_default() += 1;

@@ -1,7 +1,6 @@
 use std::collections::BTreeMap;
 use std::fs::OpenOptions;
 use std::path::PathBuf;
-use std::time::Duration;
 
 use chrono::TimeDelta;
 use chrono::{Local, Utc};
@@ -9,8 +8,7 @@ use serde_json::json;
 use tracing_subscriber::fmt;
 use tracing_subscriber::prelude::*;
 
-use v2ray_heal::mining::{self, Backfill, Pipeline, SourceRegistry, SourceType, UnparseableLayer};
-use v2ray_heal::proto_spec::ProtoSpec;
+use v2ray_heal::mining::{Backfill, Pipeline, SourceRegistry, UnparseableLayer};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -46,11 +44,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Add sources from the config registry
     for meta in registry.sources() {
-        match meta.source_type {
-            SourceType::Telegram => pipeline.add_telegram(&meta.url),
-            SourceType::Subscription => pipeline.add_subscription(&meta.url),
-            SourceType::Other => {}
-        }
+        pipeline.add_source(&meta.url);
     }
 
     // Set backfill for last 12 hours
@@ -59,15 +53,24 @@ async fn main() -> anyhow::Result<()> {
     pipeline.run().await?;
 
     // Count results from DB
-    let guard = pipeline.conn().write().await;
-    let servers = v2ray_heal::db::query_servers_filtered(&*guard, None, None, None)?;
+    let servers = pipeline
+        .db()
+        .query_servers_filtered(None, None, None)
+        .await?;
     let mut by_scheme_ok = BTreeMap::<String, u64>::new();
     let mut by_channel = BTreeMap::<String, u64>::new();
 
     for server in &servers {
         *by_scheme_ok.entry(server.schema.clone()).or_default() += 1;
-        // Query source for this server
-        let sources = v2ray_heal::db::query_sources_by_server_ids(&*guard, &[server.id])?;
+    }
+
+    // Query sources for each server
+    let server_ids: Vec<i64> = servers.iter().map(|s| s.id).collect();
+    if !server_ids.is_empty() {
+        let sources = pipeline
+            .db()
+            .query_sources_by_server_ids(&server_ids)
+            .await?;
         for src in &sources {
             *by_channel.entry(src.url.clone()).or_default() += 1;
         }
