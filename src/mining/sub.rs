@@ -92,56 +92,60 @@ impl SubFetcher {
                 // Clone fields needed inside spawn_blocking
                 let url_str_clone = url_str.clone();
                 let registry_clone = registry.clone();
+                let sender = sender.clone();
 
-                let result = tokio::task::spawn_blocking(move || {
-                    // Pre-process: decode base64, normalize extras, lossy to UTF-8
+                const BATCH_SIZE: usize = 10_000;
+
+                tokio::task::spawn_blocking(move || {
                     let text = crate::preprocess_sub_data(&data);
 
-                    // Split into lines and extract (scheme, url) pairs
-                    let raw_urls: Vec<String> = text
-                        .lines()
-                        .flat_map(|line| {
-                            let s = line.trim_start();
-                            if s.starts_with('#') || s.starts_with("//") || s.is_empty() {
-                                Vec::new()
-                            } else {
-                                // Split by <br/> to handle HTML line breaks
-                                s.split("<br/>")
-                                    .flat_map(|segment| {
-                                        SchemeX::slice_input(segment)
-                                            .into_iter()
-                                            .map(|(_, url)| url.to_string())
-                                    })
-                                    .collect()
+                    let source = match registry_clone.lookup(&url_str_clone) {
+                        Some(s) => s,
+                        None => {
+                            _ = sender.blocking_send(SubEvent::Error {
+                                url: url_str_clone,
+                                error: "Source not found in registry".into(),
+                            });
+                            return;
+                        }
+                    };
+
+                    let mut batch: Vec<String> = Vec::with_capacity(BATCH_SIZE);
+
+                    for line in text.lines() {
+                        let s = line.trim_start();
+                        if s.starts_with('#') || s.starts_with("//") || s.is_empty() {
+                            continue;
+                        }
+                        for segment in s.split("<br/>") {
+                            for (_, url) in SchemeX::slice_input(segment) {
+                                batch.push(url.to_string());
+                                if batch.len() >= BATCH_SIZE {
+                                    let batch_urls = std::mem::take(&mut batch);
+                                    let item = SubEvent::Item(RawSourceItemBatch {
+                                        source: source.clone(),
+                                        timestamp: download_ts,
+                                        raw_urls: batch_urls.into_boxed_slice(),
+                                    });
+                                    if sender.blocking_send(item).is_err() {
+                                        return;
+                                    }
+                                }
                             }
-                        })
-                        .collect();
+                        }
+                    }
 
-                    let source = registry_clone.lookup(&url_str_clone);
-                    (raw_urls, source)
+                    if !batch.is_empty() {
+                        let item = SubEvent::Item(RawSourceItemBatch {
+                            source,
+                            timestamp: download_ts,
+                            raw_urls: batch.into_boxed_slice(),
+                        });
+                        _ = sender.blocking_send(item);
+                    }
                 })
-                .await;
-
-                let Ok((raw_urls, Some(source))) = result else {
-                    _ = sender
-                        .send(SubEvent::Error {
-                            url: url_str.clone(),
-                            error: "Source not found in registry".into(),
-                        })
-                        .await;
-                    return;
-                };
-
-                if raw_urls.is_empty() {
-                    return;
-                }
-
-                let item = SubEvent::Item(RawSourceItemBatch {
-                    source,
-                    timestamp: download_ts,
-                    raw_urls: raw_urls.into_boxed_slice(),
-                });
-                _ = sender.send(item).await;
+                .await
+                .expect("spawn_blocking should not panic on join handle");
             };
 
             if tokio::time::timeout(TASK_TIMEOUT, task).await.is_err() {

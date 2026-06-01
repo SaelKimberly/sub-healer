@@ -4,8 +4,9 @@ use std::sync::Arc;
 
 use anyhow::Context;
 use chrono::{DateTime, Utc};
-use futures::stream::BoxStream;
 use futures::StreamExt;
+use futures::stream::BoxStream;
+use rusqlite::Connection;
 
 use crate::db::{Database, SourceRecord};
 use crate::proto_spec::{ParseResult, ProtoSpec, ProtocolConfig};
@@ -31,6 +32,7 @@ pub struct Pipeline {
     tg_concurrency: usize,
     per_source_backfill: HashMap<TinyText, DateTime<Utc>>,
     backfill: Option<Backfill>,
+    progress_bar: Option<indicatif::ProgressBar>,
 }
 
 impl Pipeline {
@@ -51,6 +53,7 @@ impl Pipeline {
             tg_concurrency: 8,
             per_source_backfill: HashMap::new(),
             backfill: None,
+            progress_bar: None,
         })
     }
 
@@ -92,6 +95,11 @@ impl Pipeline {
     /// Configure global backfill for Telegram fetches.
     pub fn set_backfill(&mut self, backfill: Option<Backfill>) {
         self.backfill = backfill;
+    }
+
+    /// Attach an optional progress bar to show URL processing progress.
+    pub fn set_progress_bar(&mut self, pb: indicatif::ProgressBar) {
+        self.progress_bar = Some(pb);
     }
 
     // --- Pipeline execution ---
@@ -210,50 +218,90 @@ impl Pipeline {
                 SourceType::Other => "other",
             };
             let ts = batch.timestamp.timestamp();
+            let batch_count = self
+                .db
+                .with_conn(|conn| -> anyhow::Result<usize> {
+                    let tx = conn.transaction()?;
+                    let mut local_count = 0;
+                    for raw_url in batch.raw_urls.iter() {
+                        if process_single_raw_url(
+                            raw_url.as_str(),
+                            batch.source.id,
+                            source_type,
+                            ts,
+                            &tx,
+                        )? {
+                            local_count += 1;
+                        }
+                    }
+                    tx.commit()?;
+                    Ok(local_count)
+                })
+                .await
+                .context("batch upsert failed (aborting)")?;
+            count += batch_count;
 
-            for raw_url in batch.raw_urls.iter() {
-                let raw: RawUrlX = raw_url.as_str().into();
-                match ProtocolConfig::try_parse_detailed(&raw) {
-                    Ok(ParseResult::Direct(config)) => {
-                        self.db
-                            .upsert_server(&config, batch.source.id, ts)
-                            .await
-                            .context("upsert failed (aborting)")?;
-                        count += 1;
-                    }
-                    Ok(ParseResult::Fallback(config, info)) => {
-                        super::emit_unparseable_entry(
-                            &info.raw_url,
-                            &info.original_scheme.to_string(),
-                            &info.original_error,
-                            batch.source.id,
-                            source_type,
-                            ts,
-                        );
-                        self.db
-                            .upsert_server(&config, batch.source.id, ts)
-                            .await
-                            .context("upsert failed (aborting)")?;
-                        count += 1;
-                    }
-                    Err(e) => {
-                        let raw_scheme = raw.schema.to_string();
-                        super::emit_unparseable_entry(
-                            raw_url,
-                            &raw_scheme,
-                            &e.to_string(),
-                            batch.source.id,
-                            source_type,
-                            ts,
-                        );
-                    }
-                }
+            if let Some(pb) = &self.progress_bar {
+                pb.inc(batch.raw_urls.len() as u64);
             }
         }
 
+        if let Some(pb) = &self.progress_bar {
+            pb.finish_with_message(format!("Parsed {count} proxy configs"));
+        }
         Ok(count)
     }
+}
 
+/// Process a single raw URL string, attempting to parse and upsert it.
+///
+/// Returns `true` if the URL was successfully parsed (Direct or Fallback)
+/// and upserted into the database, `false` if unparseable.
+///
+/// # Errors
+///
+/// Returns `anyhow::Error` if a database operation fails (aborts pipeline).
+pub(super) fn process_single_raw_url(
+    raw_url: &str,
+    source_id: i64,
+    source_type: &str,
+    ts: i64,
+    conn: &Connection,
+) -> anyhow::Result<bool> {
+    let raw: RawUrlX = RawUrlX::from(raw_url);
+    match ProtocolConfig::try_parse_detailed(&raw) {
+        Ok(ParseResult::Direct(config)) => {
+            crate::db::upsert_server(conn, &config, source_id, ts)?;
+            Ok(true)
+        }
+        Ok(ParseResult::Fallback(config, info)) => {
+            super::emit_unparseable_entry(
+                &info.raw_url,
+                &info.original_scheme.to_string(),
+                &info.original_error,
+                source_id,
+                source_type,
+                ts,
+            );
+            crate::db::upsert_server(conn, &config, source_id, ts)?;
+            Ok(true)
+        }
+        Err(e) => {
+            let raw_scheme = raw.schema.to_string();
+            super::emit_unparseable_entry(
+                raw_url,
+                &raw_scheme,
+                &e.to_string(),
+                source_id,
+                source_type,
+                ts,
+            );
+            Ok(false)
+        }
+    }
+}
+
+impl Pipeline {
     // --- Query / Export ---
 
     /// Export servers matching filters as subscription text (emit command).
@@ -369,6 +417,7 @@ impl Pipeline {
             tg_concurrency: 8,
             per_source_backfill: HashMap::new(),
             backfill: None,
+            progress_bar: None,
         }
     }
 }

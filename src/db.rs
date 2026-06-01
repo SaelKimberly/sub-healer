@@ -88,6 +88,7 @@ pub(crate) fn init_db(conn: &Connection) -> Result<()> {
         ]
         .join("\n"),
     )?;
+    conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;")?;
     Ok(())
 }
 use std::path::Path;
@@ -167,8 +168,7 @@ impl Database {
     ///
     /// Returns `rusqlite::Error` if the query fails.
     pub async fn get_server(&self, id: i64) -> Result<Option<ServerRecord>> {
-        let conn = self.conn.write().await;
-        get_server(&*conn, id)
+        self.with_conn_read(|conn| get_server(conn, id)).await
     }
 
     /// Get all sightings for a server.
@@ -177,8 +177,8 @@ impl Database {
     ///
     /// Returns `rusqlite::Error` if the query fails.
     pub async fn get_sightings(&self, server_id: i64) -> Result<Vec<SightingRecord>> {
-        let conn = self.conn.write().await;
-        get_sightings(&*conn, server_id)
+        self.with_conn_read(|conn| get_sightings(conn, server_id))
+            .await
     }
 
     /// Query servers with optional protocol/backfill filters.
@@ -192,8 +192,10 @@ impl Database {
         min_first_seen: Option<i64>,
         min_last_seen: Option<i64>,
     ) -> Result<Vec<ServerRecord>> {
-        let conn = self.conn.write().await;
-        query_servers_filtered(&*conn, protocols, min_first_seen, min_last_seen)
+        self.with_conn_read(|conn| {
+            query_servers_filtered(conn, protocols, min_first_seen, min_last_seen)
+        })
+        .await
     }
 
     /// Get distinct source records for the given server IDs.
@@ -205,18 +207,15 @@ impl Database {
         &self,
         server_ids: &[i64],
     ) -> Result<Vec<SourceRecord>> {
-        let conn = self.conn.write().await;
-        query_sources_by_server_ids(&*conn, server_ids)
+        self.with_conn_read(|conn| query_sources_by_server_ids(conn, server_ids))
+            .await
     }
 
     /// Query all known sources.
     ///
     /// # Errors
-    ///
-    /// Returns `rusqlite::Error` if the query fails.
     pub async fn query_all_sources(&self) -> Result<Vec<SourceRecord>> {
-        let conn = self.conn.write().await;
-        query_all_sources(&*conn)
+        self.with_conn_read(|conn| query_all_sources(conn)).await
     }
 
     /// Query the latest timestamp associated with a source.
@@ -224,12 +223,9 @@ impl Database {
     /// # Errors
     ///
     /// Returns `rusqlite::Error` if the query fails.
-    pub async fn query_latest_ts_for_source(
-        &self,
-        source_id: i64,
-    ) -> Result<Option<i64>> {
-        let conn = self.conn.write().await;
-        query_latest_ts_for_source(&*conn, source_id)
+    pub async fn query_latest_ts_for_source(&self, source_id: i64) -> Result<Option<i64>> {
+        self.with_conn_read(|conn| query_latest_ts_for_source(conn, source_id))
+            .await
     }
 
     /// Run a closure with the underlying `Connection` (write lock held).
@@ -237,9 +233,19 @@ impl Database {
     /// [`SourceRegistry::upsert_all`].
     pub async fn with_conn<F, T>(&self, f: F) -> T
     where
+        F: FnOnce(&mut Connection) -> T,
+    {
+        let mut conn = self.conn.write().await;
+        f(&mut *conn)
+    }
+
+    /// Run a closure with the underlying `Connection` (read lock held).
+    /// Used for read-only queries that don't need a write lock.
+    pub async fn with_conn_read<F, T>(&self, f: F) -> T
+    where
         F: FnOnce(&Connection) -> T,
     {
-        let conn = self.conn.write().await;
+        let conn = self.conn.read().await;
         f(&*conn)
     }
 }
@@ -284,7 +290,7 @@ pub(crate) fn upsert_source(conn: &Connection, url: &str) -> Result<i64> {
 /// # Panics
 ///
 /// Will panic if the `config` is not a server URL.
-fn upsert_server(
+pub(crate) fn upsert_server(
     conn: &Connection,
     config: &ProtocolConfig,
     source_id: i64,
@@ -512,10 +518,7 @@ fn query_servers_filtered(
 /// # Errors
 ///
 /// Returns `rusqlite::Error` if the query fails.
-fn query_sources_by_server_ids(
-    conn: &Connection,
-    server_ids: &[i64],
-) -> Result<Vec<SourceRecord>> {
+fn query_sources_by_server_ids(conn: &Connection, server_ids: &[i64]) -> Result<Vec<SourceRecord>> {
     if server_ids.is_empty() {
         return Ok(Vec::new());
     }

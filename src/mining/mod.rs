@@ -1,10 +1,10 @@
 mod pipeline;
+pub mod raw_event;
 mod registry;
 mod sub;
 pub mod telegram;
 mod unparseable_log;
 mod writer;
-pub mod raw_event;
 use std::path::Path;
 use std::time::Duration;
 
@@ -94,6 +94,7 @@ pub async fn run_with_config(config_path: &Path, db_path: &Path) -> Result<(), a
 mod tests {
     use super::*;
     use crate::db::Database;
+    use crate::mining::pipeline::process_single_raw_url;
     use crate::proto_spec::{ProtoSpec, ProtocolConfig};
     use crate::urlx::RawUrlX;
     use chrono::DateTime;
@@ -123,6 +124,48 @@ mod tests {
         }
     }
 
+    fn setup_db() -> rusqlite::Connection {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::db::init_db(&conn).unwrap();
+        conn
+    }
+
+    fn setup_source(conn: &rusqlite::Connection, url: &str) -> i64 {
+        crate::db::upsert_source(conn, url).unwrap()
+    }
+
+    #[test]
+    fn test_process_single_raw_url_direct() {
+        let conn = setup_db();
+        let source_id = setup_source(&conn, "test://source");
+        let result = process_single_raw_url(
+            "vmess://eyJhZGQiOiIxLjIuMy40IiwicG9ydCI6ODAsImlkIjoiYWJjZGUifQ==",
+            source_id,
+            "test",
+            1_700_000_000,
+            &conn,
+        )
+        .unwrap();
+        assert!(result, "valid vmess URL should parse successfully");
+    }
+
+    #[test]
+    fn test_process_single_raw_url_unparseable() {
+        let conn = setup_db();
+        let source_id = setup_source(&conn, "test://source");
+        // VMess URL with invalid/corrupted base64 payload — passes RawUrlX parse
+        // but fails ProtocolConfig try_parse_detailed
+        let result = process_single_raw_url(
+            "vmess://!!!invalid-base64!!!",
+            source_id,
+            "test",
+            1_700_000_000,
+            &conn,
+        )
+        .unwrap();
+        assert!(!result, "malformed vmess URL should not parse");
+    }
+
     #[tokio::test]
     async fn test_pipeline_empty_sources() {
         let mut pipeline = Pipeline::new_test();
@@ -135,11 +178,7 @@ mod tests {
         let source_url = "https://example.com/sub";
         let sid = source_id_for(source_url);
         let mut pipeline = Pipeline::new_test();
-        pipeline
-            .db()
-            .upsert_source(source_url)
-            .await
-            .unwrap();
+        pipeline.db().upsert_source(source_url).await.unwrap();
         pipeline.add_batch_raw(vec![make_raw_batch(sid, source_url, 1_700_000_000)]);
         let count = pipeline.run().await.unwrap();
         assert_eq!(count, 1);
@@ -158,11 +197,7 @@ mod tests {
         let source_url = "https://example.com/sub";
         let sid = source_id_for(source_url);
         let mut pipeline = Pipeline::new_test();
-        pipeline
-            .db()
-            .upsert_source(source_url)
-            .await
-            .unwrap();
+        pipeline.db().upsert_source(source_url).await.unwrap();
         pipeline.add_batch_raw(vec![
             make_raw_batch(sid, source_url, 1_700_000_000),
             make_raw_batch(sid, source_url, 1_700_000_001),

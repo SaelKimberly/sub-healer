@@ -34,11 +34,7 @@ enum Commands {
         file: Vec<PathBuf>,
     },
     Emit {
-        #[arg(
-            long,
-            value_delimiter = ',',
-            help = "Filter by protocol (repeatable)"
-        )]
+        #[arg(long, value_delimiter = ',', help = "Filter by protocol (repeatable)")]
         protocol: Vec<String>,
         #[arg(
             long,
@@ -50,11 +46,7 @@ enum Commands {
             help = "Minimum last-seen timestamp (humantime duration, e.g. '7d', '30m')"
         )]
         min_last_seen_ts: Option<humantime::Duration>,
-        #[arg(
-            long,
-            value_enum,
-            help = "Scope of sources to pull before emitting"
-        )]
+        #[arg(long, value_enum, help = "Scope of sources to pull before emitting")]
         pull: Option<PullScope>,
     },
 }
@@ -94,21 +86,39 @@ fn parse_to_raw_urls(data: &[u8]) -> Vec<String> {
         .collect()
 }
 
+/// Create a spinner progress bar (managed by MultiProgress) showing URL count and elapsed time.
+fn make_progress_bar(mp: &indicatif::MultiProgress) -> indicatif::ProgressBar {
+    let pb = mp.add(indicatif::ProgressBar::new_spinner());
+    pb.set_style(
+        indicatif::ProgressStyle::default_spinner()
+            .template("{spinner:.green} {pos} URLs processed [{elapsed_precise}]")
+            .unwrap(),
+    );
+    pb
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let mp = indicatif::MultiProgress::new();
+
+    let indicatif_writer: tracing_indicatif::IndicatifWriter =
+        tracing_indicatif::IndicatifWriter::new(mp.clone());
+
     tracing_subscriber::registry()
-        .with(fmt::layer())
+        .with(fmt::layer().with_writer(indicatif_writer))
         .with(EnvFilter::from_default_env().add_directive(tracing::Level::INFO.into()))
         .with(v2ray_heal::mining::UnparseableLayer::new())
         .try_init()
         .ok();
 
     let cli = Cli::parse();
-
     match cli.command {
         Some(Commands::Config { file }) => {
             let config_path = file.unwrap_or(PathBuf::from("config.yaml"));
-            mining::run_with_config(&config_path, &cli.db).await?;
+            let mut pipeline = mining::Pipeline::from_config(&config_path, &cli.db)?;
+            pipeline.set_progress_bar(make_progress_bar(&mp));
+            let count = pipeline.run().await?;
+            tracing::info!(count, "Mining pipeline completed");
         }
         Some(Commands::Stdin) => {
             use tokio::io::AsyncReadExt;
@@ -140,6 +150,7 @@ async fn main() -> anyhow::Result<()> {
                 raw_urls: raw_urls.into_boxed_slice(),
             };
 
+            pipeline.set_progress_bar(make_progress_bar(&mp));
             pipeline.add_batch_raw(vec![batch]);
             let count = pipeline.run().await?;
             tracing::info!(count, "Stdin mining completed");
@@ -149,6 +160,7 @@ async fn main() -> anyhow::Result<()> {
             for u in &url {
                 pipeline.add_source(u.as_str());
             }
+            pipeline.set_progress_bar(make_progress_bar(&mp));
             pipeline.run().await?;
         }
         Some(Commands::Local { file }) => {
@@ -191,6 +203,7 @@ async fn main() -> anyhow::Result<()> {
                 tracing::warn!("No proxy URLs found in any file");
                 return Ok(());
             }
+            pipeline.set_progress_bar(make_progress_bar(&mp));
 
             pipeline.add_batch_raw(batches);
             let count = pipeline.run().await?;
@@ -213,8 +226,8 @@ async fn main() -> anyhow::Result<()> {
                     let mut per_source_backfill: HashMap<TinyText, DateTime<Utc>> = HashMap::new();
 
                     for source in &sources {
-                        let is_tg =
-                            url::Url::parse(&source.url).is_ok_and(|u| u.host_str() == Some("t.me"));
+                        let is_tg = url::Url::parse(&source.url)
+                            .is_ok_and(|u| u.host_str() == Some("t.me"));
                         match scope {
                             PullScope::Sub => {
                                 if !is_tg {
@@ -258,6 +271,7 @@ async fn main() -> anyhow::Result<()> {
                         }
                     }
 
+                    pipeline.set_progress_bar(make_progress_bar(&mp));
                     if !per_source_backfill.is_empty() {
                         pipeline.set_per_source_backfill(per_source_backfill);
                     }
@@ -305,6 +319,7 @@ async fn main() -> anyhow::Result<()> {
             for source in &sources {
                 pipeline.add_source(&source.url);
             }
+            pipeline.set_progress_bar(make_progress_bar(&mp));
             pipeline.run().await?;
         }
     }
