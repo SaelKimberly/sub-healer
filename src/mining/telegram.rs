@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::pin::Pin;
 use std::str::FromStr;
+use std::borrow::Cow;
 use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 use bytes::Bytes;
@@ -173,15 +174,21 @@ fn extract_urls(_channel_id: &str, msg: ElementRef<'_>) -> Option<Vec<String>> {
         }
     }
 
-    // Filter empty URLs and truncated ones, clean trailing backticks
+    // Filter empty URLs and truncated ones, clean trailing backticks, normalize extra= JSON
     let result: Vec<String> = raw_urls
         .into_iter()
         .filter(|s| !s.is_empty() && !s.ends_with('…') && !s.ends_with("…»"))
         .map(|s| {
-            if let Some((i, _)) = s.char_indices().rev().take_while(|(_, c)| *c == '`').last() {
+            let s = if let Some((i, _)) = s.char_indices().rev().take_while(|(_, c)| *c == '`').last() {
                 s[..i].to_string()
             } else {
                 s
+            };
+            // Normalize any `extra=` JSON in the URL (Telegram URLs may have form-urlencoded +).
+            // When no extra= present, normalize_extras returns Cow::Borrowed (zero-cost).
+            match crate::utils::norm_extras::normalize_extras(s.as_bytes()) {
+                Cow::Owned(bytes) => String::from_utf8(bytes).unwrap_or(s),
+                Cow::Borrowed(_) => s,
             }
         })
         .collect();

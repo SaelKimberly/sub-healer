@@ -88,4 +88,19 @@ mod tests {
         // -> valid json, urlencoded: extra={"a":true}
         assert_eq!(x, "extra=%7B%22a%22%3Atrue%7D");
     }
+
+    #[test]
+    fn test_extra_plus_as_whitespace() {
+        // Form-urlencoded `+` in extra JSON (common in Telegram URLs)
+        // `+` should be treated as whitespace by permissive_json_core
+        // The URL before extra= is preserved verbatim, only the extra value is re-encoded
+        let s = "vless://host:443?type=xhttp&extra=%7B%22a%22%3A+1%2C+%22b%22%3A+%22c%22%7D";
+        let n = super::normalize_extras(s.as_bytes());
+        let x = unsafe { str::from_utf8_unchecked(n.as_ref()) };
+        assert_eq!(
+            x,
+            // After normalization: + stripped, valid JSON, URL-encoded
+            "vless://host:443?type=xhttp&extra=%7B%22a%22%3A1%2C%22b%22%3A%22c%22%7D"
+        );
+    }
 }
