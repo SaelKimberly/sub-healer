@@ -1,20 +1,39 @@
+use std::sync::Arc;
+use std::time::Duration;
+
+use chrono::{DateTime, Utc};
+
+
 mod pipeline;
-pub mod raw_event;
 mod registry;
 mod sub;
 pub mod telegram;
 mod unparseable_log;
 mod writer;
-use std::time::Duration;
-
 
 pub use pipeline::Pipeline;
-pub use raw_event::RawSourceItemBatch;
 pub use registry::{SourceMetadata, SourceRegistry, SourceType};
 pub use unparseable_log::UnparseableLayer;
 pub use writer::PipelineLogWriter;
 
 pub use self::telegram::Backfill;
+
+/// Batch of decoded-and-normalized raw URL strings from one fetch operation.
+///
+/// Each batch corresponds to a single fetch boundary:
+/// - Telegram: all URLs extracted from one message's HTML
+/// - Subscription: all decoded lines from one subscription download
+/// - Stdin/Local: all decoded lines from one file or pipe input
+///
+/// The consumer ([`Pipeline::run`]) iterates over each URL,
+/// calls [`crate::proto_spec::ProtocolConfig::try_parse_detailed`], and
+/// handles all outcomes (Direct, Fallback, Unparseable) in one place.
+#[derive(Debug, Clone)]
+pub struct RawSourceItemBatch {
+    pub source: Arc<SourceMetadata>,
+    pub timestamp: DateTime<Utc>,
+    pub raw_urls: Box<[String]>,
+}
 
 pub const PROXY_URL: &str = "http://127.0.0.1:20172";
 

@@ -14,7 +14,7 @@ use tokio::task::JoinSet;
 
 use crate::urlx::{SchemeX, TinyText};
 
-use super::raw_event::RawSourceItemBatch;
+use super::RawSourceItemBatch;
 use super::registry::SourceRegistry;
 
 /// Selector for outer message container

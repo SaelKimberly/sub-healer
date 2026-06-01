@@ -12,7 +12,7 @@ use crate::db::{Database, SourceRecord};
 use crate::proto_spec::{ParseResult, ProtoSpec, ProtocolConfig};
 use crate::urlx::{RawUrlX, TinyText};
 
-use super::raw_event::RawSourceItemBatch;
+use super::RawSourceItemBatch;
 use super::registry::{SourceMetadata, SourceRegistry, SourceType};
 use super::telegram::Backfill;
 

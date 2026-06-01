@@ -7,7 +7,7 @@ use chrono::Utc;
 use futures::Stream;
 use tokio::task::JoinSet;
 
-use crate::mining::raw_event::RawSourceItemBatch;
+use crate::mining::RawSourceItemBatch;
 use crate::mining::registry::SourceRegistry;
 use crate::urlx::SchemeX;
 
