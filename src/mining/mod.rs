@@ -20,8 +20,6 @@ pub use writer::PipelineLogWriter;
 pub use self::telegram::Backfill;
 
 pub const PROXY_URL: &str = "http://127.0.0.1:20172";
-pub const SEMAPHORE_PERMITS: usize = 64;
-pub const USER_AGENT: &str = "clash-verge/v2.0.2";
 
 /// # Panics
 ///

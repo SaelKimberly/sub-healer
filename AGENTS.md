@@ -6,7 +6,7 @@ Rust proxy subscription miner/aggregator: scrapes Telegram channels + downloads 
 
 ```bash
 rtk cargo check                 # lint
-rtk cargo test                  # all tests (98 pass, 3 ignored)
+rtk cargo test                  # all tests (106 pass, 3 ignored)
 rtk cargo test registry         # SourceRegistry tests
 cargo run -- config              # full pipeline from config.yaml
 cargo run -- config path.yaml   # full pipeline from custom config
@@ -20,21 +20,21 @@ cargo bench                      # criterion benchmarks
 
 ## CLI
 
-- **`config`**: Full pipeline from YAML. `config.yaml` must have `tgchannel:` (list). Optional `subscriptions:` list — supports `https://` (HTTP download, GITHUB_TOKEN env for github.com) and `file://`. Unsupported schemes → skip with `tracing::error!`.
+- **`config`**: Full pipeline from YAML. Optional `tgchannel:` (list) and `subscriptions:` list — supports `https://` (HTTP download, GITHUB_TOKEN env for github.com) and `file://`. Unsupported schemes → skip with `tracing::error!`.
 - **`stdin`**: Pipe → `parse_sub()` → DB upsert. Source type: `Other`, registry key `stdin://local`.
 - **`remote`**: Download subs from URLs or scrape Telegram (t.me auto-detected via host check). Mixed batch OK.
 - **`local`**: Filesystem → `parse_sub()` → DB upsert. Source URL = `file://` absolute path.
-- **`emit`**: Filtered server export. `--protocol` (repeatable, case-insensitive), `--min-first-seen-ts`, `--min-last-seen-ts` (humantime durations). Reconstructs native URLs from stored `ProtocolConfig` JSON.
+- **`emit`**: Filtered server export. `--protocol` (repeatable, case-insensitive), `--min-first-seen-ts`, `--min-last-seen-ts` (humantime durations), `--pull` (re-mine all DB sources, optionally with per-source Telegram backfill). Reconstructs native URLs from stored `ProtocolConfig` JSON.
 
 Global `--db` flag (default `v2ray-heal.db`). Unparseable log: `V2RAY_HEAL_UNPARSEABLE_LOG` env (default `unparseable.ndjson`).
 
 ## Architecture
 
-**Single parser layer** — `proto_spec/` (11 typed config parsers):
+**Two-layer pipeline** — `urlx/` splits URI → `proto_spec/` parses into typed configs:
 
-1. `RawUrlX::from(str)` splits URI → schema/userinfo/hostport/path/query/fragment
-2. `ProtocolConfig::try_parse(&raw)` dispatches by `SchemeX` → protocol-specific parse
-3. On recoverable error, fallback chain: SS→SSR→VMess→VLESS→Trojan→Hysteria2→Slipnet→TG
+1. `SchemeX::slice_input()` / `RawUrlX::from(str)` splits URI → schema/userinfo/hostport/path/query/fragment
+2. `ProtocolConfig::try_parse_detailed(&raw)` dispatches by `SchemeX` → three-outcome result (Direct / Fallback / Unparseable)
+3. On `Fallback` result, retry chain: SS→SSR→VMess→VLESS→Trojan→Hysteria2→Slipnet→TG
 4. `reconstruct()` builds canonical URL back from parsed fields
 
 `dispatch!` macro delegates all `ProtoSpec` trait methods across 12 `ProtocolConfig` variants.
@@ -42,13 +42,14 @@ Global `--db` flag (default `v2ray-heal.db`). Unparseable log: `V2RAY_HEAL_UNPAR
 ## Mining Pipeline
 
 ```
-run_with_config(path, db_path):
-  1. build_client() → reqwest::Client (proxy PROXY_URL, 30s timeout)
-  2. open_db(db_path) → init_db schema
-  3. SourceRegistry::from_config(config_path) → pre-populate + upsert_all
-  4. registry.run_pipeline(client, conn)
-     → LiveFetcher::fetch() merges Telegram + subscription streams
-     → process_config_stream() upserts sources + servers
+Pipeline::new(db_path)
+  .add_source(registry) or .add_batch_raw(items)
+  .set_backfill(Backfill::Last(duration))
+  .run(client)
+  → Upsert registered sources to DB
+  → Build fetcher streams (Telegram fetch_tg_channels, Subscription fetch_subscriptions)
+  → Merge via futures::stream::select
+  → For each RawSourceItemBatch: lazy source upsert → try_parse_detailed → upsert_server
 ```
 
 **DB failures are fatal** — `upsert_server` uses `.context("... (aborting)")?`. No in-memory dedup — `servers.id` (= `ProtocolConfig::uid()`) PK handles uniqueness.
@@ -73,7 +74,6 @@ Time-travel: if incoming_ts < first_seen_ts, archive current to sightings + repl
 - **Concurrency**: `tokio` (async I/O) + `rayon` (parallel CPU for line processing)
 - **Database**: `rusqlite` bundled
 - **Proxy**: HTTP proxy at `http://127.0.0.1:20172` (`PROXY_URL` constant)
-- **User-Agent**: `"clash-verge/v2.0.2"`
 - **GITHUB_TOKEN**: env var for bearer auth on `raw.githubusercontent.com` / `github.com` requests
 - **ProtocolConfig.uid**: `uid = sig ^ rapidhash_v3(host:port:username:password)`. SlipnetEnc: `uid == sig`.
 - **ProtoSpec**: `try_parse()`, `reconstruct()`, `schema()`, `host()`, `port()`, `uid()` (= `sig() ^ cred_hash()`). 12 impls: Vless, Vmess, Trojan, Hysteria2, Ss, Ssr, Tg, Slipnet, SlipnetEnc, Stormdns, Tuic, Wireguard.
@@ -83,7 +83,7 @@ Time-travel: if incoming_ts < first_seen_ts, archive current to sightings + repl
 
 ## Pre-existing Test Status
 
-**0 failures**. Test suite: 98 passed, 3 ignored (manual integration tests that fetch real Telegram data). Previous 5 failures (VMess→SS fallback, SSR InvalidStructure, SlipnetEnc, WireGuard, Warp) were fixed during the proto_spec unification.
+**0 failures**. Test suite: 106 passed, 3 ignored (manual integration tests that fetch real Telegram data). Previous 5 failures (VMess→SS fallback, SSR InvalidStructure, SlipnetEnc, WireGuard, Warp) were fixed during the proto_spec unification.
 
 ## Tools
 
