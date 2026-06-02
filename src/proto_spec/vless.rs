@@ -48,8 +48,8 @@ use serde::{Deserialize, Serialize};
 use crate::urlx::{HostSpec, RawUrlX, SchemeX, TinyText, host_serde, port_serde};
 
 use super::common::{RealityOpts, SecurityConfig, TlsConfig, TlsOpts, TransportConfig};
-use super::utils;
 use super::impl_sig_cache;
+use super::utils;
 use super::{ParseError, ProtoSpec};
 
 #[serde_with::skip_serializing_none]
@@ -102,15 +102,12 @@ impl ProtoSpec for VlessConfig {
         let parsed_port = parsed_port
             .first()
             .ok_or_else(|| ParseError::InvalidPort("empty port spec".into()))?;
-        let (uuid, uuid_origin) = match uuid::Uuid::parse_str(username) {
-            Ok(_) => (username.to_string(), None),
-            Err(_) => {
-                let generated =
-                    uuid::Uuid::new_v5(&uuid::Uuid::nil(), username.as_bytes()).to_string();
-                (generated, Some(TinyText::from(username)))
-            }
+        let (uuid, uuid_origin) = if uuid::Uuid::parse_str(username).is_ok() {
+            (username.to_string(), None)
+        } else {
+            let generated = uuid::Uuid::new_v5(&uuid::Uuid::nil(), username.as_bytes()).to_string();
+            (generated, Some(TinyText::from(username)))
         };
-
 
         let query = utils::parse_query(raw.query);
 
@@ -118,7 +115,11 @@ impl ProtoSpec for VlessConfig {
         let transport_type = query.get("type").map_or("tcp", |s| s.as_str()).to_string();
         let path = query.get("path").cloned().map(TinyText::from);
         // encryption: typically "none" (VLESS relies on TLS, not payload encryption)
-        let encryption = query.get("encryption").filter(|v| v != &"none").cloned().map(TinyText::from);
+        let encryption = query
+            .get("encryption")
+            .filter(|v| v != &"none")
+            .cloned()
+            .map(TinyText::from);
         // flow: xtls-rprx-vision for XTLS direct transmission (TLS 1.3 required)
         let flow = query.get("flow").cloned().map(TinyText::from);
         // splice: boolean splice mode flag
@@ -179,7 +180,8 @@ impl ProtoSpec for VlessConfig {
                 }
             }
             if let Some(extra) = query.get("extra") {
-                match serde_json::from_str(extra) {
+                let mut bytes = extra.as_bytes().to_vec();
+                match simd_json::from_slice(&mut bytes) {
                     Ok(v) => xcfg.extra = Some(v),
                     Err(_) => {
                         return Err(ParseError::InvalidConf(
@@ -201,7 +203,6 @@ impl ProtoSpec for VlessConfig {
         };
 
         Ok(Self {
-
             sig_cache: std::sync::OnceLock::new(),
             cred_hash_cache: std::sync::OnceLock::new(),
             uuid,
@@ -544,7 +545,6 @@ mod tests {
         }
     }
 
-
     #[test]
     fn test_vless_short_string_creates_uuidv5() {
         let url = "vless://somechannel@159.223.24.65:443?security=tls&type=tcp";
@@ -564,7 +564,10 @@ mod tests {
         );
         // Verify the generated UUID matches UUIDv5 from nil namespace
         let expected = uuid::Uuid::new_v5(&uuid::Uuid::nil(), b"somechannel").to_string();
-        assert_eq!(config.uuid, expected, "uuid should be UUIDv5(nil, \"somechannel\")");
+        assert_eq!(
+            config.uuid, expected,
+            "uuid should be UUIDv5(nil, \"somechannel\")"
+        );
     }
 
     #[test]

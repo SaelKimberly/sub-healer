@@ -11,6 +11,8 @@ use crate::mining::RawSourceItemBatch;
 use crate::mining::registry::SourceRegistry;
 use crate::urlx::SchemeX;
 
+const BATCH_SIZE: usize = 10_000;
+
 /// Events emitted by subscription fetching tasks.
 enum SubEvent {
     /// A batch of raw URL strings from one subscription download.
@@ -29,6 +31,7 @@ struct SubFetcher {
 }
 
 impl SubFetcher {
+    #[allow(clippy::too_many_lines, reason = "Entire task for subscription fetch")]
     fn spawn(
         mut self: Pin<Box<Self>>,
     ) -> Pin<Box<dyn std::future::Future<Output = ()> + Send + Sync + 'static>> {
@@ -93,21 +96,15 @@ impl SubFetcher {
                 let url_str_clone = url_str.clone();
                 let registry_clone = registry.clone();
                 let sender = sender.clone();
-
-                const BATCH_SIZE: usize = 10_000;
-
                 tokio::task::spawn_blocking(move || {
                     let text = crate::preprocess_sub_data(&data);
 
-                    let source = match registry_clone.lookup(&url_str_clone) {
-                        Some(s) => s,
-                        None => {
-                            _ = sender.blocking_send(SubEvent::Error {
-                                url: url_str_clone,
-                                error: "Source not found in registry".into(),
-                            });
-                            return;
-                        }
+                    let Some(source) = registry_clone.lookup(&url_str_clone) else {
+                        _ = sender.blocking_send(SubEvent::Error {
+                            url: url_str_clone,
+                            error: "Source not found in registry".into(),
+                        });
+                        return;
                     };
 
                     let mut batch: Vec<String> = Vec::with_capacity(BATCH_SIZE);

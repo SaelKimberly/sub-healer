@@ -40,9 +40,9 @@ impl Unescaper {
         self
     }
 
-    pub fn do_unescape<'a>(self, span: &'a [u8]) -> core::result::Result<String, UnescapeError> {
-        let s: std::borrow::Cow<'a, [u8]> = if self.enc_pct {
-            percent_encoding::percent_decode(span).into()
+    pub fn do_unescape(self, span: &[u8]) -> core::result::Result<String, UnescapeError> {
+        let s: std::borrow::Cow<'_, [u8]> = if self.enc_pct {
+            urlencoding::decode_binary(span)
         } else {
             std::borrow::Cow::Borrowed(span)
         };

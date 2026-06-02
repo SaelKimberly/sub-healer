@@ -270,8 +270,8 @@ async fn main() -> anyhow::Result<()> {
                     let mut per_source_backfill: HashMap<TinyText, DateTime<Utc>> = HashMap::new();
 
                     for source in &sources {
-                        let is_tg = url::Url::parse(&source.url)
-                            .is_ok_and(|u| u.host_str() == Some("t.me"));
+                        let is_tg = source.url.starts_with("https://t.me/")
+                            || source.url.starts_with("http://t.me/");
                         match scope {
                             PullScope::Sub => {
                                 if !is_tg {

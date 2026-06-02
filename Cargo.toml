@@ -41,8 +41,9 @@ base64 = { version = "*" }
 urlencoding = { version = "*" }
 escape8259 = { version = "*" }
 unescaper = { version = "*" }
+simd-json = { version = "*" }
+simdutf8 = { version = "*" }
 chardetng = { version = "*", features = ["multithreading"] }
-percent-encoding = { version = "*" }
 
 serde = { version = "*", features = ["derive"] }
 serde_json = { version = "*" }

@@ -37,7 +37,7 @@ impl TransportConfig {
 
     pub fn from_type_and_path(protocol_type: Option<&str>, path: Option<&str>) -> Option<Self> {
         match protocol_type {
-            None | Some("tcp") | Some("raw") => Some(Self::Tcp),
+            None | Some("tcp" | "raw") => Some(Self::Tcp),
             Some("ws" | "websocket") => Some(Self::Ws(WebSocketConfig {
                 path: path.map(TinyText::from),
                 ..WebSocketConfig::default()
@@ -151,7 +151,7 @@ pub struct XHttpConfig {
     pub headers: Option<std::collections::HashMap<String, String>>,
     pub extra: Option<Value>,
 }
- 
+
 #[serde_with::skip_serializing_none]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
@@ -196,7 +196,7 @@ impl SecurityConfig {
             _ => None,
         }
     }
-    
+
     #[must_use]
     pub fn alpn(&self) -> Option<&str> {
         if let Some(TlsConfig::Tls(TlsOpts {
@@ -209,7 +209,7 @@ impl SecurityConfig {
             None
         }
     }
-    
+
     #[must_use]
     pub fn fp(&self) -> Option<&str> {
         match self.tls {
@@ -224,7 +224,7 @@ impl SecurityConfig {
             _ => None,
         }
     }
-    
+
     #[must_use]
     pub const fn insecure(&self) -> Option<bool> {
         if let Some(TlsConfig::Tls(TlsOpts { insecure, .. })) = self.tls {
@@ -233,7 +233,7 @@ impl SecurityConfig {
             None
         }
     }
-    
+
     #[must_use]
     pub const fn pbk(&self) -> Option<&str> {
         if let Some(TlsConfig::Reality(RealityOpts {
@@ -245,7 +245,7 @@ impl SecurityConfig {
             None
         }
     }
-    
+
     #[must_use]
     pub fn sid(&self) -> Option<&str> {
         if let Some(TlsConfig::Reality(RealityOpts {

@@ -9,10 +9,9 @@ use super::models::ServerRecord;
 /// Used as primary key in sources table.
 #[must_use]
 pub(crate) fn hash_source_url(url: &str) -> i64 {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-    let mut hasher = DefaultHasher::new();
-    url.hash(&mut hasher);
+    let mut hasher =
+        rapidhash::v3::RapidStreamHasherV3::new(&rapidhash::v3::DEFAULT_RAPID_SECRETS);
+    hasher.write(url.as_bytes());
     hasher.finish().cast_signed()
 }
 

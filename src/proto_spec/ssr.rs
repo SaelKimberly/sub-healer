@@ -46,8 +46,8 @@ use serde::{Deserialize, Serialize};
 use crate::urlx::{HostSpec, RawUrlX, SchemeX, TinyText, host_serde, port_serde};
 
 use super::common::SecurityConfig;
-use super::utils;
 use super::impl_sig_cache;
+use super::utils;
 use super::{ParseError, ProtoSpec};
 
 #[serde_with::skip_serializing_none]
@@ -95,16 +95,16 @@ impl ProtoSpec for SsrConfig {
         let method = TinyText::from(parts[parts.len() - 3]);
         let obfs = TinyText::from(parts[parts.len() - 2]);
         let raw_password = parts[parts.len() - 1..].join(":");
-        
+
         let (password, query_part) = raw_password
             .split_once("/?")
             .or_else(|| raw_password.split_once('?'))
             .unwrap_or((&raw_password, ""));
-        
+
         let mut params = std::collections::HashMap::new();
         params.insert("protocol".into(), protocol.to_string());
         params.insert("obfs".into(), obfs.to_string());
-        
+
         if !query_part.is_empty() {
             for pair in query_part.split('&') {
                 if let Some((k, v)) = pair.split_once('=') {
@@ -112,13 +112,16 @@ impl ProtoSpec for SsrConfig {
                 }
             }
         }
-        
+
         let remarks = params.remove("remarks").map(|r| {
             base64::prelude::BASE64_URL_SAFE_NO_PAD
                 .decode(r.trim_end_matches('='))
                 .ok()
-                .and_then(|d| String::from_utf8(d).ok())
-                .map(TinyText::from)
+                .and_then(|d| {
+                    simdutf8::basic::from_utf8(d.as_ref())
+                        .map(TinyText::from)
+                        .ok()
+                })
                 .unwrap_or_else(|| TinyText::from(r.as_str()))
         });
 
@@ -208,7 +211,6 @@ impl ProtoSpec for SsrConfig {
     fn transport_type(&self) -> Option<&str> {
         None
     }
-
 }
 
 /// Strip trailing non-base64 garbage (Telegram annotation text and decorative

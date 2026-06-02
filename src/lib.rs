@@ -1,5 +1,5 @@
 #![warn(clippy::nursery, clippy::pedantic)]
-#![allow(clippy::doc_markdown)]
+#![allow(clippy::doc_markdown, clippy::too_long_first_doc_paragraph)]
 pub mod db;
 pub mod mining;
 pub mod proto_spec;
@@ -76,9 +76,9 @@ pub fn preprocess_sub_data(data: &[u8]) -> String {
     if let Cow::Owned(_) = data {
         tracing::info!("Some extras was fixed");
     }
-    let data = String::from_utf8_lossy(data.as_ref());
-    if let Cow::Owned(_) = data {
-        tracing::info!("Some characters was replaced");
-    }
-    data.into_owned()
+
+    simdutf8::basic::from_utf8(data.as_ref()).map_or_else(
+        |_| String::from_utf8_lossy(data.as_ref()).into_owned(),
+        ToOwned::to_owned,
+    )
 }

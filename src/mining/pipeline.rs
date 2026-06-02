@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::fmt::Write;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -17,7 +18,7 @@ use super::registry::{SourceMetadata, SourceRegistry, SourceType};
 use super::telegram::Backfill;
 
 fn is_telegram_url_str(url_str: &str) -> bool {
-    url::Url::parse(url_str).is_ok_and(|u| u.host_str() == Some("t.me"))
+    url_str.starts_with("https://t.me/") || url_str.starts_with("http://t.me/")
 }
 
 /// Central pipeline that owns the database adapter, HTTP client, and source
@@ -93,7 +94,7 @@ impl Pipeline {
     }
 
     /// Configure global backfill for Telegram fetches.
-    pub fn set_backfill(&mut self, backfill: Option<Backfill>) {
+    pub const fn set_backfill(&mut self, backfill: Option<Backfill>) {
         self.backfill = backfill;
     }
 
@@ -188,6 +189,7 @@ impl Pipeline {
     /// # Errors
     ///
     /// Returns an error if a database operation fails (aborting the entire pipeline).
+    #[allow(clippy::future_not_send, reason = "Needs research")]
     pub async fn run_raw(
         &mut self,
         combined: BoxStream<'static, RawSourceItemBatch>,
@@ -223,7 +225,7 @@ impl Pipeline {
                 .with_conn(|conn| -> anyhow::Result<usize> {
                     let tx = conn.transaction()?;
                     let mut local_count = 0;
-                    for raw_url in batch.raw_urls.iter() {
+                    for raw_url in &batch.raw_urls {
                         if process_single_raw_url(
                             raw_url.as_str(),
                             batch.source.id,
@@ -275,11 +277,7 @@ pub(super) fn process_single_raw_url(
             Ok(true)
         }
         Ok(ParseResult::Fallback(config, info)) => {
-            let fallback_msg = format!(
-                "{} (parsed as {})",
-                info.original_error,
-                config.schema(),
-            );
+            let fallback_msg = format!("{} (parsed as {})", info.original_error, config.schema());
             super::emit_unparseable_entry(
                 &info.raw_url,
                 &info.original_scheme.to_string(),
@@ -314,6 +312,7 @@ impl Pipeline {
     /// # Errors
     ///
     /// Returns an error if the database query fails.
+    #[allow(clippy::future_not_send, reason = "Needs research")]
     pub async fn export(
         &self,
         protocols: Option<&[String]>,
@@ -337,34 +336,36 @@ impl Pipeline {
         };
 
         let mut output = String::new();
-        output.push_str(&format!(
-            "# v2ray-heal generated at {}\n",
+        let _ = writeln!(
+            output,
+            "# v2ray-heal generated at {}",
             Utc::now().to_rfc3339()
-        ));
+        );
         if !sources.is_empty() {
             output.push_str("# Sources:\n");
             for src in &sources {
-                output.push_str(&format!("#   - {}\n", src.url));
+                let _ = writeln!(output, "#   - {}", src.url);
             }
         }
         output.push('\n');
 
         for server in &servers {
-            let config: crate::proto_spec::ProtocolConfig =
-                match serde_json::from_str(&server.raw_config) {
-                    Ok(c) => c,
-                    Err(e) => {
-                        tracing::warn!(
-                            server_id = server.id,
-                            error = %e,
-                            "Failed to deserialize config"
-                        );
-                        continue;
-                    }
-                };
+            let mut bytes = server.raw_config.as_bytes().to_vec();
+            let config: crate::proto_spec::ProtocolConfig = match simd_json::from_slice(&mut bytes)
+            {
+                Ok(c) => c,
+                Err(e) => {
+                    tracing::warn!(
+                        server_id = server.id,
+                        error = %e,
+                        "Failed to deserialize config"
+                    );
+                    continue;
+                }
+            };
             match config.reconstruct() {
                 Ok(url) => {
-                    output.push_str(&format!("{url}\n"));
+                    let _ = writeln!(output, "{url}");
                 }
                 Err(e) => {
                     tracing::warn!(
@@ -384,6 +385,7 @@ impl Pipeline {
     /// # Errors
     ///
     /// Returns an error if the database query fails.
+    #[allow(clippy::future_not_send, reason = "Needs research")]
     pub async fn all_sources(&self) -> anyhow::Result<Vec<SourceRecord>> {
         self.db.query_all_sources().await.map_err(Into::into)
     }
@@ -392,7 +394,7 @@ impl Pipeline {
 
     /// Get a reference to the internal database adapter.
     #[must_use]
-    pub fn db(&self) -> &Database {
+    pub const fn db(&self) -> &Database {
         &self.db
     }
 
@@ -409,6 +411,10 @@ impl Pipeline {
 
     /// Create a Pipeline wrapping an in-memory database (for tests).
     /// Uses a default `reqwest::Client` (no proxy).
+    ///
+    /// # Panics
+    ///
+    /// Will panic, if could not open database in-memory.
     #[cfg(test)]
     #[must_use]
     pub fn new_test() -> Self {
