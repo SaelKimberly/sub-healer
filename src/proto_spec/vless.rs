@@ -142,11 +142,11 @@ impl ProtoSpec for VlessConfig {
             },
             Some("reality") => SecurityConfig {
                 tls: Some(TlsConfig::Reality(RealityOpts {
-                    sni: query.get("sni").cloned().map(TinyText::from),
-                    fp: query.get("fp").cloned().map(TinyText::from),
+                    sni: query.get("sni").map(String::as_str).map(TinyText::from),
+                    fp: query.get("fp").map(String::as_str).map(TinyText::from),
                     pbk: query.get("pbk").cloned(),
-                    sid: query.get("sid").cloned().map(TinyText::from),
-                    spx: query.get("spx").cloned().map(TinyText::from),
+                    sid: query.get("sid").map(String::as_str).map(TinyText::from),
+                    spx: query.get("spx").map(String::as_str).map(TinyText::from),
                 })),
                 enc: None,
             },

@@ -81,53 +81,93 @@ impl SubFetcher {
 
                 match url.scheme() {
                     "https" | "http" => {
-                        let req = if matches!(
-                            url.host_str(),
-                            Some("raw.githubusercontent.com" | "github.com")
-                        ) && let Ok(auth) = std::env::var("GITHUB_TOKEN")
-                        {
-                            client.get(url.as_str()).bearer_auth(auth)
-                        } else {
-                            client.get(url.as_str())
-                        };
+                        const MAX_ATTEMPTS: usize = 2;
+                        let mut success = false;
 
-                        match req
-                            .send()
-                            .await
-                            .and_then(|r| r.error_for_status().map_err(Into::into))
-                        {
-                            Ok(resp) => {
-                                use futures::StreamExt;
-                                let mut stream = resp.bytes_stream();
-                                while let Some(chunk_result) = stream.next().await {
-                                    match chunk_result {
-                                        Ok(chunk) => {
-                                            for u in decoder.feed(&chunk) {
-                                                batch.push(u);
-                                                if batch.len() >= BATCH_SIZE {
-                                                    try_flush!();
+                        for attempt in 1..=MAX_ATTEMPTS {
+                            if attempt > 1 {
+                                decoder = crate::decoder::StreamingDecoder::new();
+                                batch.clear();
+                                tokio::time::sleep(Duration::from_secs(1)).await;
+                            }
+
+                            let req = if matches!(
+                                url.host_str(),
+                                Some("raw.githubusercontent.com" | "github.com")
+                            ) && let Ok(auth) = std::env::var("GITHUB_TOKEN")
+                            {
+                                client.get(url.as_str()).bearer_auth(auth)
+                            } else {
+                                client.get(url.as_str())
+                            };
+
+                            match req
+                                .send()
+                                .await
+                                .and_then(reqwest::Response::error_for_status)
+                            {
+                                Ok(resp) => {
+                                    use futures::StreamExt;
+                                    let mut stream = resp.bytes_stream();
+                                    let mut had_error = false;
+                                    while let Some(chunk_result) = stream.next().await {
+                                        match chunk_result {
+                                            Ok(chunk) => {
+                                                for u in decoder.feed(&chunk) {
+                                                    batch.push(u);
+                                                    if batch.len() >= BATCH_SIZE {
+                                                        try_flush!();
+                                                    }
                                                 }
                                             }
+                                            Err(e) => {
+                                                tracing::warn!(
+                                                    url = %url_str, error = %e, attempt,
+                                                    "Subscription stream error"
+                                                );
+                                                had_error = true;
+                                                break;
+                                            }
                                         }
-                                        Err(e) => {
-                                            tracing::warn!(
-                                                url = %url_str, error = %e,
-                                                "Subscription stream error"
-                                            );
-                                            break;
-                                        }
+                                    }
+                                    if !had_error {
+                                        success = true;
+                                        break;
+                                    }
+                                }
+                                Err(e) => {
+                                    // HTTP status errors (4xx/5xx) are not retryable
+                                    if e.status().is_some() {
+                                        _ = sender
+                                            .send(SubEvent::Error {
+                                                url: url_str.clone(),
+                                                error: e.to_string(),
+                                            })
+                                            .await;
+                                        return;
+                                    }
+                                    // Transport error — retry if attempts remain
+                                    if attempt == MAX_ATTEMPTS {
+                                        _ = sender
+                                            .send(SubEvent::Error {
+                                                url: url_str.clone(),
+                                                error: e.to_string(),
+                                            })
+                                            .await;
+                                        return;
                                     }
                                 }
                             }
-                            Err(e) => {
-                                _ = sender
-                                    .send(SubEvent::Error {
-                                        url: url_str.clone(),
-                                        error: e.to_string(),
-                                    })
-                                    .await;
-                                return;
-                            }
+                        }
+
+                        if !success {
+                            _ = sender
+                                .send(SubEvent::Error {
+                                    url: url_str.clone(),
+                                    error: "All retry attempts failed".into(),
+                                })
+                                .await;
+                            return;
                         }
                     }
                     "file" => {
@@ -260,7 +300,7 @@ impl Stream for SubscriptionStream {
 
         // Drain completed tasks — this registers their wakers so the stream
         // gets re-polled when new tasks finish.
-        while this.join_set.poll_join_next(cx).is_ready() {}
+        while let std::task::Poll::Ready(Some(_)) = this.join_set.poll_join_next(cx) {}
 
         match this.receiver.poll_recv(cx) {
             std::task::Poll::Ready(Some(SubEvent::Item(item))) => {

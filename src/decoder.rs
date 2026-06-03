@@ -133,20 +133,20 @@ impl StreamingDecoder {
 
         // Trim trailing whitespace and '=' padding for base64 decode attempts.
         // Raw passthrough keeps original data (trailing \n is a URL separator).
-        let trimmed = match data.iter().rposition(|&b| !b.is_ascii_whitespace() && b != b'=') {
+        let trimmed = match data
+            .iter()
+            .rposition(|&b| !b.is_ascii_whitespace() && b != b'=')
+        {
             Some(pos) => &data[..=pos],
             None => &[],
         };
 
         match self.state {
             EncodingState::Unknown => {
-                if let Ok(decoded) =
-                    base64::prelude::BASE64_STANDARD_NO_PAD.decode(trimmed)
-                {
+                if let Ok(decoded) = base64::prelude::BASE64_STANDARD_NO_PAD.decode(trimmed) {
                     self.state = EncodingState::StdB64;
                     decoded
-                } else if let Ok(decoded) =
-                    base64::prelude::BASE64_URL_SAFE_NO_PAD.decode(trimmed)
+                } else if let Ok(decoded) = base64::prelude::BASE64_URL_SAFE_NO_PAD.decode(trimmed)
                 {
                     self.state = EncodingState::UrlSafeB64;
                     decoded
@@ -160,8 +160,7 @@ impl StreamingDecoder {
                     Ok(decoded) => decoded,
                     Err(_) => {
                         // Fallback: try URL-safe before giving up
-                        if let Ok(decoded) =
-                            base64::prelude::BASE64_URL_SAFE_NO_PAD.decode(trimmed)
+                        if let Ok(decoded) = base64::prelude::BASE64_URL_SAFE_NO_PAD.decode(trimmed)
                         {
                             self.state = EncodingState::UrlSafeB64;
                             decoded
@@ -176,8 +175,7 @@ impl StreamingDecoder {
                 match base64::prelude::BASE64_URL_SAFE_NO_PAD.decode(trimmed) {
                     Ok(decoded) => decoded,
                     Err(_) => {
-                        if let Ok(decoded) =
-                            base64::prelude::BASE64_STANDARD_NO_PAD.decode(trimmed)
+                        if let Ok(decoded) = base64::prelude::BASE64_STANDARD_NO_PAD.decode(trimmed)
                         {
                             self.state = EncodingState::StdB64;
                             decoded
@@ -200,9 +198,7 @@ impl StreamingDecoder {
         }
 
         // Lossy UTF-8 conversion (same as preprocess_sub_data)
-        let decoded_str = if let Ok(s) = simdutf8::basic::from_utf8(decoded) {
-            s
-        } else {
+        let Ok(decoded_str) = simdutf8::basic::from_utf8(decoded) else {
             let s = String::from_utf8_lossy(decoded).into_owned();
             return self.process_text_owned(s);
         };
@@ -290,10 +286,7 @@ impl StreamingDecoder {
         }
         // SAFETY: first carry_over_len bytes are initialized
         unsafe {
-            std::slice::from_raw_parts(
-                self.carry_over.as_ptr() as *const u8,
-                self.carry_over_len,
-            )
+            std::slice::from_raw_parts(self.carry_over.as_ptr() as *const u8, self.carry_over_len)
         }
     }
 }
@@ -358,9 +351,19 @@ mod tests {
         let urls1 = d.feed(b"trojan://abc\nhysteria2://def\n");
         let urls2 = d.finalize();
         let total = urls1.len() + urls2.len();
-        assert!(total >= 2, "expected >=2 URLs, got {}", total);
-        assert!(urls1.iter().chain(urls2.iter()).any(|u| u.starts_with("trojan://")));
-        assert!(urls1.iter().chain(urls2.iter()).any(|u| u.starts_with("hysteria2://")));
+        assert!(total >= 2, "expected >=2 URLs, got {total}");
+        assert!(
+            urls1
+                .iter()
+                .chain(urls2.iter())
+                .any(|u| u.starts_with("trojan://"))
+        );
+        assert!(
+            urls1
+                .iter()
+                .chain(urls2.iter())
+                .any(|u| u.starts_with("hysteria2://"))
+        );
     }
 
     #[test]
@@ -395,44 +398,49 @@ mod tests {
         let mut d = StreamingDecoder::new();
         let urls = d.feed(encoded.as_bytes());
         let urls2 = d.finalize();
-        assert_eq!(urls.len() + urls2.len(), 1,
-            "trailing == stripped before decode");
-    #[test]
-    fn decode_across_chunk_boundary() {
-        let data = b"trojan://abc\nhy2://def\n";
-        let encoded = base64::prelude::BASE64_STANDARD_NO_PAD.encode(data);
-        let mid = (encoded.len() / 4) * 4; // 4-byte aligned split
-        let mut d = StreamingDecoder::new();
+        assert_eq!(
+            urls.len() + urls2.len(),
+            1,
+            "trailing == stripped before decode"
+        );
+        #[test]
+        fn decode_across_chunk_boundary() {
+            let data = b"trojan://abc\nhy2://def\n";
+            let encoded = base64::prelude::BASE64_STANDARD_NO_PAD.encode(data);
+            let mid = (encoded.len() / 4) * 4; // 4-byte aligned split
+            let mut d = StreamingDecoder::new();
 
-        let urls1 = d.feed(encoded[..mid].as_bytes());
-        let urls2 = d.feed(encoded[mid..].as_bytes());
-        let urls3 = d.finalize();
+            let urls1 = d.feed(encoded[..mid].as_bytes());
+            let urls2 = d.feed(encoded[mid..].as_bytes());
+            let urls3 = d.finalize();
 
-        let all: Vec<String> = urls1.into_iter().chain(urls2).chain(urls3).collect();
-        assert_eq!(all.len(), 2, "two URLs across 3 calls");
-        assert!(all.iter().any(|u| u.starts_with("trojan://")));
-        assert!(all.iter().any(|u| u.starts_with("hy2://")));
-    }
+            let all: Vec<String> = urls1.into_iter().chain(urls2).chain(urls3).collect();
+            assert_eq!(all.len(), 2, "two URLs across 3 calls");
+            assert!(all.iter().any(|u| u.starts_with("trojan://")));
+            assert!(all.iter().any(|u| u.starts_with("hy2://")));
+        }
 
-    #[test]
-    fn url_boundary_across_chunks() {
-        let mut d = StreamingDecoder::new();
-        let urls1 = d.feed(b"trojan://abc\nhy");
-        let urls2 = d.feed(b"2://def\n");
-        let urls3 = d.finalize();
-        let all: Vec<String> = urls1.into_iter().chain(urls2).chain(urls3).collect();
-        assert_eq!(all.len(), 2);
-    }
+        #[test]
+        fn url_boundary_across_chunks() {
+            let mut d = StreamingDecoder::new();
+            let urls1 = d.feed(b"trojan://abc\nhy");
+            let urls2 = d.feed(b"2://def\n");
+            let urls3 = d.finalize();
+            let all: Vec<String> = urls1.into_iter().chain(urls2).chain(urls3).collect();
+            assert_eq!(all.len(), 2);
+        }
 
-    #[test]
-    fn comment_lines_skipped() {
-        let mut d = StreamingDecoder::new();
-        let urls1 = d.feed(b"# comment\n// another\ntrojan://abc\n");
-        let urls2 = d.finalize();
-        let total = urls1.len() + urls2.len();
-        assert!(total >= 1,
-            "expected trojan URL, got {} from feed + finalize", total);
-    }
+        #[test]
+        fn comment_lines_skipped() {
+            let mut d = StreamingDecoder::new();
+            let urls1 = d.feed(b"# comment\n// another\ntrojan://abc\n");
+            let urls2 = d.finalize();
+            let total = urls1.len() + urls2.len();
+            assert!(
+                total >= 1,
+                "expected trojan URL, got {total} from feed + finalize"
+            );
+        }
     }
 
     #[test]
@@ -441,7 +449,11 @@ mod tests {
         // Need multiple-of-4 total length for alignment.
         // "trojan://abc<br/>hy2://def\n" = 27 bytes, pad to 28 with \n
         let urls = d.feed(b"trojan://abc<br/>hy2://def\n\n");
-        assert!(urls.len() >= 2, "expected >=2 URLs from <br/> split, got {}", urls.len());
+        assert!(
+            urls.len() >= 2,
+            "expected >=2 URLs from <br/> split, got {}",
+            urls.len()
+        );
         assert!(urls.iter().any(|u| u.starts_with("trojan://")));
         assert!(urls.iter().any(|u| u.starts_with("hy2://")));
     }
@@ -474,16 +486,17 @@ mod tests {
         // Input not multiple of 4 → trailing bytes are pending
         let urls1 = d.feed(b"trojan://abc\nhy2://def\n"); // 25 bytes, 24 aligned
         let urls2 = d.finalize();
-        assert_eq!(urls1.len() + urls2.len(), 2,
-            "feed + finalize should yield all URLs");
+        assert_eq!(
+            urls1.len() + urls2.len(),
+            2,
+            "feed + finalize should yield all URLs"
+        );
     }
 
     #[test]
     fn large_raw_text_yields_all_urls() {
         // 5 lines with URL scheme that has no substring collision
-        let lines: Vec<String> = (0..5)
-            .map(|i| format!("trojan://node{i}\n"))
-            .collect();
+        let lines: Vec<String> = (0..5).map(|i| format!("trojan://node{i}\n")).collect();
         let data = lines.concat();
         let total = data.len();
         let mid = (total / 2 / 4) * 4; // aligned split

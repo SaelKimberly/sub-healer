@@ -51,7 +51,7 @@ serde_with = { version = "*" }
 rapidhash = { version = "*" }
 chrono = { version = "*", features = ["serde", "clock"] }
 
-reqwest = { version = "*", features = ["stream"] }
+reqwest = { version = "*", features = ["stream", "gzip", "brotli", "zstd", "deflate"] }
 scraper = { version = "*" }
 yaml-rust2 = { version = "*" }
 mimalloc = { version = "*" }
