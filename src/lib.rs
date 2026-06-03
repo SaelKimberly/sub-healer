@@ -3,6 +3,7 @@
 pub mod db;
 pub mod mining;
 pub mod proto_spec;
+pub mod decoder;
 mod utils;
 
 pub mod urlx;

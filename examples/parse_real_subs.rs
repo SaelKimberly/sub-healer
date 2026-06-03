@@ -7,8 +7,8 @@ use serde_json::json;
 use tracing_subscriber::fmt;
 use tracing_subscriber::prelude::*;
 
+use v2ray_heal::decoder::StreamingDecoder;
 use v2ray_heal::mining::{Pipeline, RawSourceItemBatch, UnparseableLayer};
-use v2ray_heal::urlx::SchemeX;
 
 fn discover_txt_files(dir: &PathBuf) -> Vec<PathBuf> {
     let Ok(entries) = std::fs::read_dir(dir) else {
@@ -23,25 +23,16 @@ fn discover_txt_files(dir: &PathBuf) -> Vec<PathBuf> {
     files
 }
 
-/// Pre-process raw subscription data and extract raw URL strings.
 fn parse_to_raw_urls(data: &[u8]) -> Vec<String> {
-    let text = v2ray_heal::preprocess_sub_data(data);
-    text.lines()
-        .flat_map(|line| {
-            let s = line.trim_start();
-            if s.starts_with('#') || s.starts_with("//") || s.is_empty() {
-                Vec::new()
-            } else {
-                s.split("<br/>")
-                    .flat_map(|segment| {
-                        SchemeX::slice_input(segment)
-                            .into_iter()
-                            .map(|(_, url)| url.to_string())
-                    })
-                    .collect()
-            }
-        })
-        .collect()
+    let mut decoder = StreamingDecoder::new();
+    // Feed in chunks matching decoder's INPUT_CHUNK_SIZE (65536)
+    const CHUNK_SIZE: usize = 65536;
+    let mut urls = Vec::new();
+    for chunk in data.chunks(CHUNK_SIZE) {
+        urls.extend(decoder.feed(chunk));
+    }
+    urls.extend(decoder.finalize());
+    urls
 }
 
 #[tokio::main]

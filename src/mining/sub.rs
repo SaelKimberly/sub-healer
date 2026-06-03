@@ -2,14 +2,12 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{Context, Result};
 use chrono::Utc;
 use futures::Stream;
 use tokio::task::JoinSet;
 
 use crate::mining::RawSourceItemBatch;
 use crate::mining::registry::SourceRegistry;
-use crate::urlx::SchemeX;
 
 const BATCH_SIZE: usize = 10_000;
 
@@ -35,10 +33,8 @@ impl SubFetcher {
     fn spawn(
         mut self: Pin<Box<Self>>,
     ) -> Pin<Box<dyn std::future::Future<Output = ()> + Send + Sync + 'static>> {
-        // Per-task safety timeout: reqwest client has 30s timeout, but proxy/DNS/OS
-        // edge cases can still stall indefinitely. 90s covers the worst-case download
-        // (slow proxy, large response) while preventing hangs.
         const TASK_TIMEOUT: Duration = Duration::from_secs(90);
+        const READ_CHUNK_SIZE: usize = 65536;
 
         Box::pin(async move {
             let url_str = self.url_str.clone();
@@ -52,27 +48,121 @@ impl SubFetcher {
                     registry,
                 } = this.get_mut();
 
-                // Download or read file
-                let data = match url.scheme() {
-                    "https" | "http" => match download_sub_data(client, url).await {
-                        Ok(d) => d,
-                        Err(e) => {
-                            _ = sender
-                                .send(SubEvent::Error {
-                                    url: url_str.clone(),
-                                    error: e.to_string(),
-                                })
-                                .await;
-                            return;
+                // Look up source before streaming (registry lookup is cheap)
+                let Some(source) = registry.lookup(url_str) else {
+                    _ = sender
+                        .send(SubEvent::Error {
+                            url: url_str.clone(),
+                            error: "Source not found in registry".into(),
+                        })
+                        .await;
+                    return;
+                };
+                let download_ts = Utc::now();
+
+                let mut decoder = crate::decoder::StreamingDecoder::new();
+                let mut batch: Vec<String> = Vec::with_capacity(BATCH_SIZE);
+
+                // Flush accumulated URLs as a batch through the channel
+                macro_rules! try_flush {
+                    () => {
+                        if !batch.is_empty() {
+                            let item = SubEvent::Item(RawSourceItemBatch {
+                                source: source.clone(),
+                                timestamp: download_ts,
+                                raw_urls: std::mem::take(&mut batch).into_boxed_slice(),
+                            });
+                            if sender.send(item).await.is_err() {
+                                return;
+                            }
                         }
-                    },
+                    };
+                }
+
+                match url.scheme() {
+                    "https" | "http" => {
+                        let req = if matches!(
+                            url.host_str(),
+                            Some("raw.githubusercontent.com" | "github.com")
+                        ) && let Ok(auth) = std::env::var("GITHUB_TOKEN")
+                        {
+                            client.get(url.as_str()).bearer_auth(auth)
+                        } else {
+                            client.get(url.as_str())
+                        };
+
+                        match req
+                            .send()
+                            .await
+                            .and_then(|r| r.error_for_status().map_err(Into::into))
+                        {
+                            Ok(resp) => {
+                                use futures::StreamExt;
+                                let mut stream = resp.bytes_stream();
+                                while let Some(chunk_result) = stream.next().await {
+                                    match chunk_result {
+                                        Ok(chunk) => {
+                                            for u in decoder.feed(&chunk) {
+                                                batch.push(u);
+                                                if batch.len() >= BATCH_SIZE {
+                                                    try_flush!();
+                                                }
+                                            }
+                                        }
+                                        Err(e) => {
+                                            tracing::warn!(
+                                                url = %url_str, error = %e,
+                                                "Subscription stream error"
+                                            );
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                _ = sender
+                                    .send(SubEvent::Error {
+                                        url: url_str.clone(),
+                                        error: e.to_string(),
+                                    })
+                                    .await;
+                                return;
+                            }
+                        }
+                    }
                     "file" => {
                         let Ok(path) = url.to_file_path() else {
-                            tracing::error!(url = %url_str, "Invalid file URL: not an absolute path");
+                            tracing::error!(
+                                url = %url_str,
+                                "Invalid file URL: not an absolute path"
+                            );
                             return;
                         };
-                        match std::fs::read(&path) {
-                            Ok(d) => d,
+                        match tokio::fs::File::open(&path).await {
+                            Ok(mut file) => {
+                                use tokio::io::AsyncReadExt;
+                                let mut buf = vec![0u8; READ_CHUNK_SIZE];
+                                loop {
+                                    match file.read(&mut buf).await {
+                                        Ok(0) => break,
+                                        Ok(n) => {
+                                            for u in decoder.feed(&buf[..n]) {
+                                                batch.push(u);
+                                                if batch.len() >= BATCH_SIZE {
+                                                    try_flush!();
+                                                }
+                                            }
+                                        }
+                                        Err(e) => {
+                                            tracing::warn!(
+                                                url = %url_str, error = %e,
+                                                "File read error"
+                                            );
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
                             Err(e) => {
                                 _ = sender
                                     .send(SubEvent::Error {
@@ -85,64 +175,32 @@ impl SubFetcher {
                         }
                     }
                     other => {
-                        tracing::error!(scheme = %other, url = %url_str, "Unsupported subscription URL scheme");
+                        tracing::error!(
+                            scheme = %other,
+                            url = %url_str,
+                            "Unsupported subscription URL scheme"
+                        );
                         return;
                     }
-                };
+                }
 
-                let download_ts = Utc::now();
-
-                // Clone fields needed inside spawn_blocking
-                let url_str_clone = url_str.clone();
-                let registry_clone = registry.clone();
-                let sender = sender.clone();
-                tokio::task::spawn_blocking(move || {
-                    let text = crate::preprocess_sub_data(&data);
-
-                    let Some(source) = registry_clone.lookup(&url_str_clone) else {
-                        _ = sender.blocking_send(SubEvent::Error {
-                            url: url_str_clone,
-                            error: "Source not found in registry".into(),
-                        });
-                        return;
-                    };
-
-                    let mut batch: Vec<String> = Vec::with_capacity(BATCH_SIZE);
-
-                    for line in text.lines() {
-                        let s = line.trim_start();
-                        if s.starts_with('#') || s.starts_with("//") || s.is_empty() {
-                            continue;
-                        }
-                        for segment in s.split("<br/>") {
-                            for (_, url) in SchemeX::slice_input(segment) {
-                                batch.push(url.to_string());
-                                if batch.len() >= BATCH_SIZE {
-                                    let batch_urls = std::mem::take(&mut batch);
-                                    let item = SubEvent::Item(RawSourceItemBatch {
-                                        source: source.clone(),
-                                        timestamp: download_ts,
-                                        raw_urls: batch_urls.into_boxed_slice(),
-                                    });
-                                    if sender.blocking_send(item).is_err() {
-                                        return;
-                                    }
-                                }
-                            }
-                        }
+                // Process remaining decoder data
+                for u in decoder.finalize() {
+                    batch.push(u);
+                    if batch.len() >= BATCH_SIZE {
+                        try_flush!();
                     }
+                }
 
-                    if !batch.is_empty() {
-                        let item = SubEvent::Item(RawSourceItemBatch {
-                            source,
-                            timestamp: download_ts,
-                            raw_urls: batch.into_boxed_slice(),
-                        });
-                        _ = sender.blocking_send(item);
-                    }
-                })
-                .await
-                .expect("spawn_blocking should not panic on join handle");
+                // Final flush
+                if !batch.is_empty() {
+                    let item = SubEvent::Item(RawSourceItemBatch {
+                        source,
+                        timestamp: download_ts,
+                        raw_urls: batch.into_boxed_slice(),
+                    });
+                    _ = sender.send(item).await;
+                }
             };
 
             if tokio::time::timeout(TASK_TIMEOUT, task).await.is_err() {
@@ -151,35 +209,6 @@ impl SubFetcher {
         })
     }
 }
-
-/// # Errors
-///
-/// Will return `Err` if the request fails.
-async fn download_sub_data(client: &reqwest::Client, url: &url::Url) -> Result<Vec<u8>> {
-    let req = if matches!(
-        url.host_str(),
-        Some("raw.githubusercontent.com" | "github.com")
-    ) && let Ok(auth) = std::env::var("GITHUB_TOKEN")
-    {
-        client.get(url.as_str()).bearer_auth(auth)
-    } else {
-        client.get(url.as_str())
-    };
-
-    let resp = req
-        .send()
-        .await
-        .context("Subscription HTTP request failed")?
-        .error_for_status()
-        .context("Subscription HTTP error status")?;
-
-    Ok(resp
-        .bytes()
-        .await
-        .context("Failed to read subscription response body")?
-        .to_vec())
-}
-
 /// Fetch all subscriptions as a stream of raw URL batches.
 /// Each subscription URL is spawned as a separate [`SubFetcher`] task.
 #[allow(clippy::needless_pass_by_value, reason = "Should be owned by Future")]

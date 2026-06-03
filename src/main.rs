@@ -8,7 +8,7 @@ use clap::Parser;
 use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 use v2ray_heal::mining;
 use v2ray_heal::mining::RawSourceItemBatch;
-use v2ray_heal::urlx::{SchemeX, TinyText};
+use v2ray_heal::urlx::TinyText;
 
 /// Scope of sources to re-fetch when using `--pull` on emit
 #[derive(clap::ValueEnum, Clone, Debug)]
@@ -76,27 +76,6 @@ struct Cli {
     db: PathBuf,
 }
 
-/// Pre-process a raw subscription payload into decoded/normalized text, then
-/// extract raw URL strings using SchemeX::slice_input.
-fn parse_to_raw_urls(data: &[u8]) -> Vec<String> {
-    let text = v2ray_heal::preprocess_sub_data(data);
-    text.lines()
-        .flat_map(|line| {
-            let s = line.trim_start();
-            if s.starts_with('#') || s.starts_with("//") || s.is_empty() {
-                Vec::new()
-            } else {
-                s.split("<br/>")
-                    .flat_map(|segment| {
-                        SchemeX::slice_input(segment)
-                            .into_iter()
-                            .map(|(_, url)| url.to_string())
-                    })
-                    .collect()
-            }
-        })
-        .collect()
-}
 
 /// Parse the `--last` and `--upto` CLI flags into a [`mining::Backfill`] option.
 ///
@@ -164,31 +143,49 @@ async fn main() -> anyhow::Result<()> {
         }
         Some(Commands::Stdin) => {
             use tokio::io::AsyncReadExt;
-            let mut buf = Vec::new();
-            tokio::io::stdin().read_to_end(&mut buf).await?;
-            if buf.is_empty() {
-                anyhow::bail!("No data received from stdin");
-            }
-
             let source_url = url::Url::parse("stdin://local")?;
             let url_str = source_url.as_str().to_string();
 
             let mut pipeline = mining::Pipeline::new(&cli.db)?;
             pipeline.add_batch_source(&url_str);
+            let source = pipeline
+                .lookup_source(&url_str)
+                .expect("source just registered");
 
-            let raw_urls = parse_to_raw_urls(&buf);
+            let ts = Utc::now();
+            let mut decoder = v2ray_heal::decoder::StreamingDecoder::new();
+            let mut raw_urls = Vec::new();
+            let mut stdin = tokio::io::stdin();
+            let mut buf = vec![0u8; 65536];
+            let mut has_data = false;
+
+            loop {
+                let n = stdin.read(&mut buf).await?;
+                if n == 0 {
+                    break;
+                }
+                has_data = true;
+                for url in decoder.feed(&buf[..n]) {
+                    raw_urls.push(url);
+                }
+            }
+
+            if !has_data {
+                anyhow::bail!("No data received from stdin");
+            }
+
+            for url in decoder.finalize() {
+                raw_urls.push(url);
+            }
+
             if raw_urls.is_empty() {
                 tracing::warn!("No proxy URLs found in stdin data");
                 return Ok(());
             }
 
-            let source = pipeline
-                .lookup_source(&url_str)
-                .expect("source just registered");
-
             let batch = RawSourceItemBatch {
                 source,
-                timestamp: Utc::now(),
+                timestamp: ts,
                 raw_urls: raw_urls.into_boxed_slice(),
             };
 
@@ -207,11 +204,13 @@ async fn main() -> anyhow::Result<()> {
             pipeline.set_progress_bar(make_progress_bar(&mp));
             pipeline.run().await?;
         }
+
+
         Some(Commands::Local { file }) => {
             if file.is_empty() {
                 anyhow::bail!("No file paths provided");
             }
-
+            use tokio::io::AsyncReadExt;
             let mut pipeline = mining::Pipeline::new(&cli.db)?;
             let mut batches = Vec::new();
 
@@ -224,21 +223,38 @@ async fn main() -> anyhow::Result<()> {
                 let url_str = source_url.as_str().to_string();
                 pipeline.add_batch_source(&url_str);
 
-                let data = std::fs::read(&abs)
+                let source = pipeline
+                    .lookup_source(&url_str)
+                    .expect("source just registered");
+                let ts = Utc::now();
+                let mut file = tokio::fs::File::open(&abs)
+                    .await
                     .with_context(|| format!("Failed to read file: {}", abs.display()))?;
+                let mut decoder = v2ray_heal::decoder::StreamingDecoder::new();
+                let mut raw_urls = Vec::new();
+                let mut buf = vec![0u8; 65536];
 
-                let raw_urls = parse_to_raw_urls(&data);
+                loop {
+                    let n = file.read(&mut buf).await?;
+                    if n == 0 {
+                        break;
+                    }
+                    for url in decoder.feed(&buf[..n]) {
+                        raw_urls.push(url);
+                    }
+                }
+
+                for url in decoder.finalize() {
+                    raw_urls.push(url);
+                }
+
                 if raw_urls.is_empty() {
                     continue;
                 }
 
-                let source = pipeline
-                    .lookup_source(&url_str)
-                    .expect("source just registered");
-
                 batches.push(RawSourceItemBatch {
                     source,
-                    timestamp: Utc::now(),
+                    timestamp: ts,
                     raw_urls: raw_urls.into_boxed_slice(),
                 });
             }
@@ -248,11 +264,11 @@ async fn main() -> anyhow::Result<()> {
                 return Ok(());
             }
             pipeline.set_progress_bar(make_progress_bar(&mp));
-
             pipeline.add_batch_raw(batches);
             let count = pipeline.run().await?;
             tracing::info!(count, "Local file mining completed");
         }
+
         Some(Commands::Emit {
             protocol,
             min_first_seen_ts,
