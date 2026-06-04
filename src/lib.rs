@@ -1,9 +1,9 @@
 #![warn(clippy::nursery, clippy::pedantic)]
 #![allow(clippy::doc_markdown, clippy::too_long_first_doc_paragraph)]
 pub mod db;
+pub mod decoder;
 pub mod mining;
 pub mod proto_spec;
-pub mod decoder;
 mod utils;
 
 pub mod urlx;

@@ -8,9 +8,8 @@ use super::models::ServerRecord;
 /// Compute deterministic hash for source URL.
 /// Used as primary key in sources table.
 #[must_use]
-pub(crate) fn hash_source_url(url: &str) -> i64 {
-    let mut hasher =
-        rapidhash::v3::RapidStreamHasherV3::new(&rapidhash::v3::DEFAULT_RAPID_SECRETS);
+pub fn hash_source_url(url: &str) -> i64 {
+    let mut hasher = rapidhash::v3::RapidStreamHasherV3::new(&rapidhash::v3::DEFAULT_RAPID_SECRETS);
     hasher.write(url.as_bytes());
     hasher.finish().cast_signed()
 }
@@ -18,7 +17,7 @@ pub(crate) fn hash_source_url(url: &str) -> i64 {
 /// # Errors
 ///
 /// Will return `Err` if the database operation fails.
-pub(crate) fn upsert_source(conn: &Connection, url: &str) -> Result<i64> {
+pub fn upsert_source(conn: &Connection, url: &str) -> Result<i64> {
     let url_id = hash_source_url(url);
 
     let existing: Option<i64> = conn
@@ -45,7 +44,7 @@ pub(crate) fn upsert_source(conn: &Connection, url: &str) -> Result<i64> {
 /// # Panics
 ///
 /// Will panic if the `config` is not a server URL.
-pub(crate) fn upsert_server(
+pub fn upsert_server(
     conn: &Connection,
     config: &ProtocolConfig,
     source_id: i64,
@@ -135,7 +134,7 @@ pub(crate) fn upsert_server(
 /// # Errors
 ///
 /// Returns `rusqlite::Error` if the query fails.
-pub(crate) fn get_server(conn: &Connection, id: i64) -> Result<Option<ServerRecord>> {
+pub fn get_server(conn: &Connection, id: i64) -> Result<Option<ServerRecord>> {
     let result = conn.query_row(
         "SELECT id, schema, host, port, transport, security, remarks, raw_config, first_seen_ts, first_seen_source_id, sig FROM servers WHERE id = ?1",
         [id],

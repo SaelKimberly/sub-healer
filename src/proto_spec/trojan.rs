@@ -43,8 +43,8 @@ use serde::{Deserialize, Serialize};
 use crate::urlx::{HostSpec, RawUrlX, SchemeX, TinyText, host_serde, port_serde};
 
 use super::common::{RealityOpts, SecurityConfig, TlsConfig, TlsOpts, TransportConfig};
-use super::utils;
 use super::impl_sig_cache;
+use super::utils;
 use super::{ParseError, ProtoSpec};
 
 #[serde_with::skip_serializing_none]
@@ -126,8 +126,8 @@ impl ProtoSpec for TrojanConfig {
         let server_addr = Some(parsed_host.to_str().into_owned());
 
         let mut transport =
-            TransportConfig::from_type_and_path(Some(&transport_type), path.as_deref())
-                .ok_or_else(|| ParseError::InvalidConf("type".into(), transport_type.into()))?;
+            TransportConfig::from_type_and_path(Some(&transport_type), path.as_deref())?
+                .unwrap_or(TransportConfig::Tcp);
         transport = transport.with_host(host, query.get("sni").cloned(), server_addr);
 
         let path = match transport {

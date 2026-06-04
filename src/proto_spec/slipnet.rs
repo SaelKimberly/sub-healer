@@ -38,8 +38,8 @@ use serde::{Deserialize, Serialize};
 use crate::urlx::{HostSpec, RawUrlX, SchemeX, TinyText, host_serde, port_serde};
 
 use super::common::SecurityConfig;
-use super::utils;
 use super::impl_sig_cache;
+use super::utils;
 use super::{ParseError, ProtoSpec};
 
 #[serde_with::skip_serializing_none]
@@ -63,7 +63,7 @@ pub struct SlipnetConfig {
     pub remarks: Option<TinyText>,
     pub raw_fields: Vec<TinyText>,
 }
- 
+
 #[serde_with::skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(test, derive(PartialEq, Eq))]
@@ -255,9 +255,9 @@ impl ProtoSpec for SlipnetEncConfig {
     }
 
     fn cred_hash(&self) -> u64 {
-        let v = self.cred_hash_cache.get_or_init(|| {
-            NonZeroU64::new(0).unwrap_or(NonZeroU64::MIN)
-        });
+        let v = self
+            .cred_hash_cache
+            .get_or_init(|| NonZeroU64::new(0).unwrap_or(NonZeroU64::MIN));
         v.get()
     }
 

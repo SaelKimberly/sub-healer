@@ -3,7 +3,6 @@ use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 
-
 mod pipeline;
 mod registry;
 mod sub;
@@ -49,7 +48,6 @@ pub fn get_current_timestamp() -> i64 {
         .cast_signed()
 }
 
-
 /// # Errors
 ///
 /// Will return `Err` if the proxy URL is invalid or the client cannot be built.
@@ -83,7 +81,6 @@ pub fn emit_unparseable_entry(
         timestamp = ts,
     );
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -121,7 +118,7 @@ mod tests {
 
     fn setup_db() -> rusqlite::Connection {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
-        crate::db::init_db(&conn).unwrap();
+        crate::db::schema::init_db(&conn).unwrap();
         conn
     }
 

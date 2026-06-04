@@ -26,20 +26,32 @@ enum Commands {
     Stdin,
     Config {
         file: Option<PathBuf>,
-        #[arg(long, conflicts_with = "upto",
-              help = "Backfill Telegram channels for the last duration (e.g. '5h', '7d')")]
+        #[arg(
+            long,
+            conflicts_with = "upto",
+            help = "Backfill Telegram channels for the last duration (e.g. '5h', '7d')"
+        )]
         last: Option<humantime::Duration>,
-        #[arg(long, conflicts_with = "last",
-              help = "Backfill Telegram channels up to this RFC 3339 datetime (e.g. '2026-06-01T00:00:00Z')")]
+        #[arg(
+            long,
+            conflicts_with = "last",
+            help = "Backfill Telegram channels up to this RFC 3339 datetime (e.g. '2026-06-01T00:00:00Z')"
+        )]
         upto: Option<String>,
     },
     Remote {
         url: Vec<url::Url>,
-        #[arg(long, conflicts_with = "upto",
-              help = "Backfill Telegram channels for the last duration (e.g. '5h', '7d')")]
+        #[arg(
+            long,
+            conflicts_with = "upto",
+            help = "Backfill Telegram channels for the last duration (e.g. '5h', '7d')"
+        )]
         last: Option<humantime::Duration>,
-        #[arg(long, conflicts_with = "last",
-              help = "Backfill Telegram channels up to this RFC 3339 datetime (e.g. '2026-06-01T00:00:00Z')")]
+        #[arg(
+            long,
+            conflicts_with = "last",
+            help = "Backfill Telegram channels up to this RFC 3339 datetime (e.g. '2026-06-01T00:00:00Z')"
+        )]
         upto: Option<String>,
     },
     Local {
@@ -76,7 +88,6 @@ struct Cli {
     db: PathBuf,
 }
 
-
 /// Parse the `--last` and `--upto` CLI flags into a [`mining::Backfill`] option.
 ///
 /// # Errors
@@ -94,11 +105,10 @@ fn parse_backfill(
             Ok(Some(mining::Backfill::Last(delta)))
         }
         (None, Some(dt_str)) => {
-            let dt = chrono::DateTime::parse_from_rfc3339(&dt_str)
-                .context("Invalid --upto datetime (expected RFC 3339, e.g. '2026-06-01T00:00:00Z')")?;
-            Ok(Some(mining::Backfill::Upto(
-                dt.with_timezone(&chrono::Utc),
-            )))
+            let dt = chrono::DateTime::parse_from_rfc3339(&dt_str).context(
+                "Invalid --upto datetime (expected RFC 3339, e.g. '2026-06-01T00:00:00Z')",
+            )?;
+            Ok(Some(mining::Backfill::Upto(dt.with_timezone(&chrono::Utc))))
         }
         (None, None) => Ok(None),
         (Some(_), Some(_)) => unreachable!("clap enforces mutual exclusivity"),
@@ -204,7 +214,6 @@ async fn main() -> anyhow::Result<()> {
             pipeline.set_progress_bar(make_progress_bar(&mp));
             pipeline.run().await?;
         }
-
 
         Some(Commands::Local { file }) => {
             if file.is_empty() {

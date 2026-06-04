@@ -8,7 +8,7 @@ use crate::urlx::SchemeX;
 const INPUT_CHUNK_SIZE: usize = 65536;
 
 /// Max bytes of decoded text carried between chunks (pending URL boundary split).
-const CARRY_OVER_SIZE: usize = 262144;
+const CARRY_OVER_SIZE: usize = 262_144;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum EncodingState {
@@ -200,7 +200,7 @@ impl StreamingDecoder {
         // Lossy UTF-8 conversion (same as preprocess_sub_data)
         let Ok(decoded_str) = simdutf8::basic::from_utf8(decoded) else {
             let s = String::from_utf8_lossy(decoded).into_owned();
-            return self.process_text_owned(s);
+            return self.process_text_owned(&s);
         };
 
         if self.carry_over_len == 0 {
@@ -216,13 +216,13 @@ impl StreamingDecoder {
             combined.push_str(decoded_str);
             self.carry_over_len = 0;
 
-            self.process_text_owned(combined)
+            self.process_text_owned(combined.as_str())
         }
     }
 
     /// Helper: split on last \n, extract URLs, save carry_over.
     /// Takes ownership of the string for splitting.
-    fn process_text_owned(&mut self, full_text: String) -> Vec<String> {
+    fn process_text_owned(&mut self, full_text: &str) -> Vec<String> {
         if full_text.is_empty() {
             return Vec::new();
         }
@@ -230,8 +230,7 @@ impl StreamingDecoder {
         if let Some(last_nl) = full_text.rfind('\n') {
             let complete = &full_text[..last_nl];
             let remaining = &full_text[last_nl + 1..];
-
-            let urls = process_str(complete);
+            let urls = process_text(complete.as_bytes());
 
             self.set_carry_over_str(remaining);
 
@@ -286,7 +285,7 @@ impl StreamingDecoder {
         }
         // SAFETY: first carry_over_len bytes are initialized
         unsafe {
-            std::slice::from_raw_parts(self.carry_over.as_ptr() as *const u8, self.carry_over_len)
+            std::slice::from_raw_parts(self.carry_over.as_ptr().cast::<u8>(), self.carry_over_len)
         }
     }
 }
@@ -326,12 +325,6 @@ fn process_str_inner(text: &str) -> Vec<String> {
             }
         })
         .collect()
-}
-
-/// Same as `process_str_inner` but used internally with process_str which
-/// already does the same logic. Kept for `process_text_owned` to call.
-fn process_str(text: &str) -> Vec<String> {
-    process_str_inner(text)
 }
 
 #[cfg(test)]

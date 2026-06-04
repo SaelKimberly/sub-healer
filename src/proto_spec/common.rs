@@ -1,4 +1,6 @@
+use crate::proto_spec::ParseError;
 use serde::{Deserialize, Serialize};
+
 use serde_json::Value;
 
 use crate::urlx::TinyText;
@@ -34,37 +36,82 @@ impl TransportConfig {
             Self::XHttp(_) => "xhttp",
         }
     }
+    fn recover_transport_type(input: &str) -> Option<&'static str> {
+        // Sorted by length descending, so longest prefix matches first
+        const KNOWN: &[&str] = &[
+            "httpupgrade",
+            "splithttp",
+            "websocket",
+            "https",
+            "xhttp",
+            "grpc",
+            "http",
+            "mkcp",
+            "quic",
+            "kcp",
+            "raw",
+            "tcp",
+            "h2",
+            "ws",
+        ];
+        let lower = input.to_ascii_lowercase();
+        // Exact match (case-insensitive) via eq_ignore_ascii_case
+        for &known in KNOWN {
+            if known.eq_ignore_ascii_case(input) {
+                return Some(known);
+            }
+        }
+        // Longest prefix match
+        KNOWN
+            .iter()
+            .find(|&&known| lower.starts_with(known))
+            .copied()
+            .map(|v| v as _)
+    }
 
-    pub fn from_type_and_path(protocol_type: Option<&str>, path: Option<&str>) -> Option<Self> {
+    pub fn from_type_and_path(
+        protocol_type: Option<&str>,
+        path: Option<&str>,
+    ) -> Result<Option<Self>, ParseError> {
         match protocol_type {
-            None | Some("tcp" | "raw") => Some(Self::Tcp),
-            Some("ws" | "websocket") => Some(Self::Ws(WebSocketConfig {
+            None | Some("") => Ok(None),
+            Some("tcp" | "raw") => Ok(Some(Self::Tcp)),
+            Some("ws" | "websocket") => Ok(Some(Self::Ws(WebSocketConfig {
                 path: path.map(TinyText::from),
                 ..WebSocketConfig::default()
-            })),
-            Some("grpc") => Some(Self::Grpc(GrpcConfig {
+            }))),
+            Some("grpc") => Ok(Some(Self::Grpc(GrpcConfig {
                 path: path.map(TinyText::from),
                 ..GrpcConfig::default()
-            })),
-            Some("http" | "h2" | "https") => Some(Self::Http(HttpConfig {
+            }))),
+            Some("http" | "h2" | "https") => Ok(Some(Self::Http(HttpConfig {
                 path: path.map(TinyText::from),
                 ..HttpConfig::default()
-            })),
-            Some("quic") => Some(Self::Quic),
-            Some("kcp" | "mkcp") => Some(Self::Kcp(KcpConfig::default())),
-            Some("httpupgrade") => Some(Self::HttpUpgrade(HttpUpgradeConfig {
+            }))),
+            Some("quic") => Ok(Some(Self::Quic)),
+            Some("kcp" | "mkcp") => Ok(Some(Self::Kcp(KcpConfig::default()))),
+            Some("httpupgrade") => Ok(Some(Self::HttpUpgrade(HttpUpgradeConfig {
                 path: Some(TinyText::from(path.unwrap_or("/"))),
                 ..HttpUpgradeConfig::default()
-            })),
-            Some("xhttp" | "splithttp") => Some(Self::XHttp(XHttpConfig {
+            }))),
+            Some("xhttp" | "splithttp") => Ok(Some(Self::XHttp(XHttpConfig {
                 path: Some(TinyText::from(path.unwrap_or("/"))),
                 mode: Some(TinyText::from("auto")),
                 ..XHttpConfig::default()
-            })),
-            Some(other) => {
-                tracing::warn!(target: "proto_spec", transport = %other, "Unknown transport type, falling back to tcp");
-                Some(Self::Tcp)
-            }
+            }))),
+            // "auto"/"none" on `net` field are common mistakes from share link
+            // generators confusing `net` (transport) with `scy` (security) or
+            // `type` (header type). Default to TCP like mihomo does.
+            Some("auto" | "none") => Ok(Some(Self::Tcp)),
+            Some(other) =>  Self::recover_transport_type(other).map_or_else(
+                ||Err(ParseError::InvalidConf(
+                    "type".into(),
+                    other.to_string().into(),
+                )), |recovered| {
+                    tracing::warn!(target: "proto_spec", transport = %other, recovered = %recovered, "Recovered transport type");
+                    Self::from_type_and_path(Some(recovered), path)
+                })
+
         }
     }
 

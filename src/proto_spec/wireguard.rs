@@ -39,8 +39,8 @@ use serde::{Deserialize, Serialize};
 use crate::urlx::{HostSpec, RawUrlX, SchemeX, TinyText, host_serde, port_serde};
 
 use super::common::SecurityConfig;
-use super::utils;
 use super::impl_sig_cache;
+use super::utils;
 use super::{ParseError, ProtoSpec};
 
 #[serde_with::skip_serializing_none]
@@ -94,24 +94,24 @@ impl ProtoSpec for WireguardConfig {
             .get("address")
             .ok_or_else(|| ParseError::MissingConf("address".into()))
             .map(|s| TinyText::from(s.as_str()))?;
-        
+
         // publickey/public_key: peer's base64-encoded public key (required)
         let public_key = query
             .get("publickey")
             .or_else(|| query.get("public_key"))
             .ok_or_else(|| ParseError::MissingConf("publickey".into()))
             .cloned()?;
-        
+
         // presharedkey/psk: optional pre-shared key
         let preshared_key = query
             .get("presharedkey")
             .or_else(|| query.get("psk"))
             .cloned()
             .filter(|s| !s.is_empty());
-        
+
         // reserved: 3 bytes, comma-separated decimal or base64
         let reserved = query.get("reserved").cloned().map(TinyText::from);
-        
+
         // mtu: interface MTU (defaults vary: 1420 Xray, 1280 WireGuard-go)
         let mtu = query.get("mtu").cloned().map(TinyText::from);
 
@@ -216,7 +216,6 @@ impl ProtoSpec for WireguardConfig {
     fn transport_type(&self) -> Option<&str> {
         None
     }
-
 }
 
 impl WireguardConfig {

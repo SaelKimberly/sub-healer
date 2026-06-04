@@ -1,7 +1,7 @@
 pub mod models;
-pub mod schema;
 pub(crate) mod ops;
 pub(crate) mod queries;
+pub mod schema;
 
 use std::path::Path;
 use std::sync::Arc;
@@ -11,10 +11,9 @@ use tokio::sync::RwLock;
 
 pub use models::{ServerRecord, SightingRecord, SourceRecord};
 // Re-export internal functions accessible to other crate modules.
-pub(crate) use ops::{upsert_server, upsert_source};
-pub(crate) use ops::hash_source_url;
-pub(crate) use schema::init_db;
 use crate::proto_spec::ProtocolConfig;
+pub(crate) use ops::hash_source_url;
+pub(crate) use ops::{upsert_server, upsert_source};
 
 /// Database adapter that wraps an `Arc<RwLock<Connection>>`.
 /// All methods handle locking internally — callers never touch the lock.
@@ -30,6 +29,7 @@ impl Database {
     ///
     /// Returns `rusqlite::Error` if the database cannot be opened or the
     /// schema cannot be initialized.
+    #[allow(clippy::arc_with_non_send_sync, reason = "need research")]
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         let conn = Connection::open(path)?;
         schema::init_db(&conn)?;
@@ -43,6 +43,7 @@ impl Database {
     /// # Errors
     ///
     /// Returns `rusqlite::Error` if the database cannot be created.
+    #[allow(clippy::arc_with_non_send_sync, reason = "need research")]
     pub fn in_memory() -> Result<Self> {
         let conn = Connection::open_in_memory()?;
         schema::init_db(&conn)?;
@@ -63,9 +64,10 @@ impl Database {
     /// # Errors
     ///
     /// Returns `rusqlite::Error` if the operation fails.
+    #[allow(clippy::future_not_send, reason = "need research")]
     pub async fn upsert_source(&self, url: &str) -> Result<i64> {
         let conn = self.conn.write().await;
-        ops::upsert_source(&*conn, url)
+        ops::upsert_source(&conn, url)
     }
 
     /// Upsert a server config, handling time-travel (sightings) logic.
@@ -73,6 +75,7 @@ impl Database {
     /// # Errors
     ///
     /// Returns `rusqlite::Error` if the operation fails.
+    #[allow(clippy::future_not_send, reason = "need research")]
     pub async fn upsert_server(
         &self,
         config: &ProtocolConfig,
@@ -80,7 +83,7 @@ impl Database {
         incoming_ts: i64,
     ) -> Result<()> {
         let conn = self.conn.write().await;
-        ops::upsert_server(&*conn, config, source_id, incoming_ts)
+        ops::upsert_server(&conn, config, source_id, incoming_ts)
     }
 
     /// Get a server record by ID.
@@ -88,6 +91,7 @@ impl Database {
     /// # Errors
     ///
     /// Returns `rusqlite::Error` if the query fails.
+    #[allow(clippy::future_not_send, reason = "need research")]
     pub async fn get_server(&self, id: i64) -> Result<Option<ServerRecord>> {
         self.with_conn_read(|conn| ops::get_server(conn, id)).await
     }
@@ -97,6 +101,7 @@ impl Database {
     /// # Errors
     ///
     /// Returns `rusqlite::Error` if the query fails.
+    #[allow(clippy::future_not_send, reason = "need research")]
     pub async fn get_sightings(&self, server_id: i64) -> Result<Vec<SightingRecord>> {
         self.with_conn_read(|conn| queries::get_sightings(conn, server_id))
             .await
@@ -107,6 +112,7 @@ impl Database {
     /// # Errors
     ///
     /// Returns `rusqlite::Error` if the query fails.
+    #[allow(clippy::future_not_send, reason = "need research")]
     pub async fn query_servers_filtered(
         &self,
         protocols: Option<&[String]>,
@@ -124,6 +130,7 @@ impl Database {
     /// # Errors
     ///
     /// Returns `rusqlite::Error` if the query fails.
+    #[allow(clippy::future_not_send, reason = "need research")]
     pub async fn query_sources_by_server_ids(
         &self,
         server_ids: &[i64],
@@ -135,8 +142,9 @@ impl Database {
     /// Query all known sources.
     ///
     /// # Errors
+    #[allow(clippy::future_not_send, reason = "need research")]
     pub async fn query_all_sources(&self) -> Result<Vec<SourceRecord>> {
-        self.with_conn_read(|conn| queries::query_all_sources(conn)).await
+        self.with_conn_read(queries::query_all_sources).await
     }
 
     /// Query the latest timestamp associated with a source.
@@ -144,6 +152,7 @@ impl Database {
     /// # Errors
     ///
     /// Returns `rusqlite::Error` if the query fails.
+    #[allow(clippy::future_not_send, reason = "need research")]
     pub async fn query_latest_ts_for_source(&self, source_id: i64) -> Result<Option<i64>> {
         self.with_conn_read(|conn| queries::query_latest_ts_for_source(conn, source_id))
             .await
@@ -152,21 +161,23 @@ impl Database {
     /// Run a closure with the underlying `Connection` (write lock held).
     /// Used for operations that need the raw connection, like
     /// [`SourceRegistry::upsert_all`].
+    #[allow(clippy::future_not_send, reason = "need research")]
     pub async fn with_conn<F, T>(&self, f: F) -> T
     where
         F: FnOnce(&mut Connection) -> T,
     {
         let mut conn = self.conn.write().await;
-        f(&mut *conn)
+        f(&mut conn)
     }
 
     /// Run a closure with the underlying `Connection` (read lock held).
     /// Used for read-only queries that don't need a write lock.
+    #[allow(clippy::future_not_send, reason = "need research")]
     pub async fn with_conn_read<F, T>(&self, f: F) -> T
     where
         F: FnOnce(&Connection) -> T,
     {
         let conn = self.conn.read().await;
-        f(&*conn)
+        f(&conn)
     }
 }

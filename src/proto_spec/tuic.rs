@@ -38,8 +38,8 @@ use serde::{Deserialize, Serialize};
 use crate::urlx::{HostSpec, RawUrlX, SchemeX, TinyText, host_serde, port_serde};
 
 use super::common::{SecurityConfig, TlsConfig, TlsOpts};
-use super::utils;
 use super::impl_sig_cache;
+use super::utils;
 use super::{ParseError, ProtoSpec};
 
 #[serde_with::skip_serializing_none]

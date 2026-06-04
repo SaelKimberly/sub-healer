@@ -1,13 +1,13 @@
 use rusqlite::{Connection, Result, params};
 
-use super::models::{SightingRecord, SourceRecord, ServerRecord};
+use super::models::{ServerRecord, SightingRecord, SourceRecord};
 
 /// Get all sightings for a server.
 ///
 /// # Errors
 ///
 /// Will return `Err` if the query fails.
-pub(crate) fn get_sightings(conn: &Connection, server_id: i64) -> Result<Vec<SightingRecord>> {
+pub fn get_sightings(conn: &Connection, server_id: i64) -> Result<Vec<SightingRecord>> {
     let mut stmt = conn.prepare(
         "SELECT id, server_id, source_id, seen_ts, remarks FROM sightings WHERE server_id = ?1 ORDER BY seen_ts ASC",
     )?;
@@ -40,7 +40,7 @@ pub(crate) fn get_sightings(conn: &Connection, server_id: i64) -> Result<Vec<Sig
 /// # Errors
 ///
 /// Returns `rusqlite::Error` if the query fails.
-pub(crate) fn query_servers_filtered(
+pub fn query_servers_filtered(
     conn: &Connection,
     protocols: Option<&[String]>,
     min_first_seen: Option<i64>,
@@ -120,7 +120,10 @@ pub(crate) fn query_servers_filtered(
 /// # Errors
 ///
 /// Returns `rusqlite::Error` if the query fails.
-pub(crate) fn query_sources_by_server_ids(conn: &Connection, server_ids: &[i64]) -> Result<Vec<SourceRecord>> {
+pub fn query_sources_by_server_ids(
+    conn: &Connection,
+    server_ids: &[i64],
+) -> Result<Vec<SourceRecord>> {
     if server_ids.is_empty() {
         return Ok(Vec::new());
     }
@@ -166,7 +169,7 @@ pub(crate) fn query_sources_by_server_ids(conn: &Connection, server_ids: &[i64])
 /// # Errors
 ///
 /// Returns `rusqlite::Error` if the query fails.
-pub(crate) fn query_all_sources(conn: &Connection) -> Result<Vec<SourceRecord>> {
+pub fn query_all_sources(conn: &Connection) -> Result<Vec<SourceRecord>> {
     let mut stmt = conn.prepare("SELECT id, url FROM sources ORDER BY url")?;
     let rows = stmt.query_map([], |row| {
         Ok(SourceRecord {
@@ -190,7 +193,7 @@ pub(crate) fn query_all_sources(conn: &Connection) -> Result<Vec<SourceRecord>> 
 /// # Errors
 ///
 /// Returns `rusqlite::Error` if the query fails.
-pub(crate) fn query_latest_ts_for_source(conn: &Connection, source_id: i64) -> Result<Option<i64>> {
+pub fn query_latest_ts_for_source(conn: &Connection, source_id: i64) -> Result<Option<i64>> {
     let result: Option<i64> = conn.query_row(
         "SELECT MAX(ts) FROM (
             SELECT MAX(seen_ts) AS ts FROM sightings WHERE source_id = ?1

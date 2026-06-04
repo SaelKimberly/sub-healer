@@ -1,14 +1,14 @@
-use std::collections::HashMap;
-use std::pin::Pin;
-use std::str::FromStr;
-use std::borrow::Cow;
-use std::sync::{Arc, LazyLock};
-use std::time::Duration;
 use bytes::Bytes;
 use chrono::{DateTime, TimeDelta, Utc};
 use ego_tree::iter::Edge;
 use futures::Stream;
 use scraper::{ElementRef, Node};
+use std::borrow::Cow;
+use std::collections::HashMap;
+use std::pin::Pin;
+use std::str::FromStr;
+use std::sync::{Arc, LazyLock};
+use std::time::Duration;
 use tokio::sync::mpsc::Receiver;
 use tokio::task::JoinSet;
 
@@ -179,7 +179,9 @@ fn extract_urls(_channel_id: &str, msg: ElementRef<'_>) -> Option<Vec<String>> {
         .into_iter()
         .filter(|s| !s.is_empty() && !s.ends_with('…') && !s.ends_with("…»"))
         .map(|s| {
-            let s = if let Some((i, _)) = s.char_indices().rev().take_while(|(_, c)| *c == '`').last() {
+            let s = if let Some((i, _)) =
+                s.char_indices().rev().take_while(|(_, c)| *c == '`').last()
+            {
                 s[..i].to_string()
             } else {
                 s
@@ -476,11 +478,11 @@ mod tests {
     use tracing_subscriber::prelude::*;
     use tracing_subscriber::registry;
 
+    use super::*;
     use crate::mining::PipelineLogWriter;
     use crate::mining::UnparseableLayer;
     use crate::mining::registry::{SourceRegistry, SourceType};
     use crate::urlx::TinyText;
-    use super::*;
 
     #[tokio::test]
     #[ignore = "fetches real Telegram data; run manually to diagnose parsing warnings"]

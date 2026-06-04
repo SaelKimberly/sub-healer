@@ -75,10 +75,9 @@ pub fn parse_host(s: &str) -> Result<HostSpec, ParseError> {
     validate_host_not_private(&host)?;
     if !tail.is_empty() {
         return Err(ParseError::InvalidHost(
-            format!(
-                "Invalid host: {s} (non-empty tail: {})",
-                unsafe { std::str::from_utf8_unchecked(tail.into_fragment()) }
-            )
+            format!("Invalid host: {s} (non-empty tail: {})", unsafe {
+                std::str::from_utf8_unchecked(tail.into_fragment())
+            })
             .into(),
         ));
     }
@@ -182,7 +181,9 @@ pub fn compute_cred_hash(
 ///
 /// # Errors
 /// - If the fragment is not valid UTF-8
-pub fn decode_fragment(raw: &RawUrlX<'_>) -> Result<Option<TinyText>, crate::proto_spec::ParseError> {
+pub fn decode_fragment(
+    raw: &RawUrlX<'_>,
+) -> Result<Option<TinyText>, crate::proto_spec::ParseError> {
     raw.fragment().map_err(|e| {
         crate::proto_spec::ParseError::InvalidConf("remarks".into(), e.to_string().into())
     })

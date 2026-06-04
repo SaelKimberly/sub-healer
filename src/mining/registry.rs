@@ -1,9 +1,9 @@
+use crate::db::hash_source_url;
 use anyhow::Context;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 use yaml_rust2::{Yaml, YamlLoader};
-use crate::db::hash_source_url;
 
 /// Type of proxy source
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

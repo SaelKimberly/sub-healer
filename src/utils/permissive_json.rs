@@ -209,7 +209,7 @@ impl JsonReader<'_> {
 
     #[inline]
     fn read_key(&mut self) -> PResult<()> {
-        let key = self.read_any_data_and_verify(&[':'])?;
+        let key = self.read_any_data_and_verify(&[':', '='])?;
         self.json.set_pending_key(key)
     }
     fn read_val_raw(&mut self) -> PResult<String> {
@@ -303,7 +303,7 @@ impl JsonReader<'_> {
         let mut key = String::new();
         if let eof @ ('"' | '\'') = c {
             _ = self.next_char()?;
-            let is_value = verification_asset.len() > 1 || verification_asset[0] != ':';
+            let is_value = !matches!(verification_asset, [':', '=']);
             loop {
                 self.take_text(&mut key, |c| c != eof, Some('\\'))?;
                 let mut key_length = key.len();
@@ -575,5 +575,244 @@ mod tests {
         assert!(ps.contains("ConfigsHub"), "Should contain channel name");
         assert!(ps.contains("v2ray"), "Should contain description");
         eprintln!("OK: ps={ps:?}");
+    }
+
+    // ── B3a: leading `+` on values (sing-box accepts, strict JSON rejects) ──
+
+    #[test]
+    fn test_leading_plus_number() {
+        // Leading + on integer: common in subscription generators
+        let (_, v) = permissive_json_core(b"+100").unwrap();
+        assert_eq!(v, serde_json::json!(100));
+    }
+
+    #[test]
+    fn test_leading_plus_float() {
+        // Leading + on float
+        let (_, v) = permissive_json_core(b"+1.5").unwrap();
+        assert_eq!(v, serde_json::json!(1.5));
+    }
+
+    #[test]
+    fn test_leading_plus_sci() {
+        // Leading + on scientific notation
+        let (_, v) = permissive_json_core(b"+1e10").unwrap();
+        assert_eq!(v, serde_json::json!(1e10));
+    }
+
+    #[test]
+    fn test_leading_plus_in_array() {
+        // [+1, +2] in array context
+        let (_, v) = permissive_json_core(b"[+1, +2]").unwrap();
+        assert_eq!(v, serde_json::json!([1, 2]));
+    }
+
+    #[test]
+    fn test_leading_plus_on_string_key() {
+        // +"key" — leading plus on string key in object
+        let (_, v) = permissive_json_core(b"{+\"a\": +1, +\"b\": +2}").unwrap();
+        assert_eq!(v, serde_json::json!({"a": 1, "b": 2}));
+    }
+
+    #[test]
+    fn test_leading_plus_on_string_val() {
+        // +"100-1000" — leading plus on string value (meaningless but accepted)
+        let (_, v) = permissive_json_core(b"{+\"a\": +\"100-1000\"}").unwrap();
+        assert_eq!(v, serde_json::json!({"a": "100-1000"}));
+    }
+
+    #[test]
+    fn test_leading_plus_on_bool() {
+        // +false — leading plus on boolean value
+        let (_, v) = permissive_json_core(b"+false").unwrap();
+        assert_eq!(v, serde_json::Value::Bool(false));
+    }
+
+    #[test]
+    fn test_leading_plus_on_string_val_is_string() {
+        // +"foo" — leading plus before string: skip_while_whitespace consumes +,
+        // then the string is read normally. Result is the string value.
+        let (_, v) = permissive_json_core(b"+\"foo\"").unwrap();
+        assert_eq!(v, serde_json::json!("foo"));
+    }
+
+    #[test]
+    fn test_leading_plus_on_true() {
+        // +true — skip_while_whitespace consumes +, then true is parsed as boolean
+        let (_, v) = permissive_json_core(b"+true").unwrap();
+        assert_eq!(v, serde_json::Value::Bool(true));
+    }
+
+    #[test]
+    fn test_leading_plus_real_extra_b3a() {
+        // Real-world B3a extra value: leading + on all values and string keys
+        // {"scMaxEachPostBytes":+1000000,+"scMaxConcurrentPosts":+100,
+        //  +"scMinPostsIntervalMs":+30,+"xPaddingBytes":+"100-1000",
+        //  +"noGRPCHeader":+false}
+        // This is the exact shape that appears in ~241 NDJSON records
+        let input = br#"{"scMaxEachPostBytes":+1000000,+"scMaxConcurrentPosts":+100,+"scMinPostsIntervalMs":+30,+"xPaddingBytes":+"100-1000",+"noGRPCHeader":+false}"#;
+        let (_, v) = permissive_json_core(input).unwrap();
+        assert_eq!(v["scMaxEachPostBytes"], serde_json::json!(1_000_000));
+        assert_eq!(v["scMaxConcurrentPosts"], serde_json::json!(100));
+        assert_eq!(v["scMinPostsIntervalMs"], serde_json::json!(30));
+        assert_eq!(v["xPaddingBytes"], serde_json::json!("100-1000"));
+        assert_eq!(v["noGRPCHeader"], serde_json::json!(false));
+    }
+
+    #[test]
+    fn test_leading_plus_real_extra_b3a_xmux() {
+        // Real-world B3a extra with nested xmux object
+        // +{"maxConcurrency":"16-32",...} — leading + on nested object
+        let input = br#"{"scMaxEachPostBytes":+1000000,+"scMaxConcurrentPosts":+100,+"xmux":+{"maxConcurrency":+"16-32",+"maxConnections":+0}}"#;
+        let (_, v) = permissive_json_core(input).unwrap();
+        assert_eq!(v["scMaxEachPostBytes"], serde_json::json!(1_000_000));
+        assert_eq!(v["xmux"]["maxConcurrency"], serde_json::json!("16-32"));
+        assert_eq!(v["xmux"]["maxConnections"], serde_json::json!(0));
+    }
+
+    // ── B3b: single quotes / mixed quotes (Python dict style) ──
+
+    #[test]
+    fn test_mixed_quotes_realistic() {
+        // Real-world B3b: Python dict with single-quoted keys and booleans
+        let input = b"{'headers': {}, 'noGRPCHeader': True, 'xmux': {'maxConnections': '3'}}";
+        let (_, v) = permissive_json_core(input).unwrap();
+        assert_eq!(v["headers"], serde_json::json!({}));
+        assert_eq!(v["noGRPCHeader"], serde_json::json!(true));
+        assert_eq!(v["xmux"]["maxConnections"], serde_json::json!(3));
+    }
+
+    #[test]
+    fn test_mixed_quotes_mixed() {
+        // Mixed single and double quotes in same dict
+        let input =
+            b"{'headers': {}, 'xPaddingBytes': '100-1000', \"scMaxEachPostBytes\": 1000000}";
+        let (_, v) = permissive_json_core(input).unwrap();
+        assert_eq!(v["xPaddingBytes"], serde_json::json!("100-1000"));
+        assert_eq!(v["scMaxEachPostBytes"], serde_json::json!(1_000_000));
+    }
+
+    #[test]
+    fn test_python_true() {
+        // Python True (capital T) maps to JSON true
+        let (_, v) = permissive_json_core(b"{'a': True, 'b': False}").unwrap();
+        assert_eq!(v["a"], serde_json::json!(true));
+        assert_eq!(v["b"], serde_json::json!(false));
+    }
+
+    #[test]
+    fn test_extra_plus_and_quotes() {
+        // Single quotes with leading +
+        let input = b"{'headers':{}}";
+        let (_, v) = permissive_json_core(input).unwrap();
+        assert_eq!(v["headers"], serde_json::json!({}));
+    }
+
+    // ── URL-encoded input tests (what AutoChars receives) ──
+
+    #[test]
+    fn test_url_encoded_extra() {
+        // URL-encoded JSON: %7B%22a%22%3A1%7D → {"a":1}
+        // AutoChars handles URL decoding, so permissive_json sees decoded chars
+        let (_, v) = permissive_json_core(b"%7B%22a%22%3A1%7D").unwrap();
+        assert_eq!(v, serde_json::json!({"a": 1}));
+    }
+
+    #[test]
+    fn test_url_encoded_with_plus() {
+        // URL-encoded with + (URL-decoded value has leading +)
+        // %2B = + → permissive_json receives the decoded JSON with +
+        let (_, v) = permissive_json_core(b"%7B%22a%22%3A%2B1%7D").unwrap();
+        assert_eq!(v, serde_json::json!({"a": 1}));
+    }
+
+    // ── Truncated JSON (must fail) ──
+
+    #[test]
+    fn test_truncated_brace_fails() {
+        assert!(permissive_json_core(b"{").is_err());
+    }
+
+    #[test]
+    fn test_truncated_key_fails() {
+        assert!(permissive_json_core(b"{\"key\":").is_err());
+    }
+
+    #[test]
+    fn test_truncated_string_fails() {
+        assert!(permissive_json_core(b"{\"key\": \"unclosed").is_err());
+    }
+
+    // ── Real NDJSON samples (exact extracts) ──
+
+    #[test]
+    fn test_b3a_exact_sample_1() {
+        // Exact B3a extra value from NDJSON (241 occurrences)
+        let input = br#"{"scMaxEachPostBytes":+1000000,+"scMaxConcurrentPosts":+100,+"scMinPostsIntervalMs":+30,+"xPaddingBytes":+"100-1000",+"noGRPCHeader":+false}"#;
+        let (_, v) = permissive_json_core(input).unwrap();
+        assert_eq!(v["xPaddingBytes"], serde_json::json!("100-1000"));
+    }
+
+    #[test]
+    fn test_b3b_exact_sample_1() {
+        // Exact B3b extra value from NDJSON (single quotes, Python True)
+        let input = b"{'headers': {}, 'noGRPCHeader': True, 'xmux': {'maxConnections': '3'}}";
+        let (_, v) = permissive_json_core(input).unwrap();
+        assert_eq!(v["noGRPCHeader"], serde_json::json!(true));
+    }
+
+    #[test]
+    fn test_b3b_exact_mixed_quotes() {
+        // B3b extra with mixed single/double quotes from NDJSON
+        let input = b"{'headers': {}, 'xPaddingBytes': '100-1000', \"scMaxEachPostBytes\": 1000000, \"scMinPostsIntervalMs\": 30}";
+        let (_, v) = permissive_json_core(input).unwrap();
+        assert_eq!(v["xPaddingBytes"], serde_json::json!("100-1000"));
+        assert_eq!(v["scMaxEachPostBytes"], serde_json::json!(1_000_000));
+    }
+
+    #[test]
+    fn test_truncated_extra_brace() {
+        // Truncated: extra={ from NDJSON
+        assert!(permissive_json_core(b"{").is_err());
+    }
+
+    #[test]
+    fn test_equals_as_separator_quoted() {
+        // = as JSON key-value separator (alternative to :)
+        let (_, v) = permissive_json_core(b"{'key'='val'}").unwrap();
+        assert_eq!(v, serde_json::json!({"key": "val"}));
+
+        let (_, v) = permissive_json_core(br#"{"key"="val"}"#).unwrap();
+        assert_eq!(v, serde_json::json!({"key": "val"}));
+    }
+
+    #[test]
+    fn test_equals_as_separator_unquoted() {
+        // = separator with unquoted keys
+        let (_, v) = permissive_json_core(b"{key='val'}").unwrap();
+        assert_eq!(v, serde_json::json!({"key": "val"}));
+
+        let (_, v) = permissive_json_core(b"{key=123}").unwrap();
+        assert_eq!(v, serde_json::json!({"key": 123}));
+    }
+    #[test]
+    fn test_equals_vmess_style() {
+        // VMess-style JSON using = separator
+        let input = br#"{"v"="2","ps"="remark","add"="host.com","port"="443","id"="uuid1234","aid"="0","net"="ws","type"="none","host"=""}"#;
+        let (_, v) = permissive_json_core(input).unwrap();
+        // permissive parser turns quoted digit-only strings into Number
+        assert_eq!(v["v"], serde_json::json!(2));
+        assert_eq!(v["ps"], "remark");
+        assert_eq!(v["add"], "host.com");
+        assert_eq!(v["host"], "");
+    }
+
+    #[test]
+    fn test_mixed_separators() {
+        // Mixed : and = in same object
+        let (_, v) = permissive_json_core(b"{'a'='b', 'c':'d', 'e'='f'}").unwrap();
+        assert_eq!(v["a"], "b");
+        assert_eq!(v["c"], "d");
+        assert_eq!(v["e"], "f");
     }
 }

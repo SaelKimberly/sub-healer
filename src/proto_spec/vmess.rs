@@ -58,8 +58,8 @@ use serde::{Deserialize, Serialize};
 use crate::urlx::{HostSpec, RawUrlX, SchemeX, TinyText, host_serde, port_serde};
 
 use super::common::{SecurityConfig, TlsConfig, TlsOpts, TransportConfig};
-use super::utils;
 use super::impl_sig_cache;
+use super::utils;
 use super::{ParseError, ProtoSpec};
 
 #[serde_with::skip_serializing_none]
@@ -133,7 +133,7 @@ impl ProtoSpec for VmessConfig {
             .and_then(|v| v.as_str())
             .filter(|s| !s.is_empty() && s != &"null")
             .map(String::from);
-        
+
         // "path" — transport-specific path
         let path = json
             .get("path")
@@ -188,7 +188,7 @@ impl ProtoSpec for VmessConfig {
             .and_then(|v| v.as_str())
             .filter(|s| !s.is_empty() && s != &"\"\"" && s != &"0")
             .map(TinyText::from);
-        
+
         // "ps" — remarks/friendly name, also strips wrapping quotes
         let remarks = json
             .get("ps")
@@ -196,13 +196,9 @@ impl ProtoSpec for VmessConfig {
             .filter(|s| !s.is_empty())
             .map(|s| TinyText::from(s.trim_matches(['"', '\''])));
         // Build typed TransportConfig from net field
-        let mut transport = TransportConfig::from_type_and_path(
-            net_str.as_deref(),
-            path.as_deref(),
-        )
-        .ok_or_else(|| {
-            ParseError::InvalidConf("net".into(), net_str.clone().unwrap_or_default().into())
-        })?;
+        let mut transport =
+            TransportConfig::from_type_and_path(net_str.as_deref(), path.as_deref())?
+                .unwrap_or(TransportConfig::Tcp);
 
         // Resolve host for transport (HttpUpgrade/XHttp): host → sni → server address
         let vmess_host = json
@@ -218,7 +214,7 @@ impl ProtoSpec for VmessConfig {
             && let Some(mode) = json.get("type").and_then(|v| v.as_str())
         {
             match mode {
-                "auto" | "packet-up" | "stream-up" | "stream-one" => {
+                "auto" | "none" | "packet-up" | "stream-up" | "stream-one" => {
                     xcfg.mode = Some(TinyText::from(mode));
                 }
                 other => {

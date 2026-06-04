@@ -28,8 +28,7 @@ pub fn normalize_extras<'a>(span: &'a [u8]) -> Cow<'a, [u8]> {
 
         result.push(Cow::Borrowed(prefix));
 
-        if let Ok((tail, res)) = super::permissive_json::permissive_json_core(potential_area)
-        {
+        if let Ok((tail, res)) = super::permissive_json::permissive_json_core(potential_area) {
             let Ok(res) = serde_json::to_string(&res) else {
                 unreachable!("Should never fail");
             };
@@ -50,6 +49,7 @@ pub fn normalize_extras<'a>(span: &'a [u8]) -> Cow<'a, [u8]> {
         }
     }
     if found {
+        result.push(Cow::Borrowed(chunk));
         Cow::Owned(result.join(&b""[..]))
     } else {
         Cow::Borrowed(span)
@@ -101,6 +101,59 @@ mod tests {
             x,
             // After normalization: + stripped, valid JSON, URL-encoded
             "vless://host:443?type=xhttp&extra=%7B%22a%22%3A1%2C%22b%22%3A%22c%22%7D"
+        );
+    }
+
+    #[test]
+    fn test_b3a_leading_plus_normalize() {
+        let s = "vless://uuid@host:443?type=xhttp&mode=stream-one&extra={\"scMaxEachPostBytes\":+1000000,+\"scMaxConcurrentPosts\":+100,+\"scMinPostsIntervalMs\":+30}&path=/stream&host=example.com&sni=example.com#By EbraSha";
+        let n = super::normalize_extras(s.as_bytes());
+        let x = unsafe { str::from_utf8_unchecked(n.as_ref()) };
+        // After normalize: + stripped, keys alphabetical (serde_json orders), URL-encoded
+        // Keys: scMaxConcurrentPosts < scMaxEachPostBytes < scMinPostsIntervalMs
+        assert_eq!(
+            x,
+            "vless://uuid@host:443?type=xhttp&mode=stream-one&extra=%7B%22scMaxConcurrentPosts%22%3A100%2C%22scMaxEachPostBytes%22%3A1000000%2C%22scMinPostsIntervalMs%22%3A30%7D&path=/stream&host=example.com&sni=example.com#By EbraSha"
+        );
+    }
+
+    #[test]
+    fn test_b3a_leading_plus_normalize_url_encoded() {
+        // Exact B3a pattern from NDJSON: leading +, already URL-encoded
+        let s = "vless://uuid@host:443?type=xhttp&extra=%7B%22scMaxEachPostBytes%22%3A%2B1000000%2C%2B%22scMaxConcurrentPosts%22%3A%2B100%7D&host=example.com#Test";
+        let n = super::normalize_extras(s.as_bytes());
+        let x = unsafe { str::from_utf8_unchecked(n.as_ref()) };
+        // After normalize: + stripped, keys alphabetical (serde_json), URL-encoded
+        assert_eq!(
+            x,
+            "vless://uuid@host:443?type=xhttp&extra=%7B%22scMaxConcurrentPosts%22%3A100%2C%22scMaxEachPostBytes%22%3A1000000%7D&host=example.com#Test"
+        );
+    }
+
+    #[test]
+    fn test_b3b_single_quotes_normalize() {
+        // Exact B3b pattern from NDJSON: single-quoted keys, Python booleans
+        let s = "vless://uuid@host:443?mode=stream-one&extra={'headers': {}, 'noGRPCHeader': True, 'xmux': {'maxConnections': '3'}}&host=example.com&type=xhttp&sni=example.com#By EbraSha";
+        let n = super::normalize_extras(s.as_bytes());
+        let x = unsafe { str::from_utf8_unchecked(n.as_ref()) };
+        // '3' is parsed as number 3 (not string), True→true, URL-encoded
+        // Keys alphabetical: headers < maxConnections < noGRPCHeader
+        assert_eq!(
+            x,
+            "vless://uuid@host:443?mode=stream-one&extra=%7B%22headers%22%3A%7B%7D%2C%22noGRPCHeader%22%3Atrue%2C%22xmux%22%3A%7B%22maxConnections%22%3A3%7D%7D&host=example.com&type=xhttp&sni=example.com#By EbraSha"
+        );
+    }
+
+    #[test]
+    fn test_b3b_single_quotes_normalize_url_encoded() {
+        // Exact B3b pattern from NDJSON: single quotes in URL-encoded form
+        let s = "vless://uuid@host:443?mode=stream-one&extra=%7B%27headers%27%3A%20%7B%7D%2C%20%27noGRPCHeader%27%3A%20True%2C%20%27xmux%27%3A%20%7B%27maxConnections%27%3A%20%273%27%7D%7D&host=example.com&type=xhttp&sni=example.com#By EbraSha";
+        let n = super::normalize_extras(s.as_bytes());
+        let x = unsafe { str::from_utf8_unchecked(n.as_ref()) };
+        // Same result as non-encoded version
+        assert_eq!(
+            x,
+            "vless://uuid@host:443?mode=stream-one&extra=%7B%22headers%22%3A%7B%7D%2C%22noGRPCHeader%22%3Atrue%2C%22xmux%22%3A%7B%22maxConnections%22%3A3%7D%7D&host=example.com&type=xhttp&sni=example.com#By EbraSha"
         );
     }
 }

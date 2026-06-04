@@ -38,10 +38,10 @@ use serde::{Deserialize, Serialize};
 use crate::urlx::{HostSpec, RawUrlX, SchemeX, TinyText, host_serde, port_serde};
 
 use super::common::SecurityConfig;
-use super::utils;
 use super::impl_sig_cache;
+use super::utils;
 use super::{ParseError, ProtoSpec};
- 
+
 #[serde_with::skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(test, derive(PartialEq, Eq))]
@@ -125,11 +125,10 @@ impl ProtoSpec for StormdnsConfig {
             .and_then(serde_json::Value::as_i64)
             .map(|n| format!("enc{n}"));
 
-        let enc = encryption_method.as_ref().map(|s| TinyText::from(s.as_str()));
-        let security = SecurityConfig {
-            tls: None,
-            enc,
-        };
+        let enc = encryption_method
+            .as_ref()
+            .map(|s| TinyText::from(s.as_str()));
+        let security = SecurityConfig { tls: None, enc };
 
         Ok(Self {
             sig_cache: std::sync::OnceLock::new(),

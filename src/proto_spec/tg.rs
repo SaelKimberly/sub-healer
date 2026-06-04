@@ -43,8 +43,8 @@ use serde::{Deserialize, Serialize};
 use crate::urlx::{HostSpec, RawUrlX, SchemeX, TinyText, host_serde, port_serde};
 
 use super::common::SecurityConfig;
-use super::utils;
 use super::impl_sig_cache;
+use super::utils;
 use super::{ParseError, ProtoSpec};
 
 #[serde_with::skip_serializing_none]
@@ -198,7 +198,6 @@ impl ProtoSpec for TgConfig {
     fn transport_type(&self) -> Option<&str> {
         Some(self.transport.as_str())
     }
-
 }
 
 impl TgConfig {

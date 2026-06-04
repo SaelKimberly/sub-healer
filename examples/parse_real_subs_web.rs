@@ -34,7 +34,7 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
 
-    let config_path = PathBuf::from("subscriptions-01.yaml");
+    let config_path = PathBuf::from("large.yaml");
     let registry = SourceRegistry::from_config(&config_path)?;
 
     // Use a throwaway DB — the example only counts by scheme, not persist.

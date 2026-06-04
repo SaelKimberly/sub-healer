@@ -160,23 +160,30 @@ impl ProtoSpec for VlessConfig {
         let server_addr = Some(parsed_host.to_str().into_owned());
 
         let mut transport =
-            TransportConfig::from_type_and_path(Some(&transport_type), path.as_deref())
-                .ok_or_else(|| ParseError::InvalidConf("type".into(), transport_type.into()))?;
+            TransportConfig::from_type_and_path(Some(&transport_type), path.as_deref())?
+                .unwrap_or(TransportConfig::Tcp);
         transport = transport.with_host(host, sni_from_query, server_addr);
 
         // Extract mode and extra for XHttp, validate mode
         if let TransportConfig::XHttp(ref mut xcfg) = transport {
             if let Some(mode) = query.get("mode") {
-                match mode.as_str() {
-                    "auto" | "packet-up" | "stream-up" | "stream-one" => {
-                        xcfg.mode = Some(TinyText::from(mode.as_str()));
-                    }
-                    other => {
-                        return Err(ParseError::InvalidConf(
-                            "mode".into(),
-                            other.to_string().into(),
-                        ));
-                    }
+                let mode_str = mode.as_str();
+                if mode_str.is_empty() {
+                    // Empty mode — keep the default ("auto") set by from_type_and_path
+                } else if matches!(mode_str, "auto" | "packet-up" | "stream-up" | "stream-one") {
+                    xcfg.mode = Some(TinyText::from(mode_str));
+                } else if let Some(recovered) = recover_xhttp_mode(mode_str) {
+                    tracing::warn!(
+                        target: "proto_spec",
+                        "Recovered XHttp mode from '{}' to '{}'",
+                        mode_str, recovered
+                    );
+                    xcfg.mode = Some(TinyText::from(recovered));
+                } else {
+                    return Err(ParseError::InvalidConf(
+                        "mode".into(),
+                        mode_str.to_string().into(),
+                    ));
                 }
             }
             if let Some(extra) = query.get("extra") {
@@ -415,6 +422,17 @@ impl VlessConfig {
         }
         hasher.finish()
     }
+}
+
+/// Try to recover a valid XHttp mode from an unrecognized mode string
+/// by matching the longest known valid prefix.
+fn recover_xhttp_mode(mode: &str) -> Option<&'static str> {
+    const VALID_MODES: &[&str] = &["packet-up", "stream-one", "stream-up", "auto"];
+    VALID_MODES
+        .iter()
+        .find(|&&valid| mode.starts_with(valid))
+        .copied()
+        .map(|v| v as _)
 }
 
 #[cfg(test)]
