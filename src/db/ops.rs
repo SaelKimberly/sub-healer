@@ -53,25 +53,11 @@ pub fn upsert_server(
     let server_id = config.uid().cast_signed();
     let sig_i64 = config.sig().cast_signed();
 
-    let existing: Option<ServerRecord> = conn
+    let existing: Option<(i64, i64)> = conn
         .query_row(
-            "SELECT id, schema, host, port, transport, security, remarks, raw_config, first_seen_ts, first_seen_source_id, sig FROM servers WHERE id = ?1",
+            "SELECT first_seen_ts, first_seen_source_id FROM servers WHERE id = ?1",
             [server_id],
-            |row| {
-                Ok(ServerRecord {
-                    id: row.get(0)?,
-                    schema: row.get(1)?,
-                    host: row.get(2)?,
-                    port: row.get(3)?,
-                    transport: row.get(4)?,
-                    security: row.get(5)?,
-                    remarks: row.get(6)?,
-                    raw_config: row.get(7)?,
-                    first_seen_ts: row.get(8)?,
-                    first_seen_source_id: row.get(9)?,
-                    sig: row.get(10)?,
-                })
-            },
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .ok();
 
@@ -104,7 +90,7 @@ pub fn upsert_server(
         Some(existing) => {
             let incoming_remarks = config.remarks().map(std::string::ToString::to_string);
 
-            if incoming_ts < existing.first_seen_ts {
+            if incoming_ts < existing.0 {
                 // Backfill: earlier discovery found — update first_seen, add sighting.
                 // The original sighting (created at first insert) already records the
                 // old first_seen; no archive copy needed.

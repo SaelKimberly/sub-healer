@@ -88,3 +88,6 @@ harness = false
 [[bench]]
 name = "permissive_json"
 harness = false
+
+[profile.release]
+debug = true

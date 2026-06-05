@@ -107,6 +107,7 @@ impl ProtoSpec for VmessConfig {
             .get("add")
             .and_then(|v| v.as_str())
             .ok_or(ParseError::MissingHost)?;
+        let host_str = host_str.trim();
         let parsed_host = utils::parse_host(host_str)?;
 
         // "port" — can be string or number, coerce via coerce_u16
