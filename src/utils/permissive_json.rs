@@ -6,6 +6,8 @@ use std::str::FromStr;
 use serde_json::{Map, Number, Value};
 use smallvec::SmallVec;
 
+use crate::urlx::TinyText;
+
 use super::fast_perc::AutoChars;
 
 type PResult<T> = Result<T, PermissiveJsonError>;
@@ -34,7 +36,7 @@ impl std::error::Error for PermissiveJsonError {}
 #[cfg_attr(test, derive(Debug))]
 enum Container {
     Arr(Vec<Value>),
-    Obj(Map<String, Value>, Option<String>),
+    Obj(Map<String, Value>, Option<TinyText>),
 }
 #[derive(Default)]
 #[cfg_attr(test, derive(Debug))]
@@ -52,7 +54,7 @@ impl JsonBuilder {
     pub fn begin_arr(&mut self) {
         self.stack.push(Container::Arr(Vec::default()));
     }
-    pub fn set_pending_key(&mut self, key: String) -> Result<(), PermissiveJsonError> {
+    pub fn set_pending_key(&mut self, key: TinyText) -> Result<(), PermissiveJsonError> {
         match self.stack.last_mut() {
             Some(Container::Obj(_, pending)) => {
                 *pending = Some(key);
@@ -83,7 +85,7 @@ impl JsonBuilder {
                 pending
                     .take()
                     .map_or(Err(PermissiveJsonError::InvalidSyntax), |key| {
-                        map.insert(key, value);
+                        _ = map.entry(key).or_insert(value);
                         Ok(())
                     })
             }
@@ -109,43 +111,103 @@ const fn next_char_impl(char_iter: &mut AutoChars) -> PResult<char> {
     }
 }
 
+/// Main cursor method
+impl JsonReader<'_> {
+    /// Try to read next character from data, and save it to last_char.
+    const fn next_char(&mut self) -> PResult<char> {
+        let r = next_char_impl(&mut self.char_iter);
+        if let Ok(c) = r {
+            self.last_char = c;
+        }
+        r
+    }
+}
+
+/// Deal with whitespaces
+impl JsonReader<'_> {
+    /// When last_char is whitespace character, returns it, and read next char
+    /// When last_char is not whitespace, returns Ok(None)
+    const fn next_if_whitespace(&mut self) -> PResult<Option<char>> {
+        if self.last_char.is_whitespace() || matches!(self.last_char, '+') {
+            let result = Some(self.last_char);
+            match self.next_char() {
+                Ok(_) => Ok(result),
+                Err(e) => Err(e),
+            }
+        } else {
+            Ok(None)
+        }
+    }
+    /// Collect all whitespace characters, from current position, and return first non-whitespace one.
+    fn take_while_whitespace(&mut self, out: &mut TinyText) -> PResult<char> {
+        while let Some(c) = self.next_if_whitespace()? {
+            out.push(c);
+        }
+        Ok(self.last_char)
+    }
+    /// Just skip all whitespace characters, from current position, and return first non-whitespace one.
+    const fn skip_while_whitespace(&mut self) -> PResult<char> {
+        loop {
+            match self.next_if_whitespace() {
+                Ok(Some(_)) => {}
+                Ok(None) => break Ok(self.last_char),
+                Err(e) => break Err(e),
+            }
+        }
+    }
+}
 impl<'a> JsonReader<'a> {
     const fn create(input: &'a [u8]) -> PResult<Self> {
         let mut char_iter = AutoChars::new(input);
-        match next_char_impl(&mut char_iter) {
-            Ok(last_char) => Ok(Self {
-                char_iter,
-                last_char,
-                json: JsonBuilder {
-                    stack: SmallVec::new_const(),
-                    root: None,
-                },
-            }),
-            Err(e) => Err(e),
-        }
+        let last_char = match next_char_impl(&mut char_iter) {
+            Ok(c) => c,
+            Err(e) => return Err(e),
+        };
+
+        Ok(Self {
+            char_iter,
+            last_char,
+            json: JsonBuilder {
+                stack: SmallVec::new_const(),
+                root: None,
+            },
+        })
     }
 
     fn try_consume(mut self) -> PResult<(Value, &'a [u8])> {
         loop {
             // #[cfg(test)]
-            // eprintln!("{:#?}", &self);
+            // eprintln!("try_consume: root={:?} object={} last_char={:?}", self.json.root, self.json.object(), self.last_char);
             if let Some(root) = self.json.root.take() {
                 return Ok((root, self.char_iter.remaining()));
             }
 
             if self.json.object() {
-                if let Err(e) = self.read_key() {
-                    match self.last_char {
-                        '}' | ']' => {}
-                        _ => return Err(e),
+                // Inside an object, always read key first
+                // Only except for case, when we are closing object
+                if matches!(self.last_char, '}') {
+                    self.json.end_obj()?;
+                    if let Some(root) = self.json.root.take() {
+                        return Ok((root, self.char_iter.remaining()));
                     }
-                } else {
+                    // Just get a next char
                     _ = self.next_char()?;
+                } else {
+                    // Expect key
+                    self.read_key()?;
+                    // Consume colon or equal sign
+                    _ = self.next_char()?;
+                    // And expect val after
+                    self.read_val()?;
                 }
+            } else {
+                // When not in object, expect val
+                self.read_val()?;
             }
-            self.read_val()?;
+            // Inside an array, we expect a value
+            // Also, in object, we have already get
 
-            while self.skip_while_whitespace(None)? == ',' {
+            while self.skip_while_whitespace()? == ',' {
                 _ = self.next_char()?;
             }
 
@@ -158,41 +220,80 @@ impl<'a> JsonReader<'a> {
         }
     }
 }
-impl JsonReader<'_> {
-    const fn next_char(&mut self) -> PResult<char> {
-        match next_char_impl(&mut self.char_iter) {
-            Ok(c) => {
-                self.last_char = c;
-                Ok(c)
-            }
-            Err(e) => Err(e),
-        }
-    }
-    fn skip_while_whitespace(&mut self, mut opt_out: Option<&mut String>) -> PResult<char> {
-        loop {
-            if self.last_char.is_whitespace() || matches!(self.last_char, '+') {
-                if let Some(out) = opt_out.as_mut() {
-                    out.push(self.last_char);
-                }
-                _ = self.next_char()?;
-            } else {
-                break Ok(self.last_char);
-            }
-        }
-    }
 
+#[derive(Clone, Copy)]
+#[repr(u8)]
+enum ReadLike {
+    Val,
+    Key,
+}
+
+impl ReadLike {
+    #[inline]
+    const fn check_eof(self, c: char) -> bool {
+        match self {
+            // After key, allowlist is colon and equal signs
+            // {"key":}
+            // {key=}
+            Self::Key => matches!(c, ':' | '='),
+            // After value, we expect to find either comma, or a closing bracket
+            Self::Val => matches!(c, ',' | '}' | ']'),
+        }
+    }
+    // Currently, we have no support for reading non-utf-8 encoded text
+    // But, keys and values in raw data, likely, should be escaped, using RFC 8259 (JSON)
+    // Also, values could contain emoji, so we should try to unescape them properly.
+    // Most keys and values, likely, have no escaped characters, so memchr
+    fn apply_unescape(self, val: TinyText) -> TinyText {
+        if memchr::memchr(b'\\', val.as_bytes()).is_some() {
+            let r = escape8259::unescape(&val)
+                .map(TinyText::from)
+                .unwrap_or(val);
+            // Only for values, unicode decoding may be needed.
+            if matches!(self, Self::Val) && memchr::memchr(b'\\', r.as_bytes()).is_some() {
+                unescaper::unescape(r.as_str())
+                    .map(TinyText::from)
+                    .unwrap_or(r)
+            } else {
+                r
+            }
+        } else {
+            val
+        }
+    }
+}
+
+impl JsonReader<'_> {
     fn take_text(
         &mut self,
-        out: &mut String,
+        out: &mut TinyText,
         predicate: impl Fn(char) -> bool,
         esc_char: Option<char>,
+        eof_char: Option<char>,
     ) -> PResult<()> {
         loop {
+            // `\x` -> `\x`
+            // `\\x` -> `\\x`
+            // `\\\eof_char` -> `\eof_char` (if specified)
+            // `\eof_char` -> end of value (if specified)
             if let Some(esc_char) = esc_char
                 && self.last_char == esc_char
             {
                 let ch = self.next_char()?;
-                out.push(esc_char);
+                // eof_char is set, when beginning of string was escaped eof_char
+                match eof_char {
+                    // Break on escaped end of string
+                    Some(c) if ch == c => {
+                        return Ok(());
+                    }
+                    // Collapse triple escaped simple character
+                    Some(_) if out.ends_with(esc_char) => {
+                        _ = out.pop();
+                    }
+                    _ => {
+                        out.push(esc_char);
+                    }
+                }
                 out.push(ch);
             } else if predicate(self.last_char) {
                 out.push(self.last_char);
@@ -209,15 +310,13 @@ impl JsonReader<'_> {
 
     #[inline]
     fn read_key(&mut self) -> PResult<()> {
-        let key = self.read_any_data_and_verify(&[':', '='])?;
+        // As keys are always text, we have to skip flag check
+        let (_, key) = self.read_any_data_and_verify(ReadLike::Key)?;
         self.json.set_pending_key(key)
-    }
-    fn read_val_raw(&mut self) -> PResult<String> {
-        self.read_any_data_and_verify(&[',', ']', '}'])
     }
 
     fn read_val(&mut self) -> PResult<()> {
-        match self.skip_while_whitespace(None)? {
+        match self.skip_while_whitespace()? {
             '{' => {
                 self.json.begin_obj();
                 self.next_char()?;
@@ -226,12 +325,7 @@ impl JsonReader<'_> {
                 self.json.begin_arr();
                 self.next_char()?;
             }
-            '}' => {
-                self.json.end_obj()?;
-                if self.json.root.is_none() {
-                    self.next_char()?;
-                }
-            }
+
             ']' => {
                 self.json.end_arr()?;
                 if self.json.root.is_none() {
@@ -239,159 +333,158 @@ impl JsonReader<'_> {
                 }
             }
             _ => {
-                let val_raw = self.read_val_raw()?;
+                let (is_text, val_raw) = self.read_any_data_and_verify(ReadLike::Val)?;
 
-                let v = match val_raw.as_bytes() {
-                    [c @ (b'0'..=b'9')] => Value::Number(Number::from(c - b'0')),
-                    n @ [b'1'..=b'9', ..]
-                        if let Ok(s) = str::from_utf8(n)
-                            && s.chars().all(|c| c.is_ascii_digit()) =>
-                    {
-                        <i64 as FromStr>::from_str(val_raw.as_str()).map_or_else(
-                            |_| Value::String(val_raw),
-                            |v| Value::Number(Number::from(v)),
-                        )
-                    }
-                    [b't' | b'T', b'r', b'u', b'e'] => Value::Bool(true),
-                    [b'F' | b'f', b'a', b'l', b's', b'e'] => Value::Bool(false),
-                    [b'N', b'o', b'n', b'e'] | [b'n', b'u', b'l', b'l'] => Value::Null,
-                    _ => <i64 as FromStr>::from_str(val_raw.as_str())
-                        .map_or_else(
-                            |_| {
-                                <f64 as FromStr>::from_str(val_raw.as_str()).map_or_else(
-                                    |_| None,
-                                    |v| Number::from_f64(v).map(Value::Number),
-                                )
-                            },
-                            |v| Some(Value::Number(Number::from(v))),
-                        )
-                        .unwrap_or(Value::String(val_raw)),
+                let value = if is_text {
+                    // When we have sure, that it is a text
+                    Value::String(val_raw.to_string())
+                } else if val_raw.eq_ignore_ascii_case("true") {
+                    // Boolean true
+                    Value::Bool(true)
+                } else if val_raw.eq_ignore_ascii_case("false") {
+                    // Boolean false
+                    Value::Bool(false)
+                } else if val_raw.eq_ignore_ascii_case("null")
+                    || val_raw.eq_ignore_ascii_case("none")
+                {
+                    // Null
+                    Value::Null
+                } else if let Ok(i) = <i64 as FromStr>::from_str(val_raw.as_str()) {
+                    // Integer
+                    Value::Number(i.into())
+                } else if let Ok(f) = <f64 as FromStr>::from_str(val_raw.as_str())
+                    && let Some(n) = Number::from_f64(f)
+                {
+                    // Floating point
+                    Value::Number(n)
+                } else {
+                    // Fallback to text
+                    Value::String(val_raw.to_string())
                 };
-                return self.json.insert_completed_value(v);
+
+                return self.json.insert_completed_value(value);
             }
         }
         Ok(())
     }
 
-    // Read all characters from current (last_char):
-    // If current char is a quote, then read to the next not escaped quote.
-    // If current char is not a quote, read with restrictive allowlist
-    // When reading done, verify, that next non-whitespace character is in verification asset.
-
-    fn apply_unescape(val: &str, is_value: bool) -> String {
-        if is_value {
-            super::unescaper::Unescaper::default()
-                .chardet(true, true)
-                .enc8259(true)
-                .enc_uni(true)
-                .do_unescape(val.as_bytes())
-                .expect("unescape ok")
-        } else {
-            super::unescaper::Unescaper::default()
-                .enc8259(true)
-                .do_unescape(val.as_bytes())
-                .expect("unescape ok")
+    // Read optional quote character (maybe, escaped)
+    const fn read_eof(&mut self) -> PResult<Option<(bool, char)>> {
+        match self.last_char {
+            // Single or double quote
+            c @ ('"' | '\'') => Ok(Some((false, c))),
+            // Escaped single or double quote
+            '\\' => match self.next_char() {
+                Ok(c @ ('"' | '\'')) => Ok(Some((true, c))),
+                // Other escaped character
+                Ok(_) => Err(PermissiveJsonError::InvalidSyntax),
+                Err(e) => Err(e),
+            },
+            _ => Ok(None),
         }
     }
 
-    fn read_any_data_and_verify(&mut self, verification_asset: &'static [char]) -> PResult<String> {
-        if verification_asset.is_empty() {
-            unreachable!("should never be used if empty")
-        }
-        let c = self.skip_while_whitespace(None)?;
+    // Read all characters from current (last_char):
+    // If current char is a quote, then read to the next not escaped quote.
+    // If current char is not a quote, read with restrictive allowlist
+    // When reading done, verify, that next non-whitespace character is a read_like eof.
+    fn read_any_data_and_verify(&mut self, read_like: ReadLike) -> PResult<(bool, TinyText)> {
+        let mut buf = TinyText::new_const();
 
-        let mut key = String::new();
-        if let eof @ ('"' | '\'') = c {
+        _ = self.skip_while_whitespace()?;
+
+        let eof = match self.read_eof() {
+            Ok(Some(c)) => Some(c),
+            Ok(None) => None,
+            // Accept any escaped non-quote character at the beginning of input
+            Err(PermissiveJsonError::InvalidSyntax) => {
+                buf.push('\\');
+                buf.push(self.last_char);
+                _ = self.next_char()?;
+                None
+            }
+
+            Err(e) => return Err(e),
+        };
+        let mut is_text: bool = false;
+        if let Some((escaped, eof)) = eof {
+            is_text = true;
+            // Consume opening quote before reading text content
             _ = self.next_char()?;
-            let is_value = !matches!(verification_asset, [':', '=']);
             loop {
-                self.take_text(&mut key, |c| c != eof, Some('\\'))?;
-                let mut key_length = key.len();
-                key.push('\\');
-                key.push(eof);
-
-                let check = loop {
-                    match self.next_char() {
-                        Err(PermissiveJsonError::Eof) => {
-                            key.truncate(key_length);
-                            let raw = core::mem::take(&mut key);
-                            return Ok(Self::apply_unescape(&raw, is_value));
-                        }
-                        Err(e) => return Err(e),
-                        Ok(_) => {}
-                    }
-                    match self.skip_while_whitespace(Some(&mut key)) {
-                        Err(PermissiveJsonError::Eof) => {
-                            key.truncate(key_length);
-                            let raw = core::mem::take(&mut key);
-                            return Ok(Self::apply_unescape(&raw, is_value));
-                        }
-                        Err(e) => return Err(e),
-                        Ok(c) if c == eof => {
-                            key_length = key.len();
-                            key.push('\\');
-                            key.push(eof);
-                        }
-                        Ok(c) => break c,
-                    }
-                };
-
-                if verification_asset.contains(&check) {
-                    key.truncate(key_length);
-                    let raw = core::mem::take(&mut key);
-                    return Ok(Self::apply_unescape(&raw, is_value));
-                }
-
-                // check is not a delimiter — it's part of the value text
-                // It was consumed from iterator by next_char above.
-                // Push it to key and advance past it so take_text doesn't
-                // double-process it (which would mess up \ escape handling).
-                key.push(check);
+                // Read text until we reached eof character.
+                self.take_text(&mut buf, |c| c != eof, Some('\\'), escaped.then_some(eof))?;
+                // As take_text definitely stops at eof character (escaped or not)
+                // we should skip it to proceed to next data.
+                // If EOF right after closing quote, accept value as-is.
                 match self.next_char() {
-                    Err(PermissiveJsonError::Eof) => {
-                        key.push('\\');
-                        key.push(eof);
-                        let raw = core::mem::take(&mut key);
-                        return Ok(Self::apply_unescape(&raw, is_value));
+                    Err(PermissiveJsonError::Eof) if self.last_char == eof => {
+                        break;
                     }
+                    Err(PermissiveJsonError::Eof) => return Err(PermissiveJsonError::Eof),
                     Err(e) => return Err(e),
                     Ok(_) => {}
                 }
-                match self.skip_while_whitespace(Some(&mut key)) {
-                    Err(PermissiveJsonError::Eof) => {
-                        key.push('\\');
-                        key.push(eof);
-                        let raw = core::mem::take(&mut key);
-                        return Ok(Self::apply_unescape(&raw, is_value));
-                    }
-                    Err(e) => return Err(e),
-                    Ok(_) => {}
+                // If it is a real eof, then after it we should find a control character, specific to read_like eof.
+                let buf_length = buf.len();
+
+                buf.push('\\');
+                buf.push(eof);
+                if read_like.check_eof(self.take_while_whitespace(&mut buf)?) {
+                    // If we have such control character after eof, truncate buf, to not keep escaped eof and final whitespaces
+                    buf.truncate(buf_length);
+                    break;
                 }
+                // Otherwise, keep escaped eof and whitespace characters after, and read new portion of text
             }
         } else {
+            // When we have no clue, about the underlying data structure,
+            // we just have to allowlist acceptable characters
             self.take_text(
-                &mut key,
+                &mut buf,
                 |c| matches!(c,'A'..='Z' | 'a'..='z' | '0'..='9' | '_' | '-' | '.'),
+                Some('\\'),
                 None,
             )?;
-            if verification_asset.contains(&self.last_char) {
-                return Ok(key);
+            let buf_length = buf.len();
+
+            // If last_char is already a valid delimiter, return immediately.
+            // This preserves `}` and `]` for structural processing (end_obj/end_arr).
+            if read_like.check_eof(self.last_char) {
+                return Ok((false, read_like.apply_unescape(buf)));
             }
-            if self.char_iter.remaining().is_empty() && !key.is_empty() {
-                return Ok(key);
+
+            match self.next_char() {
+                Err(PermissiveJsonError::Eof) => {
+                    return Ok((false, read_like.apply_unescape(buf)));
+                }
+                Err(e) => return Err(e),
+                _ => {}
+            }
+
+            let c = match self.take_while_whitespace(&mut buf)? {
+                // If we have found, after possible whitespace characters, a quote,
+                // There could be a missing quote in the beginning.
+                // We just restore it implicitly, using "is_text", keep whitespace characters, and read a next char.
+                '"' | '\'' => {
+                    is_text = true;
+                    _ = self.next_char()?;
+                    self.skip_while_whitespace()?
+                }
+                // Otherwise (here is definitely should be non-whitespace character)
+                // we have to truncate buffer to its original length
+                c => {
+                    buf.truncate(buf_length);
+                    c
+                }
+            };
+            // If the next character is not eof for the read_like, there is invalid syntax.
+            if !read_like.check_eof(c) {
+                return Err(PermissiveJsonError::InvalidSyntax);
             }
         }
-        if matches!(self.last_char, '"' | '\'') {
-            _ = self.next_char()?;
-            if verification_asset.contains(&self.skip_while_whitespace(None)?) {
-                return Ok(key);
-            }
-            return Err(PermissiveJsonError::InvalidSyntax);
-        }
-        if !verification_asset.contains(&self.skip_while_whitespace(None)?) {
-            return Err(PermissiveJsonError::InvalidSyntax);
-        }
-        Ok(key)
+
+        Ok((is_text, read_like.apply_unescape(buf)))
     }
 }
 
@@ -679,7 +772,7 @@ mod tests {
         let (_, v) = permissive_json_core(input).unwrap();
         assert_eq!(v["headers"], serde_json::json!({}));
         assert_eq!(v["noGRPCHeader"], serde_json::json!(true));
-        assert_eq!(v["xmux"]["maxConnections"], serde_json::json!(3));
+        assert_eq!(v["xmux"]["maxConnections"], serde_json::json!("3"));
     }
 
     #[test]
@@ -800,8 +893,8 @@ mod tests {
         // VMess-style JSON using = separator
         let input = br#"{"v"="2","ps"="remark","add"="host.com","port"="443","id"="uuid1234","aid"="0","net"="ws","type"="none","host"=""}"#;
         let (_, v) = permissive_json_core(input).unwrap();
-        // permissive parser turns quoted digit-only strings into Number
-        assert_eq!(v["v"], serde_json::json!(2));
+        // permissive parser now keeps quoted digit-only strings as strings
+        assert_eq!(v["v"], serde_json::json!("2"));
         assert_eq!(v["ps"], "remark");
         assert_eq!(v["add"], "host.com");
         assert_eq!(v["host"], "");

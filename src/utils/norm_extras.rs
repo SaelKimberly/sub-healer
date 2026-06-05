@@ -136,11 +136,11 @@ mod tests {
         let s = "vless://uuid@host:443?mode=stream-one&extra={'headers': {}, 'noGRPCHeader': True, 'xmux': {'maxConnections': '3'}}&host=example.com&type=xhttp&sni=example.com#By EbraSha";
         let n = super::normalize_extras(s.as_bytes());
         let x = unsafe { str::from_utf8_unchecked(n.as_ref()) };
-        // '3' is parsed as number 3 (not string), True→true, URL-encoded
+        // '3' is parsed as string "3" (not number 3), True→true, URL-encoded
         // Keys alphabetical: headers < maxConnections < noGRPCHeader
         assert_eq!(
             x,
-            "vless://uuid@host:443?mode=stream-one&extra=%7B%22headers%22%3A%7B%7D%2C%22noGRPCHeader%22%3Atrue%2C%22xmux%22%3A%7B%22maxConnections%22%3A3%7D%7D&host=example.com&type=xhttp&sni=example.com#By EbraSha"
+            "vless://uuid@host:443?mode=stream-one&extra=%7B%22headers%22%3A%7B%7D%2C%22noGRPCHeader%22%3Atrue%2C%22xmux%22%3A%7B%22maxConnections%22%3A%223%22%7D%7D&host=example.com&type=xhttp&sni=example.com#By EbraSha"
         );
     }
 
@@ -153,7 +153,7 @@ mod tests {
         // Same result as non-encoded version
         assert_eq!(
             x,
-            "vless://uuid@host:443?mode=stream-one&extra=%7B%22headers%22%3A%7B%7D%2C%22noGRPCHeader%22%3Atrue%2C%22xmux%22%3A%7B%22maxConnections%22%3A3%7D%7D&host=example.com&type=xhttp&sni=example.com#By EbraSha"
+            "vless://uuid@host:443?mode=stream-one&extra=%7B%22headers%22%3A%7B%7D%2C%22noGRPCHeader%22%3Atrue%2C%22xmux%22%3A%7B%22maxConnections%22%3A%223%22%7D%7D&host=example.com&type=xhttp&sni=example.com#By EbraSha"
         );
     }
 }

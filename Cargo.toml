@@ -36,6 +36,7 @@ nom_locate = { version = "*" }
 
 bytes = { version = "*" }
 bstr = { version = "*" }
+memchr = { version = "*" }
 uuid = { version = "*", features = ["v5"] }
 base64 = { version = "*" }
 urlencoding = { version = "*" }
