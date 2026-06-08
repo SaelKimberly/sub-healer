@@ -1,5 +1,7 @@
 use std::borrow::Cow;
 
+use rayon::iter::{IntoParallelRefMutIterator, ParallelIterator};
+
 /// This function is used to normalize the `extra` query part of V2ray URL.
 ///
 /// It will try to recover JSON with a very permissive parser, and reencode it to urlencoded.
@@ -14,46 +16,59 @@ use std::borrow::Cow;
 /// After this normalizing step, all V2ray URLs should be valid on a single line
 /// When no extras found, no data copy will be performed
 #[must_use]
-pub fn normalize_extras<'a>(span: &'a [u8]) -> Cow<'a, [u8]> {
+pub fn normalize_extras(span: &[u8]) -> Cow<'_, [u8]> {
     const EXTRA_PREFIX: &str = "extra=";
     const EXTRA_PREFIX_LEN: usize = 6;
     let finder = bstr::Finder::new(EXTRA_PREFIX);
+    let mut result: Vec<u8>;
+    {
+        // Every slice may (or may not) start with valid or invalid JSON.
+        // If we can extract valid JSON from the beginning, we have to store valid version here.
+        // In that case, slice will be likely turned into owned version (corrected JSON + tail)
+        // Otherwise, it will be kept as is.
+        let mut slices: Vec<Cow<'_, [u8]>> = Vec::new();
 
-    let mut result = Vec::<Cow<'a, [u8]>>::new();
+        let mut suffix: &[u8] = span;
+        let prefix: &[u8];
 
-    let mut chunk = span;
-    let mut found = false;
-    while let Some(pos) = finder.find(chunk) {
-        let (prefix, potential_area) = chunk.split_at(pos + EXTRA_PREFIX_LEN);
+        let Some(first_found) = finder.find(suffix) else {
+            return Cow::Borrowed(span);
+        };
+        (prefix, suffix) = suffix.split_at(first_found + EXTRA_PREFIX_LEN);
 
-        result.push(Cow::Borrowed(prefix));
+        let mut tail: &[u8] = suffix;
+        while let Some(pos) = finder.find(tail) {
+            (suffix, tail) = tail.split_at(pos + EXTRA_PREFIX_LEN);
+            slices.push(Cow::Borrowed(suffix));
+        }
+        if !tail.is_empty() {
+            slices.push(Cow::Borrowed(tail));
+        }
 
-        if let Ok((tail, res)) = super::permissive_json::permissive_json_core(potential_area) {
-            let Ok(res) = serde_json::to_string(&res) else {
-                unreachable!("Should never fail");
-            };
-            let encoded = urlencoding::encode(res.as_str()).into_owned();
-
-            let original_area = &potential_area[..potential_area.len() - tail.len()];
-
-            found = original_area != encoded.as_bytes();
-            if found {
-                result.push(Cow::Owned(encoded.as_bytes().to_owned()));
-            } else {
-                result.push(Cow::Borrowed(original_area));
-            }
-
-            chunk = tail;
-        } else {
-            chunk = potential_area;
+        let out_size = slices
+            .par_iter_mut()
+            .map(|slice| {
+                if let Ok((tail, json)) =
+                    super::permissive_json::permissive_json_core(slice.as_ref())
+                    && let Ok(data) = simd_json::to_string(&json)
+                {
+                    let mut data = urlencoding::encode(data.as_str()).as_bytes().to_owned();
+                    if !tail.is_empty() {
+                        data.reserve_exact(tail.len());
+                        data.extend_from_slice(tail);
+                    }
+                    *slice = Cow::Owned(data);
+                }
+                slice.len()
+            })
+            .sum::<usize>();
+        result = Vec::with_capacity(out_size + prefix.len());
+        result.extend_from_slice(prefix);
+        for slice in slices {
+            result.extend_from_slice(slice.as_ref());
         }
     }
-    if found {
-        result.push(Cow::Borrowed(chunk));
-        Cow::Owned(result.join(&b""[..]))
-    } else {
-        Cow::Borrowed(span)
-    }
+    Cow::Owned(result)
 }
 
 #[cfg(test)]

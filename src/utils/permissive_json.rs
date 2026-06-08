@@ -12,26 +12,17 @@ use super::fast_perc::AutoChars;
 
 type PResult<T> = Result<T, PermissiveJsonError>;
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum PermissiveJsonError {
+    #[error("empty input")]
     EmptyInput,
+    #[error("unexpected end of input")]
     Eof,
+    #[error("invalid byte encoding")]
     InvalidEncoding,
+    #[error("invalid JSON syntax")]
     InvalidSyntax,
 }
-
-impl core::fmt::Display for PermissiveJsonError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            Self::EmptyInput => write!(f, "empty input"),
-            Self::Eof => write!(f, "unexpected end of input"),
-            Self::InvalidEncoding => write!(f, "invalid byte encoding"),
-            Self::InvalidSyntax => write!(f, "invalid JSON syntax"),
-        }
-    }
-}
-
-impl std::error::Error for PermissiveJsonError {}
 
 #[cfg_attr(test, derive(Debug))]
 enum Container {
@@ -178,7 +169,7 @@ impl<'a> JsonReader<'a> {
         loop {
             // #[cfg(test)]
             // eprintln!("try_consume: root={:?} object={} last_char={:?}", self.json.root, self.json.object(), self.last_char);
-            if let Some(root) = self.json.root.take() {
+            if let Some(root) = self.json.root {
                 return Ok((root, self.char_iter.remaining()));
             }
 
@@ -187,7 +178,7 @@ impl<'a> JsonReader<'a> {
                 // Only except for case, when we are closing object
                 if matches!(self.last_char, '}') {
                     self.json.end_obj()?;
-                    if let Some(root) = self.json.root.take() {
+                    if let Some(root) = self.json.root {
                         return Ok((root, self.char_iter.remaining()));
                     }
                     // Just get a next char
@@ -207,6 +198,7 @@ impl<'a> JsonReader<'a> {
             // Inside an array, we expect a value
             // Also, in object, we have already get
 
+            // Skip commas (allow repeatable commas)
             while self.skip_while_whitespace()? == ',' {
                 _ = self.next_char()?;
             }

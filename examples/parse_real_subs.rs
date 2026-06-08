@@ -29,9 +29,9 @@ fn parse_to_raw_urls(data: &[u8]) -> Vec<String> {
     const CHUNK_SIZE: usize = 65536;
     let mut urls = Vec::new();
     for chunk in data.chunks(CHUNK_SIZE) {
-        urls.extend(decoder.feed(chunk));
+        urls.extend(decoder.feed(chunk).unwrap());
     }
-    urls.extend(decoder.finalize());
+    urls.extend(decoder.finalize().unwrap());
     urls
 }
 

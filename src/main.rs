@@ -175,7 +175,7 @@ async fn main() -> anyhow::Result<()> {
                     break;
                 }
                 has_data = true;
-                for url in decoder.feed(&buf[..n]) {
+                for url in decoder.feed(&buf[..n])? {
                     raw_urls.push(url);
                 }
             }
@@ -184,7 +184,7 @@ async fn main() -> anyhow::Result<()> {
                 anyhow::bail!("No data received from stdin");
             }
 
-            for url in decoder.finalize() {
+            for url in decoder.finalize()? {
                 raw_urls.push(url);
             }
 
@@ -248,12 +248,12 @@ async fn main() -> anyhow::Result<()> {
                     if n == 0 {
                         break;
                     }
-                    for url in decoder.feed(&buf[..n]) {
+                    for url in decoder.feed(&buf[..n])? {
                         raw_urls.push(url);
                     }
                 }
 
-                for url in decoder.finalize() {
+                for url in decoder.finalize()? {
                     raw_urls.push(url);
                 }
 

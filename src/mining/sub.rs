@@ -3,9 +3,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::Utc;
-use futures::Stream;
+use futures::{Stream, StreamExt};
 use tokio::task::JoinSet;
 
+use crate::decoder::StreamingDecoder;
 use crate::mining::RawSourceItemBatch;
 use crate::mining::registry::SourceRegistry;
 
@@ -34,14 +35,13 @@ impl SubFetcher {
         mut self: Pin<Box<Self>>,
     ) -> Pin<Box<dyn std::future::Future<Output = ()> + Send + Sync + 'static>> {
         const TASK_TIMEOUT: Duration = Duration::from_secs(90);
-        const READ_CHUNK_SIZE: usize = 65536;
 
         Box::pin(async move {
             let url_str = self.url_str.clone();
             let task = async {
                 let this = self.as_mut();
                 let Self {
-                    client,
+                    client: _,
                     url,
                     url_str,
                     sender,
@@ -60,7 +60,7 @@ impl SubFetcher {
                 };
                 let download_ts = Utc::now();
 
-                let mut decoder = crate::decoder::StreamingDecoder::new();
+                let mut decoder = StreamingDecoder::new();
                 let mut batch: Vec<String> = Vec::with_capacity(BATCH_SIZE);
 
                 // Flush accumulated URLs as a batch through the channel
@@ -79,159 +79,52 @@ impl SubFetcher {
                     };
                 }
 
-                match url.scheme() {
-                    "https" | "http" => {
-                        const MAX_ATTEMPTS: usize = 2;
-                        let mut success = false;
-
-                        for attempt in 1..=MAX_ATTEMPTS {
-                            if attempt > 1 {
-                                decoder = crate::decoder::StreamingDecoder::new();
-                                batch.clear();
-                                tokio::time::sleep(Duration::from_secs(1)).await;
-                            }
-
-                            let req = if matches!(
-                                url.host_str(),
-                                Some("raw.githubusercontent.com" | "github.com")
-                            ) && let Ok(auth) = std::env::var("GITHUB_TOKEN")
-                            {
-                                client.get(url.as_str()).bearer_auth(auth)
-                            } else {
-                                client.get(url.as_str())
-                            };
-
-                            match req
-                                .send()
-                                .await
-                                .and_then(reqwest::Response::error_for_status)
-                            {
-                                Ok(resp) => {
-                                    use futures::StreamExt;
-                                    let mut stream = resp.bytes_stream();
-                                    let mut had_error = false;
-                                    while let Some(chunk_result) = stream.next().await {
-                                        match chunk_result {
-                                            Ok(chunk) => {
-                                                for u in decoder.feed(&chunk) {
-                                                    batch.push(u);
-                                                    if batch.len() >= BATCH_SIZE {
-                                                        try_flush!();
-                                                    }
-                                                }
-                                            }
-                                            Err(e) => {
-                                                tracing::warn!(
-                                                    url = %url_str, error = %e, attempt,
-                                                    "Subscription stream error"
-                                                );
-                                                had_error = true;
-                                                break;
-                                            }
-                                        }
-                                    }
-                                    if !had_error {
-                                        success = true;
-                                        break;
-                                    }
-                                }
-                                Err(e) => {
-                                    // HTTP status errors (4xx/5xx) are not retryable
-                                    if e.status().is_some() {
-                                        _ = sender
-                                            .send(SubEvent::Error {
-                                                url: url_str.clone(),
-                                                error: e.to_string(),
-                                            })
-                                            .await;
-                                        return;
-                                    }
-                                    // Transport error — retry if attempts remain
-                                    if attempt == MAX_ATTEMPTS {
-                                        _ = sender
-                                            .send(SubEvent::Error {
-                                                url: url_str.clone(),
-                                                error: e.to_string(),
-                                            })
-                                            .await;
-                                        return;
-                                    }
-                                }
-                            }
-                        }
-
-                        if !success {
-                            _ = sender
-                                .send(SubEvent::Error {
-                                    url: url_str.clone(),
-                                    error: "All retry attempts failed".into(),
-                                })
-                                .await;
-                            return;
-                        }
-                    }
-                    "file" => {
-                        let Ok(path) = url.to_file_path() else {
-                            tracing::error!(
-                                url = %url_str,
-                                "Invalid file URL: not an absolute path"
-                            );
-                            return;
-                        };
-                        match tokio::fs::File::open(&path).await {
-                            Ok(mut file) => {
-                                use tokio::io::AsyncReadExt;
-                                let mut buf = vec![0u8; READ_CHUNK_SIZE];
-                                loop {
-                                    match file.read(&mut buf).await {
-                                        Ok(0) => break,
-                                        Ok(n) => {
-                                            for u in decoder.feed(&buf[..n]) {
-                                                batch.push(u);
-                                                if batch.len() >= BATCH_SIZE {
-                                                    try_flush!();
-                                                }
-                                            }
-                                        }
-                                        Err(e) => {
-                                            tracing::warn!(
-                                                url = %url_str, error = %e,
-                                                "File read error"
-                                            );
-                                            break;
-                                        }
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                _ = sender
-                                    .send(SubEvent::Error {
-                                        url: url_str.clone(),
-                                        error: e.to_string(),
-                                    })
-                                    .await;
-                                return;
-                            }
-                        }
-                    }
-                    other => {
-                        tracing::error!(
-                            scheme = %other,
-                            url = %url_str,
-                            "Unsupported subscription URL scheme"
-                        );
+                let mut stream = match super::create_stream(url).await {
+                    Ok(s) => s,
+                    Err(e) => {
+                        _ = sender.send(SubEvent::Error {
+                            url: url_str.clone(),
+                            error: format!("Cannot create stream ({e})"),
+                        });
                         return;
                     }
-                }
+                };
 
-                // Process remaining decoder data
-                for u in decoder.finalize() {
-                    batch.push(u);
-                    if batch.len() >= BATCH_SIZE {
-                        try_flush!();
+                loop {
+                    let (stops, chunk) = match stream.next().await {
+                        Some(Ok(c)) => (false, decoder.feed(&c)),
+                        None => (true, decoder.finalize()),
+                        Some(Err(e)) => {
+                            _ = sender.send(SubEvent::Error {
+                                url: url_str.clone(),
+                                error: format!("Stream error ({e})"),
+                            });
+                            return;
+                        }
+                    };
+
+                    let data = match chunk {
+                        Ok(c) => c,
+                        Err(e) => {
+                            _ = sender.send(SubEvent::Error {
+                                url: url_str.clone(),
+                                error: format!("Stream decoding error ({e})"),
+                            });
+                            return;
+                        }
+                    };
+
+                    for u in data {
+                        batch.push(u);
+                        if batch.len() >= BATCH_SIZE {
+                            try_flush!();
+                        }
+                    }
+
+                    if stops {
+                        break;
                     }
                 }
-
                 // Final flush
                 if !batch.is_empty() {
                     let item = SubEvent::Item(RawSourceItemBatch {
@@ -243,7 +136,10 @@ impl SubFetcher {
                 }
             };
 
-            if tokio::time::timeout(TASK_TIMEOUT, task).await.is_err() {
+            if tokio::time::timeout(TASK_TIMEOUT, Box::pin(task))
+                .await
+                .is_err()
+            {
                 tracing::warn!(url = %url_str, "Subscription fetch timed out after 90s");
             }
         })

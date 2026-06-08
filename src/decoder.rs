@@ -1,6 +1,6 @@
 use std::mem::MaybeUninit;
 
-use base64::Engine;
+use base64::DecodeError;
 
 use crate::urlx::SchemeX;
 
@@ -45,6 +45,14 @@ impl StreamingDecoder {
         }
     }
 
+    pub fn reset(&mut self) {
+        self.state = EncodingState::Unknown;
+        self.pending_input = [MaybeUninit::uninit(); 4];
+        self.pending_input_len = 0;
+        self.carry_over = Box::new_uninit_slice(CARRY_OVER_SIZE);
+        self.carry_over_len = 0;
+    }
+
     /// Feed one chunk of raw input data. Returns any complete URLs extracted.
     ///
     /// Internally aligns input to 4-byte base64 boundaries, detects encoding
@@ -54,9 +62,9 @@ impl StreamingDecoder {
     /// **Chunks larger than `INPUT_CHUNK_SIZE` bytes are truncated** (only the
     /// first `INPUT_CHUNK_SIZE` bytes are processed; callers should slice).
     #[must_use]
-    pub fn feed(&mut self, chunk: &[u8]) -> Vec<String> {
+    pub fn feed(&mut self, chunk: &[u8]) -> Result<Vec<String>, DecodeError> {
         if chunk.is_empty() && self.pending_input_len == 0 {
-            return Vec::new();
+            return Ok(vec![]);
         }
 
         let chunk = if chunk.len() > INPUT_CHUNK_SIZE {
@@ -91,15 +99,15 @@ impl StreamingDecoder {
         self.pending_input_len = remainder;
 
         let input = &work[..aligned_len];
-        let decoded = self.process_aligned(input);
-        self.process_decoded(&decoded)
+        let decoded = self.process_aligned(input)?;
+        Ok(self.process_decoded(&decoded))
     }
 
     /// Flush any remaining buffered data. Call once after the last `feed()`.
     ///
     /// Returns any final URLs from the last partial line.
     #[must_use]
-    pub fn finalize(&mut self) -> Vec<String> {
+    pub fn finalize(&mut self) -> Result<Vec<String>, DecodeError> {
         let mut result = Vec::new();
 
         // Process leftover pending_input bytes (may be < 4)
@@ -108,7 +116,7 @@ impl StreamingDecoder {
             for i in 0..self.pending_input_len {
                 buf[i] = unsafe { self.pending_input[i].assume_init() };
             }
-            let decoded = self.process_aligned(&buf[..self.pending_input_len]);
+            let decoded = self.process_aligned(&buf[..self.pending_input_len])?;
             self.pending_input_len = 0;
             result.extend(self.process_decoded(&decoded));
         }
@@ -120,73 +128,57 @@ impl StreamingDecoder {
             self.carry_over_len = 0;
         }
 
-        result
+        Ok(result)
     }
 
     // ── internal helpers ──
 
     /// Detect encoding and decode one 4-byte-aligned portion.
-    fn process_aligned(&mut self, data: &[u8]) -> Vec<u8> {
+    fn process_aligned(&mut self, data: &[u8]) -> Result<Vec<u8>, DecodeError> {
+        use base64::prelude::{BASE64_STANDARD_NO_PAD, BASE64_URL_SAFE_NO_PAD, Engine};
+
         if data.is_empty() {
-            return Vec::new();
+            return Ok(vec![]);
         }
 
         // Trim trailing whitespace and '=' padding for base64 decode attempts.
         // Raw passthrough keeps original data (trailing \n is a URL separator).
-        let trimmed = match data
+        let trimmed = if matches!(self.state, EncodingState::Raw) {
+            data
+        } else if let Some(pos) = data
             .iter()
-            .rposition(|&b| !b.is_ascii_whitespace() && b != b'=')
+            .rposition(|&b| !(b.is_ascii_whitespace() || matches!(b, b'=')))
         {
-            Some(pos) => &data[..=pos],
-            None => &[],
+            &data[..=pos]
+        } else {
+            return Ok(vec![]);
         };
 
         match self.state {
             EncodingState::Unknown => {
-                if let Ok(decoded) = base64::prelude::BASE64_STANDARD_NO_PAD.decode(trimmed) {
-                    self.state = EncodingState::StdB64;
-                    decoded
-                } else if let Ok(decoded) = base64::prelude::BASE64_URL_SAFE_NO_PAD.decode(trimmed)
-                {
-                    self.state = EncodingState::UrlSafeB64;
-                    decoded
+                // If we detected
+                let (encoding, decoded) = if memchr::memchr2(b'+', b'\\', trimmed).is_some() {
+                    BASE64_STANDARD_NO_PAD.decode(trimmed).map_or_else(
+                        |_| (EncodingState::Raw, data.to_vec()),
+                        |decoded| (EncodingState::StdB64, decoded),
+                    )
+                } else if memchr::memchr2(b'-', b'_', trimmed).is_some() {
+                    BASE64_URL_SAFE_NO_PAD.decode(trimmed).map_or_else(
+                        |_| (EncodingState::Raw, data.to_vec()),
+                        |decoded| (EncodingState::UrlSafeB64, decoded),
+                    )
                 } else {
-                    self.state = EncodingState::Raw;
-                    data.to_vec()
-                }
+                    BASE64_STANDARD_NO_PAD.decode(trimmed).map_or_else(
+                        |_| (EncodingState::Raw, data.to_vec()),
+                        |decoded| (EncodingState::Unknown, decoded),
+                    )
+                };
+                self.state = encoding;
+                Ok(decoded)
             }
-            EncodingState::StdB64 => {
-                match base64::prelude::BASE64_STANDARD_NO_PAD.decode(trimmed) {
-                    Ok(decoded) => decoded,
-                    Err(_) => {
-                        // Fallback: try URL-safe before giving up
-                        if let Ok(decoded) = base64::prelude::BASE64_URL_SAFE_NO_PAD.decode(trimmed)
-                        {
-                            self.state = EncodingState::UrlSafeB64;
-                            decoded
-                        } else {
-                            self.state = EncodingState::Raw;
-                            data.to_vec()
-                        }
-                    }
-                }
-            }
-            EncodingState::UrlSafeB64 => {
-                match base64::prelude::BASE64_URL_SAFE_NO_PAD.decode(trimmed) {
-                    Ok(decoded) => decoded,
-                    Err(_) => {
-                        if let Ok(decoded) = base64::prelude::BASE64_STANDARD_NO_PAD.decode(trimmed)
-                        {
-                            self.state = EncodingState::StdB64;
-                            decoded
-                        } else {
-                            self.state = EncodingState::Raw;
-                            data.to_vec()
-                        }
-                    }
-                }
-            }
-            EncodingState::Raw => data.to_vec(),
+            EncodingState::StdB64 => BASE64_STANDARD_NO_PAD.decode(trimmed),
+            EncodingState::UrlSafeB64 => BASE64_URL_SAFE_NO_PAD.decode(trimmed),
+            EncodingState::Raw => Ok(data.to_vec()),
         }
     }
 
@@ -329,20 +321,22 @@ fn process_str_inner(text: &str) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    use base64::Engine;
+
     use super::*;
 
     #[test]
     fn empty_data() {
         let mut d = StreamingDecoder::new();
-        assert!(d.feed(b"").is_empty());
-        assert!(d.finalize().is_empty());
+        assert!(d.feed(b"").unwrap().is_empty());
+        assert!(d.finalize().unwrap().is_empty());
     }
 
     #[test]
     fn raw_text_passthrough() {
         let mut d = StreamingDecoder::new();
-        let urls1 = d.feed(b"trojan://abc\nhysteria2://def\n");
-        let urls2 = d.finalize();
+        let urls1 = d.feed(b"trojan://abc\nhysteria2://def\n").unwrap();
+        let urls2 = d.finalize().unwrap();
         let total = urls1.len() + urls2.len();
         assert!(total >= 2, "expected >=2 URLs, got {total}");
         assert!(
@@ -366,7 +360,7 @@ mod tests {
         let encoded = base64::prelude::BASE64_STANDARD.encode(data);
         assert_eq!(encoded.len() % 4, 0, "padded base64");
         let mut d = StreamingDecoder::new();
-        let urls = d.feed(encoded.as_bytes());
+        let urls = d.feed(encoded.as_bytes()).unwrap();
         assert_eq!(urls.len(), 1);
         assert!(urls[0].starts_with("trojan://"));
     }
@@ -377,7 +371,7 @@ mod tests {
         let encoded = base64::prelude::BASE64_URL_SAFE.encode(data);
         assert_eq!(encoded.len() % 4, 0, "padded base64");
         let mut d = StreamingDecoder::new();
-        let urls = d.feed(encoded.as_bytes());
+        let urls = d.feed(encoded.as_bytes()).unwrap();
         assert_eq!(urls.len(), 1);
         assert!(urls[0].starts_with("trojan://"));
     }
@@ -389,8 +383,8 @@ mod tests {
         let encoded = base64::prelude::BASE64_STANDARD.encode(raw);
         assert!(encoded.ends_with("=="), "padded: {encoded:?}");
         let mut d = StreamingDecoder::new();
-        let urls = d.feed(encoded.as_bytes());
-        let urls2 = d.finalize();
+        let urls = d.feed(encoded.as_bytes()).unwrap();
+        let urls2 = d.finalize().unwrap();
         assert_eq!(
             urls.len() + urls2.len(),
             1,
@@ -403,9 +397,9 @@ mod tests {
             let mid = (encoded.len() / 4) * 4; // 4-byte aligned split
             let mut d = StreamingDecoder::new();
 
-            let urls1 = d.feed(encoded[..mid].as_bytes());
-            let urls2 = d.feed(encoded[mid..].as_bytes());
-            let urls3 = d.finalize();
+            let urls1 = d.feed(encoded[..mid].as_bytes()).unwrap();
+            let urls2 = d.feed(encoded[mid..].as_bytes()).unwrap();
+            let urls3 = d.finalize().unwrap();
 
             let all: Vec<String> = urls1.into_iter().chain(urls2).chain(urls3).collect();
             assert_eq!(all.len(), 2, "two URLs across 3 calls");
@@ -416,9 +410,9 @@ mod tests {
         #[test]
         fn url_boundary_across_chunks() {
             let mut d = StreamingDecoder::new();
-            let urls1 = d.feed(b"trojan://abc\nhy");
-            let urls2 = d.feed(b"2://def\n");
-            let urls3 = d.finalize();
+            let urls1 = d.feed(b"trojan://abc\nhy").unwrap();
+            let urls2 = d.feed(b"2://def\n").unwrap();
+            let urls3 = d.finalize().unwrap();
             let all: Vec<String> = urls1.into_iter().chain(urls2).chain(urls3).collect();
             assert_eq!(all.len(), 2);
         }
@@ -426,8 +420,8 @@ mod tests {
         #[test]
         fn comment_lines_skipped() {
             let mut d = StreamingDecoder::new();
-            let urls1 = d.feed(b"# comment\n// another\ntrojan://abc\n");
-            let urls2 = d.finalize();
+            let urls1 = d.feed(b"# comment\n// another\ntrojan://abc\n").unwrap();
+            let urls2 = d.finalize().unwrap();
             let total = urls1.len() + urls2.len();
             assert!(
                 total >= 1,
@@ -441,7 +435,7 @@ mod tests {
         let mut d = StreamingDecoder::new();
         // Need multiple-of-4 total length for alignment.
         // "trojan://abc<br/>hy2://def\n" = 27 bytes, pad to 28 with \n
-        let urls = d.feed(b"trojan://abc<br/>hy2://def\n\n");
+        let urls = d.feed(b"trojan://abc<br/>hy2://def\n\n").unwrap();
         assert!(
             urls.len() >= 2,
             "expected >=2 URLs from <br/> split, got {}",
@@ -454,10 +448,10 @@ mod tests {
     #[test]
     fn finalize_flushes_carry_over() {
         let mut d = StreamingDecoder::new();
-        let urls = d.feed(b"trojan://abc");
+        let urls = d.feed(b"trojan://abc").unwrap();
         assert!(urls.is_empty(), "no newline -> no URLs yet");
 
-        let urls = d.finalize();
+        let urls = d.finalize().unwrap();
         assert_eq!(urls.len(), 1);
         assert!(urls[0].starts_with("trojan://"));
     }
@@ -466,9 +460,9 @@ mod tests {
     fn pending_input_accumulates_across_chunks() {
         let mut d = StreamingDecoder::new();
         // Input length not multiple of 4 creates pending bytes
-        let urls1 = d.feed(b"abc"); // 3 bytes → pending
+        let urls1 = d.feed(b"abc").unwrap(); // 3 bytes → pending
         assert!(urls1.is_empty());
-        let urls2 = d.feed(b"d"); // 1 byte → completes to 4
+        let urls2 = d.feed(b"d").unwrap(); // 1 byte → completes to 4
         assert!(urls2.is_empty(), "still no URL in raw data");
         // The combined 4 bytes are raw, not base64 → passthrough
     }
@@ -477,8 +471,8 @@ mod tests {
     fn finalize_processes_remainder() {
         let mut d = StreamingDecoder::new();
         // Input not multiple of 4 → trailing bytes are pending
-        let urls1 = d.feed(b"trojan://abc\nhy2://def\n"); // 25 bytes, 24 aligned
-        let urls2 = d.finalize();
+        let urls1 = d.feed(b"trojan://abc\nhy2://def\n").unwrap(); // 25 bytes, 24 aligned
+        let urls2 = d.finalize().unwrap();
         assert_eq!(
             urls1.len() + urls2.len(),
             2,
@@ -495,9 +489,9 @@ mod tests {
         let mid = (total / 2 / 4) * 4; // aligned split
 
         let mut d = StreamingDecoder::new();
-        let urls1 = d.feed(data[..mid].as_bytes());
-        let urls2 = d.feed(data[mid..].as_bytes());
-        let urls3 = d.finalize();
+        let urls1 = d.feed(data[..mid].as_bytes()).unwrap();
+        let urls2 = d.feed(data[mid..].as_bytes()).unwrap();
+        let urls3 = d.finalize().unwrap();
 
         let all = urls1.len() + urls2.len() + urls3.len();
         assert_eq!(all, 5, "all 5 URLs extracted across chunks");

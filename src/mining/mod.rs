@@ -1,6 +1,7 @@
-use std::sync::Arc;
 use std::time::Duration;
+use std::{pin::Pin, sync::Arc};
 
+use bytes::{Bytes, BytesMut};
 use chrono::{DateTime, Utc};
 
 mod pipeline;
@@ -10,9 +11,12 @@ pub mod telegram;
 mod unparseable_log;
 mod writer;
 
+use futures::{Stream, TryStreamExt};
 pub use pipeline::Pipeline;
 pub use registry::{SourceMetadata, SourceRegistry, SourceType};
+use reqwest::NoProxy;
 pub use unparseable_log::UnparseableLayer;
+use url::Url;
 pub use writer::PipelineLogWriter;
 
 pub use self::telegram::Backfill;
@@ -34,8 +38,6 @@ pub struct RawSourceItemBatch {
     pub raw_urls: Box<[String]>,
 }
 
-pub const PROXY_URL: &str = "http://127.0.0.1:20172";
-
 /// # Panics
 ///
 /// Will panic if the system time is before the UNIX epoch.
@@ -51,11 +53,93 @@ pub fn get_current_timestamp() -> i64 {
 /// # Errors
 ///
 /// Will return `Err` if the proxy URL is invalid or the client cannot be built.
-pub fn build_client() -> Result<reqwest::Client, anyhow::Error> {
-    Ok(reqwest::Client::builder()
-        .proxy(reqwest::Proxy::http(PROXY_URL)?)
-        .timeout(Duration::from_secs(30))
-        .build()?)
+pub fn build_client() -> reqwest::Result<reqwest::Client> {
+    let mut builder = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(30))
+        .read_timeout(Duration::from_secs(5));
+
+    if cfg!(test) {
+        builder = builder.proxy(reqwest::Proxy::all("http://127.0.0.1:20172")?);
+    } else if let Ok(proxy) = std::env::var("HTTP_PROXY")
+        && let Ok(url) = url::Url::parse(proxy.as_str())
+        && matches!(url.scheme(), "http" | "https")
+        && let Some("127.0.0.1" | "localhost") = url.host_str()
+        && let Ok(mut proxy) = reqwest::Proxy::all(url.as_str())
+    {
+        if let Ok(username) = std::env::var("HTTP_PROXY_USERNAME")
+            && let Ok(password) = std::env::var("HTTP_PROXY_PASSWORD")
+        {
+            proxy = proxy.basic_auth(username.as_str(), password.as_str());
+        }
+
+        builder = builder.proxy(proxy.no_proxy(NoProxy::from_env()));
+    }
+
+    builder.build()
+}
+
+#[derive(Debug, thiserror::Error)]
+enum StreamError {
+    #[error("Stream error: {0}")]
+    Std(#[from] std::io::Error),
+    #[error("Stream error: {0}")]
+    Web(#[from] reqwest::Error),
+    #[error("Stream error: {0}")]
+    B64(#[from] base64::DecodeError),
+}
+
+async fn create_stream(
+    url: &Url,
+) -> anyhow::Result<Pin<Box<dyn Stream<Item = Result<Bytes, StreamError>> + Send + Sync>>> {
+    match url.scheme() {
+        "stdin" => {
+            let inner = tokio::io::stdin();
+            let outer =
+                tokio_util::codec::Framed::new(inner, tokio_util::codec::BytesCodec::default());
+            Ok(Box::pin(outer.map_ok(BytesMut::freeze).map_err(Into::into)))
+        }
+        "http" | "https" => {
+            let mut attempt = 0;
+            let client = build_client()?;
+            let mut inner = client.get(url.as_str());
+            if matches!(
+                url.host_str(),
+                Some("github.com" | "raw.githubusercontent.com")
+            ) && let Ok(token) = std::env::var("GITHUB_TOKEN")
+            {
+                inner = inner.bearer_auth(token);
+            }
+            let request = inner.build()?;
+
+            let resp = loop {
+                match client
+                    .execute(request.try_clone().expect("Should be possible"))
+                    .await
+                {
+                    Ok(resp) => break Ok(resp),
+                    Err(e) if e.status().is_none() && attempt < 3 => {
+                        tokio::time::sleep(Duration::from_secs(1)).await;
+                        attempt += 1;
+                    }
+                    Err(e) => break Err(e),
+                }
+            }?;
+            Ok(Box::pin(resp.bytes_stream().map_err(Into::into)))
+        }
+        "file" => {
+            let Ok(path) = url.to_file_path() else {
+                anyhow::bail!("Invalid URL: {url} (must be absolute path)");
+            };
+            let inner = tokio::io::BufReader::new(
+                tokio::fs::OpenOptions::new().read(true).open(path).await?,
+            );
+            let outer =
+                tokio_util::codec::Framed::new(inner, tokio_util::codec::BytesCodec::default());
+
+            Ok(Box::pin(outer.map_ok(BytesMut::freeze).map_err(Into::into)))
+        }
+        other => Err(anyhow::anyhow!("Unsupported source scheme: {other}")),
+    }
 }
 
 /// Emit a single unparseable entry to the NDJSON tracing layer.
