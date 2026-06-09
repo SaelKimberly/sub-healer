@@ -115,37 +115,34 @@ pub fn query_servers_filtered(
     Ok(records)
 }
 
-/// Get distinct source records that contributed sightings for the given server IDs.
+
+/// Get source records by their IDs (simple PK lookup).
 ///
 /// # Errors
 ///
 /// Returns `rusqlite::Error` if the query fails.
-pub fn query_sources_by_server_ids(
+pub fn query_sources_by_ids(
     conn: &Connection,
-    server_ids: &[i64],
+    ids: &[i64],
 ) -> Result<Vec<SourceRecord>> {
-    if server_ids.is_empty() {
+    if ids.is_empty() {
         return Ok(Vec::new());
     }
 
-    let placeholders: Vec<String> = server_ids
+    let placeholders: Vec<String> = ids
         .iter()
         .enumerate()
         .map(|(i, _)| format!("?{}", i + 1))
         .collect();
 
     let sql = format!(
-        "SELECT DISTINCT src.id, src.url \
-         FROM sources src \
-         JOIN sightings si ON si.source_id = src.id \
-         WHERE si.server_id IN ({}) \
-         ORDER BY src.url",
+        "SELECT id, url FROM sources WHERE id IN ({}) ORDER BY url",
         placeholders.join(",")
     );
 
     let mut stmt = conn.prepare(&sql)?;
 
-    let param_refs: Vec<&dyn rusqlite::types::ToSql> = server_ids
+    let param_refs: Vec<&dyn rusqlite::types::ToSql> = ids
         .iter()
         .map(|id| id as &dyn rusqlite::types::ToSql)
         .collect();

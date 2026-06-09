@@ -65,12 +65,11 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // Query sources for each server
-    let server_ids: Vec<i64> = servers.iter().map(|s| s.id).collect();
-    if !server_ids.is_empty() {
-        let sources = pipeline
-            .db()
-            .query_sources_by_server_ids(&server_ids)
-            .await?;
+    let mut source_ids: Vec<i64> = servers.iter().map(|s| s.first_seen_source_id).collect();
+    if !source_ids.is_empty() {
+        source_ids.sort_unstable();
+        source_ids.dedup();
+        let sources = pipeline.db().query_sources_by_ids(&source_ids).await?;
         for src in &sources {
             *by_channel.entry(src.url.clone()).or_default() += 1;
         }

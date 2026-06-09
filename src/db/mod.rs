@@ -125,17 +125,18 @@ impl Database {
         .await
     }
 
-    /// Get distinct source records for the given server IDs.
+
+    /// Get source records by their IDs (simple PK lookup).
     ///
     /// # Errors
     ///
-    /// Returns `rusqlite::Error` if the query fails.
+    /// Returns `DatabaseError` if the query fails.
     #[allow(clippy::future_not_send, reason = "need research")]
-    pub async fn query_sources_by_server_ids(
+    pub async fn query_sources_by_ids(
         &self,
-        server_ids: &[i64],
+        ids: &[i64],
     ) -> Result<Vec<SourceRecord>> {
-        self.with_conn_read(|conn| queries::query_sources_by_server_ids(conn, server_ids))
+        self.with_conn_read(|conn| queries::query_sources_by_ids(conn, ids))
             .await
     }
 
