@@ -6,6 +6,7 @@ rust-version = "1.96.0"
 
 
 [dependencies]
+# ============ Async Runtime & I/O ============
 tokio = { version = "*", features = [
     "net",
     "io-std",
@@ -14,64 +15,78 @@ tokio = { version = "*", features = [
     "macros",
     "rt-multi-thread",
 ] }
-tokio-util = "0.7.18"
-futures = { version = "*" }
-# [lints]
-# workspace = true
-clap = { version = "*", features = ["derive"] }
-anyhow = { version = "*" }
-thiserror = { version = "*" }
-url = { version = "*" }
-config = { version = "*", default-features = false, features = [
-    "toml",
-    "yaml",
-] }
-rustls = { version = "*", default-features = false, features = ["std"] }
+tokio-util = { version = "^0.7.18" }
+futures = { version = "^0.3.32", default-features = false, features = ["std"] }
 
-tracing = { version = "*" }
-tracing-subscriber = { version = "*", features = ["env-filter"] }
+# ============ CLI & Config ============
+clap = { version = "^4.6.1", features = ["derive"] }
+humantime = { version = "^2.3.0" }
 
-# for parsing/escaping/unescaping/decoding
-nom = { version = "*" }
-nom_locate = { version = "*" }
+# ============ Error Handling ============
+anyhow = { version = "^1.0.102" }
+thiserror = { version = "^2.0.18" }
 
-bytes = { version = "*" }
-bstr = { version = "*" }
-memchr = { version = "*" }
-uuid = { version = "*", features = ["v5"] }
-base64 = { version = "*" }
-urlencoding = { version = "*" }
-escape8259 = { version = "*" }
-unescaper = { version = "*" }
-simd-json = { version = "*" }
-simdutf8 = { version = "*" }
-chardetng = { version = "*", features = ["multithreading"] }
-
+# ============ Serialization ============
 serde = { version = "*", features = ["derive"] }
 serde_json = { version = "*" }
-serde_with = { version = "*" }
-rapidhash = { version = "*" }
-chrono = { version = "*", features = ["serde", "clock"] }
+serde_with = { version = "^3.21.0", default-features = false, features = ["macros"] }
+simd-json = { version = "^0.17.0" }
 
-reqwest = { version = "*", features = ["stream", "gzip", "brotli", "zstd", "deflate"] }
-scraper = { version = "*" }
-yaml-rust2 = { version = "*" }
-mimalloc = { version = "*" }
-smartstring = { version = "*", features = ["serde"] }
-smallvec = {  version = "*", features = ["const_new","const_generics"] }
-rayon = { version = "*" }
-rustc-hash = { version = "*" }
-rusqlite = { version = "*", features = ["bundled"] }
+# ============ URL & Encoding ============
+url = { version = "*" }
+urlencoding = { version = "^2.1.3" }
+escape8259 = { version = "^0.5.3" }
+unescaper = { version = "^0.1.8" }
+bstr = { version = "^1.12.1", default-features = false, features = ["std"] }
+bytes = { version = "*" }
+
+# ============ Parsing ============
+nom = { version = "^8.0.0", default-features = false, features = ["std"] }
+nom_locate = { version = "^5.0.0" }
+
+# ============ Text / Search / Hash ============
+memchr = { version = "*" }
+aho-corasick = { version = "^1.1.4" }
+rapidhash = { version = "^4.4.1", default-features = false, features = ["std", "unsafe"] }
+rustc-hash = { version = "^2.1.2" }
+uuid = { version = "^1.23.2", features = ["v5"] }
+
+# ============ Base64 ============
+base64 = { version = "^0.22.1" }
+
+# ============ Networking & Web ============
+reqwest = { version = "^0.13.4", features = ["stream", "gzip", "brotli", "zstd", "deflate"] }
+rustls = { version = "*", default-features = false, features = ["std"] }
+scraper = { version = "^0.27.0" }
 ego-tree = { version = "*" }
-aho-corasick = { version = "*" }
-humantime = { version = "*" }
+
+# ============ Database ============
+rusqlite = { version = "^0.40.1", features = ["bundled"] }
+
+# ============ YAML ============
+yaml-rust2 = { version = "^0.11.0" }
+
+# ============ Date/Time ============
+chrono = { version = "^0.4.45", default-features = false, features = ["clock"] }
+
+# ============ CLI Progress & Logging ============
+tracing = { version = "*" }
+tracing-subscriber = { version = "*", features = ["env-filter"] }
+tracing-indicatif = { version = "^0.3.14" }
 indicatif = { version = "*" }
-tracing-indicatif = { version = "*" }
+
+# ============ Performance & Memory ============
+mimalloc = { version = "^0.1.52" }
+smartstring = { version = "^1.0.1", features = ["serde"] }
+smallvec = { version = "*", default-features = false, features = ["const_new"] }
+rayon = { version = "*" }
+
+# ============ Character Detection ============
+chardetng = { version = "^1.0.0", features = ["multithreading"] }
+simdutf8 = { version = "^0.1.5" }
 
 [dev-dependencies]
-# CPU profiling: `cargo flamegraph --bin v2ray-heal -- mine`
-# Requires: `cargo install flamegraph` and `sudo apt install linux-tools-common linux-tools-$(uname -r)` (or equivalent)
-flamegraph = "*"
+flamegraph = { version = "0.6.13" }
 criterion = { version = "0.8.2" }
 
 [[bench]]
