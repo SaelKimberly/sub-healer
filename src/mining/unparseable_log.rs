@@ -1,6 +1,7 @@
 use std::fs::OpenOptions;
 use std::io::{BufWriter, Write};
 use std::sync::Mutex;
+use std::path::PathBuf;
 
 use serde_json::json;
 use tracing_subscriber::Layer;
@@ -12,18 +13,23 @@ pub struct UnparseableLayer {
 }
 
 impl UnparseableLayer {
-    #[allow(clippy::new_without_default)]
-    pub fn new() -> Self {
-        let path = std::env::var("V2RAY_HEAL_UNPARSEABLE_LOG")
-            .unwrap_or_else(|_| "unparseable.ndjson".to_string());
-        let file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)
-            .ok();
-        Self {
-            writer: Mutex::new(file.map(BufWriter::new)),
-        }
+    #[must_use]
+    pub fn new(path: Option<PathBuf>) -> Self {
+        let writer = path.and_then(|p| {
+            OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&p)
+                .ok()
+                .map(BufWriter::new)
+        });
+        Self { writer: Mutex::new(writer) }
+    }
+}
+
+impl Default for UnparseableLayer {
+    fn default() -> Self {
+        Self::new(None)
     }
 }
 
@@ -120,9 +126,7 @@ mod tests {
         let tmp = std::env::temp_dir().join(format!("unparseable-test-{ts}.ndjson"));
         let _ = std::fs::remove_file(&tmp);
 
-        // SAFETY: single-threaded test, no concurrent env access
-        unsafe { std::env::set_var("V2RAY_HEAL_UNPARSEABLE_LOG", tmp.to_str().unwrap()) };
-        let layer = UnparseableLayer::new();
+        let layer = UnparseableLayer::new(Some(tmp.clone()));
 
         let subscriber = tracing_subscriber::registry().with(layer);
         let guard = tracing::subscriber::set_default(subscriber);
@@ -166,7 +170,5 @@ mod tests {
         assert_eq!(parsed["timestamp"], 1234567890);
 
         let _ = std::fs::remove_file(&tmp);
-        // SAFETY: single-threaded test, no concurrent env access
-        unsafe { std::env::remove_var("V2RAY_HEAL_UNPARSEABLE_LOG") };
     }
 }

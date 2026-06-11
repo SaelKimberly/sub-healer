@@ -152,7 +152,7 @@ async fn create_stream(
 }
 
 /// Emit a single unparseable entry to the NDJSON tracing layer.
-/// Filters out promotion URLs. Used by telegram, subscription, and local paths.
+/// Filters out promotion and private/reserved-host URLs. Used by telegram, subscription, and local paths.
 pub fn emit_unparseable_entry(
     raw_url: &str,
     scheme: &str,
@@ -163,6 +163,9 @@ pub fn emit_unparseable_entry(
 ) {
     if error.contains("promotion") {
         return;
+    }
+    if error.contains("private/reserved host") {
+        return; // permanently broken — host/sni never override the dial target
     }
     tracing::warn!(
         target: "mining::unparseable",
@@ -180,6 +183,8 @@ mod tests {
     use super::*;
     use crate::db::Database;
     use crate::mining::pipeline::process_single_raw_url;
+    use serde_json::Value;
+    use tracing_subscriber::prelude::*;
     use crate::proto_spec::{ProtoSpec, ProtocolConfig};
     use crate::urlx::RawUrlX;
     use chrono::DateTime;
@@ -297,5 +302,56 @@ mod tests {
             sightings.len() >= 2,
             "should have 2+ sightings for same server"
         );
+    }
+
+    #[test]
+    fn test_emit_unparseable_entry_filters_private_host() {
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let tmp = std::env::temp_dir().join(format!("unparseable-filter-test-{ts}.ndjson"));
+        let _ = std::fs::remove_file(&tmp);
+
+        let layer = UnparseableLayer::new(Some(tmp.clone()));
+
+        let subscriber = tracing_subscriber::registry().with(layer);
+        let guard = tracing::subscriber::set_default(subscriber);
+
+        // Private host error should be filtered (no entry written)
+        emit_unparseable_entry(
+            "vmess://private",
+            "vmess",
+            "private/reserved host: 127.0.0.1",
+            42,
+            "telegram",
+            1234567890,
+        );
+
+        // Normal unparseable error should still be written
+        emit_unparseable_entry(
+            "vmess://bad",
+            "vmess",
+            "invalid port",
+            42,
+            "telegram",
+            1234567890,
+        );
+
+        drop(guard);
+
+        let content = std::fs::read_to_string(&tmp).unwrap();
+        let lines: Vec<&str> = content.lines().filter(|l| !l.is_empty()).collect();
+        assert_eq!(
+            lines.len(),
+            1,
+            "private host entry should be filtered, normal entry should remain"
+        );
+
+        let parsed: Value = serde_json::from_str(lines[0]).unwrap();
+        assert_eq!(parsed["error"], "invalid port");
+        assert_eq!(parsed["raw_url"], "vmess://bad");
+
+        let _ = std::fs::remove_file(&tmp);
     }
 }

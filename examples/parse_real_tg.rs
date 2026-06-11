@@ -17,15 +17,9 @@ async fn main() -> anyhow::Result<()> {
     std::fs::create_dir_all(&out_dir)?;
 
     let unparseable_path = out_dir.join("unparseable.ndjson");
-    unsafe {
-        std::env::set_var(
-            "V2RAY_HEAL_UNPARSEABLE_LOG",
-            unparseable_path.to_str().unwrap(),
-        );
-    }
 
     tracing_subscriber::registry()
-        .with(UnparseableLayer::new())
+        .with(UnparseableLayer::new(Some(unparseable_path.clone())))
         .with(
             fmt::layer()
                 .compact()

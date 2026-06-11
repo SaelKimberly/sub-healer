@@ -59,6 +59,10 @@ pub enum ParseError {
     UnsupportedScheme(SchemeX),
     #[error("not a proxy config URL (promotion or navigation link)")]
     PromotionUrl,
+    /// Private/reserved/loopback IP address as the server host.
+    /// Permanently broken — no thirdparty proxy engine (Xray, sing-box, v2rayN)
+    /// uses `host`/`sni` as the TCP dial target (they are transport/TLS-only).
+    /// Filtered from the unparseable NDJSON log in `emit_unparseable_entry`.
     #[error("private/reserved host: {0}")]
     InvalidPrivateHost(Cow<'static, str>),
 }

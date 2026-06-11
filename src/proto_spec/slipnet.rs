@@ -312,7 +312,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "pre-existing: SlipnetEnc parsing fails (see AGENTS.md)"]
     fn test_roundtrip_enc() {
         check_roundtrip::<SlipnetEncConfig>(SLIPNET_ENC_URL);
     }

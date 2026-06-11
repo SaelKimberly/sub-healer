@@ -408,29 +408,51 @@ NDJSON via tracing-subscriber layer at `target: "mining::unparseable"`.
 A `tracing_subscriber::Layer` that:
 1. Filters events by target `"mining::unparseable"`
 2. Serializes fields to JSON: `raw_url`, `scheme`, `error`, `source_id`, `source_type`, `timestamp`
-3. Appends to a file (`V2RAY_HEAL_UNPARSEABLE_LOG` env var, default `unparseable.ndjson`)
+3. Appends to a file (controlled by `--unparseable-log` flag; default `unparseable.ndjson`, overridable with `--unparseable-log=<PATH>`)
 
 ### Emission Point
 
-`emit_unparseable_entry()` in `mining/mod.rs` — called from telegram, subscription, and local paths. Filters out promotion/navigation URLs. Consumer-level emission (where `source_id` from registry is available).
+`emit_unparseable_entry()` in `mining/mod.rs` — called from telegram, subscription, and local paths. Filters out promotion/navigation and private/loopback-host URLs before logging. Consumer-level emission (where `source_id` from registry is available).
 
 ---
 
 ## 9. CLI Architecture
 
+### Struct Hierarchy (`src/main.rs`)
+
+```rust
+// Shared filter flags for both standalone emit and emit-on-mine
+#[derive(Debug, clap::Args)]
+pub(crate) struct EmitFilterArgs {
+    #[arg(long, value_delimiter = ',')]
+    protocol: Vec<String>,
+    #[arg(long)]
+    min_first_seen_ts: Option<humantime::Duration>,
+    #[arg(long)]
+    min_last_seen_ts: Option<humantime::Duration>,
+}
+
+// Wraps filter args behind a --emit gate for mining subcommands
+struct EmitOnMine {
+    emit: bool,
+    #[command(flatten)]
+    filters: EmitFilterArgs,
+}
+```
+
 ### Subcommands (`src/main.rs`)
 
 | Subcommand | Description |
 |-----------|-------------|
-| **`Stdin`** | Pipe data → `parse_to_raw_urls()` → DB upsert. Source type: `Other`, registry key `stdin://local` |
-| **`Config`** | Full pipeline from YAML. Channels + subscriptions from `config.yaml`. Uses `Pipeline::from_config()` + `.run()`. Supports `--last` (humantime duration) / `--upto` (RFC 3339) for Telegram backfill. |
-| **`Remote`** | Download subs from URLs or scrape Telegram (t.me auto-detected). Mixed batch OK. Supports `--last` / `--upto` Telegram backfill flags. |
-| **`Local`** | Filesystem → `parse_to_raw_urls()` → DB upsert. Source URL = `file://` absolute path |
-| **`Emit`** | Filtered server export. `--protocol` filter (repeatable), `--min-first-seen-ts`/`--min-last-seen-ts` (humantime duration), `--pull` (re-mine all DB sources with optional `Backfill`). Reconstructs URLs from stored `ProtocolConfig` JSON via `simd_json::from_slice` (not `serde_json`). |
+| **`Stdin`** | Pipe → `parse_to_raw_urls()` → DB upsert. Source type: `Other`, registry key `stdin://local`. Supports `--emit` flag for post-mining export. |
+| **`Config`** | Full pipeline from YAML. Channels + subscriptions from `config.yaml`. Uses `Pipeline::from_config()` + `.run()`. Supports `--last` (humantime duration) / `--upto` (RFC 3339) for Telegram backfill. Supports `--emit` flag. |
+| **`Remote`** | Download subs from URLs or scrape Telegram (t.me auto-detected). Mixed batch OK. Supports `--last` / `--upto` Telegram backfill flags. Supports `--emit` flag. |
+| **`Local`** | Filesystem → `parse_to_raw_urls()` → DB upsert. Source URL = `file://` absolute path. Supports `--emit` flag. |
+| **`Emit`** | Filtered server export. `--protocol` filter (repeatable), `--min-first-seen-ts`/`--min-last-seen-ts` (humantime duration), `--pull` (re-mine all DB sources with optional `Backfill`). Reconstructs URLs from stored `ProtocolConfig` JSON via `simd_json::from_slice` (not `serde_json`). Uses `EmitFilterArgs` flattened. |
 
 ### Global Flags
-- `--db <path>` — SQLite database path (default: `v2ray-heal.db`)
-
+- `--db <path>` — SQLite database path (default: `v2ray-heal.db`). Must appear **before** the subcommand — not marked `global = true` in clap.
+- `--unparseable-log` [=<path>] — enable unparseable URL log (default path: `unparseable.ndjson`). Value must follow `=`.
 ### Config File Format (`config.yaml`)
 ```yaml
 tgchannel:
@@ -452,7 +474,7 @@ subscriptions:
 
 3. **`decode_base64` strips trailing annotation** (emoji, Persian/Arabic text, backticks): Telegram channels frequently append decoration after base64 payloads. Silently stripping at decode time avoids parse failures upstream.
 
-4. **Host validation rejects private/loopback**: `validate_host_not_private()` in `proto_spec/utils.rs` rejects localhost, 10.x, 192.168.x, 127.x, etc. Prevents misconfigured or internal-only URLs from entering the database.
+4. **Host validation rejects private/loopback**: `validate_host_not_private()` in `proto_spec/utils.rs` rejects localhost, 10.x, 192.168.x, 127.x, etc. Prevents misconfigured or internal-only URLs from entering the database. These errors are silently filtered from the unparseable NDJSON log — they are permanently irrecoverable (thirdparty engines never use `host`/`sni` fields as dial targets).
 
 5. **Separate `sig` from `uid`**: `sig` groups servers by connection configuration (useful for statistical analysis — frequency per hour/day, signature lifetime). `uid` uniquely identifies each server instance via XOR with credential hash.
 
@@ -484,7 +506,7 @@ subscriptions:
 ## 12. Common Test Commands
 
 ```bash
-# Run all tests (155 pass, 3 ignored)
+# Run all tests (156 pass, 3 ignored)
 rtk cargo test
 
 # Run specific protocol tests
@@ -506,6 +528,10 @@ cargo run -- config path.yaml
 cargo run -- remote https://example.com/sub.txt
 cargo run -- local ./file.txt
 cat sub.txt | cargo run -- stdin
+
+# Ephemeral mine+emit (no DB file left behind)
+cargo run -- --db ":memory:" local ./file.txt --emit
+cat sub.txt | cargo run -- stdin --emit --protocol vmess
 
 # Filtered export
 cargo run -- emit --protocol vmess --protocol vless

@@ -152,10 +152,23 @@ impl ProtoSpec for SsrConfig {
         let mut sorted_params: Vec<_> = self.params.iter().collect();
         sorted_params.sort_by(|a, b| a.0.cmp(b.0));
         for (k, v) in &sorted_params {
+            let k_str = k.as_str();
+            // protocol and obfs are already in the colon-delimited fields above
+            if k_str == "protocol" || k_str == "obfs" {
+                continue;
+            }
             if !query_str.is_empty() {
                 query_str.push('&');
             }
             query_str.push_str(format!("{k}={v}").as_str());
+        }
+        // Add remarks back to the query string (base64-encoded, URL-safe no-pad)
+        if let Some(remarks) = &self.remarks {
+            if !query_str.is_empty() {
+                query_str.push('&');
+            }
+            query_str.push_str("remarks=");
+            query_str.push_str(&base64::prelude::BASE64_URL_SAFE_NO_PAD.encode(remarks.as_bytes()));
         }
 
         let raw = format!(
@@ -359,7 +372,6 @@ mod tests {
     use super::SsrConfig;
 
     #[test]
-    #[ignore = "pre-existing: SSR parsing fails (see AGENTS.md)"]
     fn test_roundtrip() {
         check_roundtrip::<SsrConfig>(SSR_URL);
     }

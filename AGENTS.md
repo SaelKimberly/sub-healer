@@ -6,27 +6,25 @@ Rust proxy subscription miner/aggregator: scrapes Telegram channels + downloads 
 
 ```bash
 rtk cargo check                 # lint
-rtk cargo test                  # all tests (155 pass, 3 ignored)
-rtk cargo test registry         # SourceRegistry tests
-cargo run -- config              # full pipeline from config.yaml
-cargo run -- config path.yaml   # full pipeline from custom config
-cargo run -- remote https://t.me/s/channel  # scrape telegram channel
+rtk cargo test                  # all tests (158 pass, 0 ignored)
+cat sub.txt | cargo run -- stdin              # parse from pipe
+cargo run -- config --emit --protocol vmess   # mine then emit filtered
+cargo run -- --db ":memory:" local ./file.txt --emit   # ephemeral mine+emit
 cargo run -- remote https://example.com/sub.txt  # download sub URL
-cargo run -- local ./file.txt   # parse local file
-cat sub.txt | cargo run -- stdin # parse from pipe
-cargo run -- emit --protocol vmess  # export filtered servers
-cargo bench                      # criterion benchmarks
+cargo run -- local ./file.txt                 # parse local file
+cargo run -- emit --protocol vmess            # export filtered servers
+cargo bench                                   # criterion benchmarks
 ```
 
 ## CLI
 
-- **`config`**: Full pipeline from YAML. Optional `tgchannel:` (list) and `subscriptions:` list — supports `https://` (HTTP download, GITHUB_TOKEN env for github.com) and `file://`. Unsupported schemes → skip with `tracing::error!`.
-- **`stdin`**: Pipe → `parse_to_raw_urls()` → DB upsert. Source type: `Other`, registry key `stdin://local`.
-- **`remote`**: Download subs from URLs or scrape Telegram (t.me auto-detected via host check). Mixed batch OK.
-- **`local`**: Filesystem → `parse_to_raw_urls()` → DB upsert. Source URL = `file://` absolute path.
+- **`config`**: Full pipeline from YAML. Optional `tgchannel:` (list) and `subscriptions:` list — supports `https://` (HTTP download, GITHUB_TOKEN env for github.com) and `file://`. Unsupported schemes → skip with `tracing::error!`. Supports `--emit` (with `--protocol`, `--min-first-seen-ts`, `--min-last-seen-ts`) for post-mining filtered export.
+- **`stdin`**: Pipe → `parse_to_raw_urls()` → DB upsert. Source type: `Other`, registry key `stdin://local`. Supports `--emit` flag.
+- **`remote`**: Download subs from URLs or scrape Telegram (t.me auto-detected via host check). Mixed batch OK. Supports `--emit` flag.
+- **`local`**: Filesystem → `parse_to_raw_urls()` → DB upsert. Source URL = `file://` absolute path. Supports `--emit` flag.
 - **`emit`**: Filtered server export. `--protocol` (repeatable, case-insensitive), `--min-first-seen-ts`, `--min-last-seen-ts` (humantime durations), `--pull` (re-mine all DB sources, optionally with per-source Telegram backfill). Reconstructs native URLs from stored `ProtocolConfig` JSON.
 
-Global `--db` flag (default `v2ray-heal.db`). Unparseable log: `V2RAY_HEAL_UNPARSEABLE_LOG` env (default `unparseable.ndjson`).
+Global `--db` flag (default `v2ray-heal.db`) must appear before the subcommand — not marked `global = true` in clap. Combined with `--db ":memory:"` and `--emit` on any mining subcommand, enables a fully ephemeral pipeline: mine → filter → output → discard, with zero disk persistence. `--emit` is available on `config`, `remote`, `local`, and `stdin`; the standalone `emit` subcommand remains for querying an existing database. `--unparseable-log` enables the unparseable log file (default: `unparseable.ndjson`); `--unparseable-log=<PATH>` overrides the path.
 
 ## Architecture
 
@@ -72,7 +70,7 @@ per-scheme dispatch — all schemes flow through `create_stream`.
 
 ## Unparseable URL Capture
 
-NDJSON via tracing layer (`target: "mining::unparseable"`). Fields: `raw_url`, `scheme`, `error`, `source_id`, `source_type`, `timestamp`. Emitted at consumer level (where `source_id` from registry is available), not in parsing layer.
+NDJSON via tracing layer (`target: "mining::unparseable"`). Fields: `raw_url`, `scheme`, `error`, `source_id`, `source_type`, `timestamp`. Emitted at consumer level (where `source_id` from registry is available), not in parsing layer. `PromotionUrl` and `InvalidPrivateHost` errors are silently dropped before emission (the latter are permanently irrecoverable — thirdparty engines never use host/sni as dial targets).
 
 ## Database Schema
 
@@ -102,7 +100,7 @@ Time-travel: if incoming_ts < first_seen_ts, archive current to sightings + repl
 
 ## Pre-existing Test Status
 
-**0 failures**. Test suite: 155 passed, 3 ignored (manual integration tests that fetch real Telegram data). Previous 5 failures (VMess→SS fallback, SSR InvalidStructure, SlipnetEnc, WireGuard, Warp) were fixed during the proto_spec unification.
+**0 failures**. Test suite: 158 passed, 0 ignored. Previous 5 failures (VMess→SS fallback, SSR InvalidStructure, SlipnetEnc, WireGuard, Warp) were fixed during the proto_spec unification.
 
 ## Tools
 

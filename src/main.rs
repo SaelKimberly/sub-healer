@@ -21,9 +21,37 @@ enum PullScope {
     All,
 }
 
+#[derive(Debug, clap::Args)]
+pub(crate) struct EmitFilterArgs {
+    #[arg(long, value_delimiter = ',', help = "Filter by protocol (repeatable)")]
+    protocol: Vec<String>,
+    #[arg(
+        long,
+        help = "Minimum first-seen timestamp (humantime duration, e.g. '7d', '30m')"
+    )]
+    min_first_seen_ts: Option<humantime::Duration>,
+    #[arg(
+        long,
+        help = "Minimum last-seen timestamp (humantime duration, e.g. '7d', '30m')"
+    )]
+    min_last_seen_ts: Option<humantime::Duration>,
+}
+
+#[derive(Debug, clap::Args)]
+struct EmitOnMine {
+    /// Enable emit-after-mine: produce filtered config output after loading
+    #[arg(long, help = "Emit filtered configs after loading into database")]
+    emit: bool,
+    #[command(flatten)]
+    filters: EmitFilterArgs,
+}
+
 #[derive(Debug, clap::Subcommand)]
 enum Commands {
-    Stdin,
+    Stdin {
+        #[command(flatten)]
+        emit_opts: EmitOnMine,
+    },
     Config {
         file: Option<PathBuf>,
         #[arg(
@@ -38,6 +66,8 @@ enum Commands {
             help = "Backfill Telegram channels up to this RFC 3339 datetime (e.g. '2026-06-01T00:00:00Z')"
         )]
         upto: Option<String>,
+        #[command(flatten)]
+        emit_opts: EmitOnMine,
     },
     Remote {
         url: Vec<url::Url>,
@@ -53,23 +83,17 @@ enum Commands {
             help = "Backfill Telegram channels up to this RFC 3339 datetime (e.g. '2026-06-01T00:00:00Z')"
         )]
         upto: Option<String>,
+        #[command(flatten)]
+        emit_opts: EmitOnMine,
     },
     Local {
         file: Vec<PathBuf>,
+        #[command(flatten)]
+        emit_opts: EmitOnMine,
     },
     Emit {
-        #[arg(long, value_delimiter = ',', help = "Filter by protocol (repeatable)")]
-        protocol: Vec<String>,
-        #[arg(
-            long,
-            help = "Minimum first-seen timestamp (humantime duration, e.g. '7d', '30m')"
-        )]
-        min_first_seen_ts: Option<humantime::Duration>,
-        #[arg(
-            long,
-            help = "Minimum last-seen timestamp (humantime duration, e.g. '7d', '30m')"
-        )]
-        min_last_seen_ts: Option<humantime::Duration>,
+        #[command(flatten)]
+        filters: EmitFilterArgs,
         #[arg(long, value_enum, help = "Scope of sources to pull before emitting")]
         pull: Option<PullScope>,
     },
@@ -86,6 +110,14 @@ struct Cli {
         help = "Path to the SQLite database"
     )]
     db: PathBuf,
+    /// Enable unparseable log file [default: unparseable.ndjson when flag is set]
+    #[arg(
+        long,
+        num_args = 0..=1,
+        default_missing_value = "unparseable.ndjson",
+        require_equals = true,
+    )]
+    unparseable_log: Option<PathBuf>,
 }
 
 /// Parse the `--last` and `--upto` CLI flags into a [`mining::Backfill`] option.
@@ -126,32 +158,72 @@ fn make_progress_bar(mp: &indicatif::MultiProgress) -> indicatif::ProgressBar {
     pb
 }
 
+/// If `opts.emit` is set, compute absolute timestamps from durations
+/// (same logic as the `emit` subcommand) and call `pipeline.export()`.
+async fn emit_after_mine(
+    pipeline: &mining::Pipeline,
+    opts: &EmitOnMine,
+) -> anyhow::Result<()> {
+    if !opts.emit {
+        return Ok(());
+    }
+
+    let unix_now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+
+    let min_first = opts.filters.min_first_seen_ts.map(|d| {
+        let std_dur: std::time::Duration = d.into();
+        unix_now.saturating_sub(std_dur.as_secs() as i64)
+    });
+
+    let min_last = opts.filters.min_last_seen_ts.map(|d| {
+        let std_dur: std::time::Duration = d.into();
+        unix_now.saturating_sub(std_dur.as_secs() as i64)
+    });
+
+    let protocol_filter = if opts.filters.protocol.is_empty() {
+        None
+    } else {
+        Some(opts.filters.protocol.as_slice())
+    };
+
+    let output = pipeline
+        .export(protocol_filter, min_first, min_last)
+        .await?;
+    print!("{output}");
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let mp = indicatif::MultiProgress::new();
 
     let indicatif_writer: tracing_indicatif::IndicatifWriter =
         tracing_indicatif::IndicatifWriter::new(mp.clone());
+    let cli = Cli::parse();
+    
 
     tracing_subscriber::registry()
         .with(fmt::layer().with_writer(indicatif_writer))
         .with(EnvFilter::from_default_env().add_directive(tracing::Level::INFO.into()))
-        .with(v2ray_heal::mining::UnparseableLayer::new())
+        .with(v2ray_heal::mining::UnparseableLayer::new(cli.unparseable_log.clone()))
         .try_init()
         .ok();
 
-    let cli = Cli::parse();
     match cli.command {
-        Some(Commands::Config { file, last, upto }) => {
+        Some(Commands::Config { file, last, upto, emit_opts }) => {
             let backfill = parse_backfill(last, upto)?;
             let config_path = file.unwrap_or(PathBuf::from("config.yaml"));
             let mut pipeline = mining::Pipeline::from_config(&config_path, &cli.db)?;
             pipeline.set_backfill(backfill);
             pipeline.set_progress_bar(make_progress_bar(&mp));
             let count = pipeline.run().await?;
+            emit_after_mine(&pipeline, &emit_opts).await?;
             tracing::info!(count, "Mining pipeline completed");
         }
-        Some(Commands::Stdin) => {
+        Some(Commands::Stdin { emit_opts }) => {
             use tokio::io::AsyncReadExt;
             let source_url = url::Url::parse("stdin://local")?;
             let url_str = source_url.as_str().to_string();
@@ -202,9 +274,10 @@ async fn main() -> anyhow::Result<()> {
             pipeline.set_progress_bar(make_progress_bar(&mp));
             pipeline.add_batch_raw(vec![batch]);
             let count = pipeline.run().await?;
+            emit_after_mine(&pipeline, &emit_opts).await?;
             tracing::info!(count, "Stdin mining completed");
         }
-        Some(Commands::Remote { url, last, upto }) => {
+        Some(Commands::Remote { url, last, upto, emit_opts }) => {
             let backfill = parse_backfill(last, upto)?;
             let mut pipeline = mining::Pipeline::new(&cli.db)?;
             for u in &url {
@@ -213,9 +286,10 @@ async fn main() -> anyhow::Result<()> {
             pipeline.set_backfill(backfill);
             pipeline.set_progress_bar(make_progress_bar(&mp));
             pipeline.run().await?;
+            emit_after_mine(&pipeline, &emit_opts).await?;
         }
 
-        Some(Commands::Local { file }) => {
+        Some(Commands::Local { file, emit_opts }) => {
             if file.is_empty() {
                 anyhow::bail!("No file paths provided");
             }
@@ -275,15 +349,11 @@ async fn main() -> anyhow::Result<()> {
             pipeline.set_progress_bar(make_progress_bar(&mp));
             pipeline.add_batch_raw(batches);
             let count = pipeline.run().await?;
+            emit_after_mine(&pipeline, &emit_opts).await?;
             tracing::info!(count, "Local file mining completed");
         }
 
-        Some(Commands::Emit {
-            protocol,
-            min_first_seen_ts,
-            min_last_seen_ts,
-            pull,
-        }) => {
+        Some(Commands::Emit { filters, pull }) => {
             let mut pipeline = mining::Pipeline::new(&cli.db)?;
 
             if let Some(scope) = pull {
@@ -354,20 +424,20 @@ async fn main() -> anyhow::Result<()> {
                 .unwrap()
                 .as_secs() as i64;
 
-            let min_first = min_first_seen_ts.map(|d| {
+            let min_first = filters.min_first_seen_ts.map(|d| {
                 let std_dur: std::time::Duration = d.into();
                 unix_now.saturating_sub(std_dur.as_secs() as i64)
             });
 
-            let min_last = min_last_seen_ts.map(|d| {
+            let min_last = filters.min_last_seen_ts.map(|d| {
                 let std_dur: std::time::Duration = d.into();
                 unix_now.saturating_sub(std_dur.as_secs() as i64)
             });
 
-            let protocol_filter = if protocol.is_empty() {
+            let protocol_filter = if filters.protocol.is_empty() {
                 None
             } else {
-                Some(protocol.as_slice())
+                Some(filters.protocol.as_slice())
             };
 
             let output = pipeline
