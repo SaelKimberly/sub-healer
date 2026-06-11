@@ -1,11 +1,12 @@
 use std::mem::MaybeUninit;
 
 use base64::DecodeError;
+use anyhow::bail;
 
 use crate::urlx::SchemeX;
 
 /// Max bytes per feed() call.
-const INPUT_CHUNK_SIZE: usize = 65536;
+pub(crate) const INPUT_CHUNK_SIZE: usize = 65536;
 
 /// Max bytes of decoded text carried between chunks (pending URL boundary split).
 const CARRY_OVER_SIZE: usize = 262_144;
@@ -59,24 +60,24 @@ impl StreamingDecoder {
     /// and decodes, splits on `\n`, and passes complete text regions through
     /// `normalize_extras` + `SchemeX::slice_input`.
     ///
-    /// **Chunks larger than `INPUT_CHUNK_SIZE` bytes are truncated** (only the
-    /// first `INPUT_CHUNK_SIZE` bytes are processed; callers should slice).
-    #[must_use]
-    pub fn feed(&mut self, chunk: &[u8]) -> Result<Vec<String>, DecodeError> {
+    /// **Chunks larger than `INPUT_CHUNK_SIZE` bytes cause a hard error** (via `bail!`).
+    /// Callers MUST pre-slice to ≤ `INPUT_CHUNK_SIZE`.
+    ///
+    /// # Errors
+    ///
+    /// May return error, if first chunk was previously decoded as base64 successful, and this chunk was failed.
+    pub fn feed(&mut self, chunk: &[u8]) -> anyhow::Result<Vec<String>> {
         if chunk.is_empty() && self.pending_input_len == 0 {
             return Ok(vec![]);
         }
 
-        let chunk = if chunk.len() > INPUT_CHUNK_SIZE {
-            tracing::warn!(
-                chunk_len = chunk.len(),
-                max = INPUT_CHUNK_SIZE,
-                "Input chunk exceeds max size, truncating"
+        if chunk.len() > INPUT_CHUNK_SIZE {
+            bail!(
+                "Input chunk too large: got {} bytes, max {}; caller must pre-slice",
+                chunk.len(),
+                INPUT_CHUNK_SIZE,
             );
-            &chunk[..INPUT_CHUNK_SIZE]
-        } else {
-            chunk
-        };
+        }
         let total_len = self.pending_input_len + chunk.len();
         let mut work: [u8; INPUT_CHUNK_SIZE + 4] = [0u8; INPUT_CHUNK_SIZE + 4];
 
@@ -106,8 +107,11 @@ impl StreamingDecoder {
     /// Flush any remaining buffered data. Call once after the last `feed()`.
     ///
     /// Returns any final URLs from the last partial line.
-    #[must_use]
-    pub fn finalize(&mut self) -> Result<Vec<String>, DecodeError> {
+    ///
+    /// # Errors
+    ///
+    /// May return error, if first chunk was previously decoded as base64 successful, and this chunk was failed.
+    pub fn finalize(&mut self) -> anyhow::Result<Vec<String>> {
         let mut result = Vec::new();
 
         // Process leftover pending_input bytes (may be < 4)
@@ -228,7 +232,7 @@ impl StreamingDecoder {
 
             urls
         } else {
-            self.set_carry_over_str(&full_text);
+            self.set_carry_over_str(full_text);
             Vec::new()
         }
     }

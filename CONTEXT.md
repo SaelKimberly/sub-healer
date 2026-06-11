@@ -1,6 +1,6 @@
 # CONTEXT.md — v2ray-heal Project Context
 
-> Architecture reference. Last updated: 2026-06-01.
+> Architecture reference. Last updated: 2026-06-09.
 
 ---
 
@@ -13,7 +13,7 @@
 - Persists data to SQLite with time-travel upsert semantics to track origin and lifetime of every observed config
 - Exports filtered server lists via the `emit` CLI subcommand
 
-**Stack**: Rust 2024 edition (1.95.0+), `tokio` (async I/O) + `rayon` (parallel CPU for line processing), `rusqlite` (SQLite with bundled feature), `mimalloc` (global allocator), `reqwest` (HTTP client with proxy support), `scraper` (HTML), `rapidhash` (hashing), `serde`/`serde_json` (serialization), `clap` (CLI).
+**Stack**: Rust 2024 edition (1.96.0+), `tokio` (async I/O) + `rayon` (parallel CPU for line processing), `rusqlite` (SQLite with bundled feature), `mimalloc` (global allocator), `reqwest` (HTTP client with proxy support), `scraper` (HTML), `rapidhash` (hashing), `serde`/`serde_json` (serialization), `clap` (CLI).
 
 **Entry points**: `cargo run -- config`, `cargo run -- remote <url>`, `cargo run -- local <file>`, `cargo run -- emit`, `cat sub.txt | cargo run -- stdin`
 
@@ -25,11 +25,11 @@ See workspace tree in `AGENTS.md` or use `find src/` for the current layout.
 Key modules:
 - `src/main.rs` — CLI: clap-based subcommands (Stdin, Config, Remote, Local, Emit)
 - `src/lib.rs` — Core library: `preprocess_sub_data()`, global allocator, re-exports
-- `src/db.rs` — SQLite: `Database` struct, `init_db`, upserts, queries
+- `src/db/` — SQLite: `Database` struct in `mod.rs`, upserts (`ops.rs`), queries (`queries.rs`), models (`models.rs`), schema (`schema.rs`)
 - `src/mining/` — Pipeline orchestration: `Pipeline`, `RawSourceItemBatch`, `SourceRegistry`, Telegram scraper, subscription downloader, unparseable log, writer
 - `src/proto_spec/` — Protocol parsing: `ProtocolConfig` enum, `ProtoSpec` trait, `dispatch!` macro, 12 config parsers
 - `src/urlx/` — URL splitter: `SchemeX`, `RawUrlX`, `PortSpec`, `HostSpec`
-- `src/utils/` — Utilities: line processing, host/port parsing, permissive JSON, unescaping
+- `src/utils/` — Utilities: line processing, host/port parsing, permissive JSON (`PermissiveJsonError` via `thiserror::Error` derive), unescaping; `normalize_extras` uses `simd_json::to_string` + `rayon` parallelism
 
 ---
 
@@ -73,10 +73,22 @@ pub trait ProtoSpec: Serialize + DeserializeOwned + Debug + Clone {
     fn cred_hash(&self) -> u64;
     fn sig(&self) -> u64;
     fn set_sig_cache(&self, v: NonZeroU64);
+    fn set_cred_hash_cache(&self, v: NonZeroU64);
     fn uid(&self) -> u64 { self.sig() ^ self.cred_hash() }
+    fn security(&self) -> Option<&SecurityConfig> { None }
     fn transport_type(&self) -> Option<&str>;
-    fn security_type(&self) -> Option<&str>;
+    fn security_type(&self) -> Option<&str> { self.security().and_then(SecurityConfig::type_str) }
 }
+```
+
+### SecurityConfig / TransportConfig (`src/proto_spec/common.rs`)
+
+Unified security and transport model used across protocol configs:
+
+- **SecurityConfig**: enum with `Tls`, `Reality`, `None`, or protocol-specific encryption
+  (e.g. SS method). Supports `.type_str()` → `"tls"`, `"reality"`, `"none"`, etc.
+- **TransportConfig**: enum with 8 variants — `Tcp`, `Raw` (= `"tcp"` alias), `WebSocket`,
+  `HttpUpgrade`, `XHttp`, `Grpc`, `QUIC`, `FakeHttp`. Serde tag `transport`.
 ```
 
 ### SchemeX Enum (`src/urlx/schemex.rs`)
@@ -102,14 +114,14 @@ pub struct RawUrlX<'a> {
 
 Constructed via `RawUrlX::from(url_str)`. Splits left-to-right from the `://` boundary: schema → userinfo (before `@`) → fragment (`#`) → query (`?`) → path (`/`) → hostport. Handles Trojan `#`-in-password edge case.
 
-### RawSourceItemBatch (`src/mining/raw_event.rs`)
+### RawSourceItemBatch (`src/mining/mod.rs`)
 
 The core mining event type, replacing the old `TracedProtocolConfig`:
 
 ```rust
 pub struct RawSourceItemBatch {
     pub source: Arc<SourceMetadata>,
-    pub fetched_at: DateTime<Utc>,
+    pub timestamp: DateTime<Utc>,
     pub raw_urls: Box<[String]>,
 }
 ```
@@ -179,6 +191,22 @@ Each protocol's `reconstruct()` builds the canonical URL string from the parsed 
 
 ---
 
+## 4.5. Streaming Decoder (`src/decoder.rs`)
+
+Chunked base64 decoder for incremental subscription data processing. Architecture:
+
+- `feed(chunk) → anyhow::Result<Vec<String>>` — align input to 4-byte base64 boundaries,
+  auto-detect encoding (Standard/UrlSafe/Raw), decode, and split on `\n`
+- `finalize() → anyhow::Result<Vec<String>>` — flush remaining input
+- `reset()` — clear state for re-use
+- `INPUT_CHUNK_SIZE = 65536` — chunks exceeding this cause a hard error
+
+Callers MUST pre-slice to ≤ `INPUT_CHUNK_SIZE`; passing a larger chunk triggers a `bail!()` error. Internal buffers are heap-allocated,
+pre-allocated via `Box::new_uninit_slice`.
+
+---
+
+
 ## 5. sig/uid Computation
 
 ### Signature (`sig`)
@@ -230,11 +258,11 @@ fn decode_fragment(raw: &RawUrlX) -> Result<Option<String>, ParseError>
 
 ---
 
-## 6. Database Schema (`src/db.rs`)
+## 6. Database Schema (`src/db/`)
 
 ### Database Adapter
 
-The `Database` struct (`src/db.rs`) wraps a `rusqlite::Connection` behind `Arc<RwLock<Connection>>`:
+The `Database` struct (`src/db/mod.rs`) wraps a `rusqlite::Connection` behind `Arc<RwLock<Connection>>`:
 
 ```rust
 pub struct Database {
@@ -242,18 +270,19 @@ pub struct Database {
 }
 ```
 
-All database operations are methods on `Database`: `open()`, `init_db()`, `upsert_source()`, `upsert_server()`, `get_sightings()`, `query_servers_filtered()`, `query_sources_by_server_ids()`, `query_latest_ts_for_source()`. Internal methods use `with_conn()` for safe read/write access.
+All database operations are methods on `Database`: `open()`, `init_db()`, `upsert_source()`, `upsert_server()`, `get_sightings()`, `query_servers_filtered()`, `query_sources_by_ids()`, `query_latest_ts_for_source()`. Internal methods use `with_conn()` for safe read/write access.
 
 ### Tables
 
 - **`sources`** — Deduplication of source URLs (Telegram channels, subscription links)
-  - `id` INTEGER PRIMARY KEY (hash of URL via `std::hash::DefaultHasher`), `url` TEXT NOT NULL
+  - `id` INTEGER PRIMARY KEY (hash of URL via `rapidhash::v3::RapidStreamHasherV3`), `url` TEXT NOT NULL
 
 - **`servers`** — Deduplicated proxy server records (upserted by `uid`)
   - `id` INTEGER PRIMARY KEY (= `ProtocolConfig::uid()` cast to i64)
   - `schema` TEXT NOT NULL, `host` TEXT NOT NULL, `port` TEXT NOT NULL
   - `transport` TEXT, `security` TEXT, `remarks` TEXT
   - `raw_config` TEXT NOT NULL (JSON-serialized `ProtocolConfig` via `serde_json`)
+  - `sig` INTEGER NOT NULL DEFAULT 0 (= `ProtocolConfig::sig()` cast to i64)
   - `first_seen_ts` INTEGER NOT NULL, `first_seen_source_id` INTEGER NOT NULL REFERENCES sources(id)
 
 - **`sightings`** — Time-travel tracking of when each server was observed from each source
@@ -279,7 +308,7 @@ Time-travel upsert with three cases:
 ### Query Functions
 
 - `query_servers_filtered(conn, protocols, min_first_seen, min_last_seen)` — filtered export with dynamic WHERE clause building
-- `query_sources_by_server_ids(conn, server_ids)` — distinct sources that contributed sightings for given servers
+- `query_sources_by_ids(conn, ids)` — source URL lookup by primary key (used in emit export to resolve `first_seen_source_id`)
 
 ---
 
@@ -289,18 +318,31 @@ Time-travel upsert with three cases:
 
 ```
 Pipeline::new(db_path)
-  .add_source(registry) or .add_batch_raw(items)
+  .add_source(url) or .add_batch_raw(items)
   .set_backfill(Backfill::Last(duration))
-  .run(client)
+  .run()
   → Upsert registered sources to DB
-  → Build fetcher streams (Telegram fetch_tg_channels, Subscription fetch_subscriptions)
+  → Build fetcher streams (Telegram fetch_tg_channels, Subscription fetch_subscriptions, batch items)
   → Merge via futures::stream::select
   → For each RawSourceItemBatch: lazy source upsert → try_parse_detailed → upsert_server
 ```
 
+Fetchers use `create_stream(url)` (`mining/mod.rs`) which returns a
+`Pin<Box<dyn Stream<Item = Result<Bytes, StreamError>> + Send + Sync>>` handling `stdin`, `http`/`https`
+(with up to 3 retries), and `file` schemes. Subscription fetching eliminates per-scheme dispatch — all schemes
+flow through `create_stream`.
+
+### Pipeline Builder API (`src/mining/pipeline.rs:76-104`)
+
+Pipeline exposes builder methods for configuration before `.run()`:
+
+- `add_source(url)` — register a URL, auto-classifying as Telegram or subscription
+- `add_batch_raw(items)` — inject pre-processed `RawSourceItemBatch` items (Stdin/Local paths)
+- `set_backfill(Option<Backfill>)` — global Telegram backfill (Last duration or Upto datetime)
+- `set_per_source_backfill(map)` — per-source timestamps for Emit `--pull`
+- `set_progress_bar(pb)` — attach an `indicatif::ProgressBar` for URL processing progress
 
 ### SourceRegistry (`src/mining/registry.rs`)
-
 A `HashMap<String, Arc<SourceMetadata>>` pre-populated before any data flow:
 
 ```rust
@@ -331,21 +373,27 @@ Key operations:
 
 1. `fetch_subscriptions()` spawns a `SubFetcher` per subscription URL via `JoinSet`
 2. Each `SubFetcher`:
-   - `https://`/`http://`: HTTP download via shared client (GITHUB_TOKEN for github.com, 90s timeout)
+   - `https://`/`http://`: HTTP download via shared client cached in `OnceLock` (`build_client()` in `mod.rs`); GITHUB_TOKEN for github.com, 90s timeout
    - `file://`: `std::fs::read()` from filesystem
-3. `preprocess_sub_data()` → base64 decode → `normalize_extras()` → lines → `SchemeX::slice_input()` per segment
+3. Streaming decoder auto-detects base64 encoding and decodes incrementally; `normalize_extras()` → lines → `SchemeX::slice_input()` per segment
 4. Returns `RawSourceItemBatch` items, emits unparseable entries
 
-### Pipeline Processing (`Pipeline::run_raw`)
+### Pipeline Processing (`Pipeline::run`)
 
-The pipeline's inner processing method (`run_raw`) accepts a stream of `RawSourceItemBatch`:
+The pipeline's main processing method (`run`) accepts a stream of `RawSourceItemBatch`:
 
 - Lazily upserts sources on first encounter (tracked by `HashSet`)
 - Fatal on DB error (aborts pipeline)
 - Each batch: `upsert_source` (if new) → for each URL: `try_parse_detailed` → `upsert_server`
 
+Raw URL parsing per item uses `process_single_raw_url(raw_url, source_id, source_type, ts, conn)`
+(`pipeline.rs`), a free function that handles all three parse outcomes (Direct, Fallback, Unparseable)
+and emits unparseable entries from the consumer level (where `source_id` is known).
+
 ### Key Constants
-- `PROXY_URL`: `http://127.0.0.1:20172` (local proxy for outbound requests)
+- **Proxy**: Environment-based HTTP proxy (`HTTP_PROXY` env var restricted to 127.0.0.1/localhost);
+  basic auth via `HTTP_PROXY_USERNAME`/`HTTP_PROXY_PASSWORD`; `127.0.0.1:20172` fallback only in `#[cfg(test)]`.
+  Connect timeout 30s, read timeout 5s.
 - `TgConfig`: concurrency=8, timeout=30s
 - Subscription task timeout: 90s per `SubFetcher`
 
@@ -375,10 +423,10 @@ A `tracing_subscriber::Layer` that:
 | Subcommand | Description |
 |-----------|-------------|
 | **`Stdin`** | Pipe data → `parse_to_raw_urls()` → DB upsert. Source type: `Other`, registry key `stdin://local` |
-| **`Config`** | Full pipeline from YAML. Channels + subscriptions from `config.yaml`. Uses `Pipeline::from_config()` + `.run()`. |
-| **`Remote`** | Download subs from URLs or scrape Telegram (t.me auto-detected). Mixed batch OK. |
+| **`Config`** | Full pipeline from YAML. Channels + subscriptions from `config.yaml`. Uses `Pipeline::from_config()` + `.run()`. Supports `--last` (humantime duration) / `--upto` (RFC 3339) for Telegram backfill. |
+| **`Remote`** | Download subs from URLs or scrape Telegram (t.me auto-detected). Mixed batch OK. Supports `--last` / `--upto` Telegram backfill flags. |
 | **`Local`** | Filesystem → `parse_to_raw_urls()` → DB upsert. Source URL = `file://` absolute path |
-| **`Emit`** | Filtered server export. `--protocol` filter (repeatable), `--min-first-seen-ts`/`--min-last-seen-ts` (humantime duration), `--pull` (re-mine all DB sources with optional `Backfill`). Reconstructs URLs from stored `ProtocolConfig` JSON. |
+| **`Emit`** | Filtered server export. `--protocol` filter (repeatable), `--min-first-seen-ts`/`--min-last-seen-ts` (humantime duration), `--pull` (re-mine all DB sources with optional `Backfill`). Reconstructs URLs from stored `ProtocolConfig` JSON via `simd_json::from_slice` (not `serde_json`). |
 
 ### Global Flags
 - `--db <path>` — SQLite database path (default: `v2ray-heal.db`)
@@ -419,7 +467,7 @@ subscriptions:
 | Protocol   | Credentials (for uid)                                  | sig Key Fields                     |
 |-----------|--------------------------------------------------------|------------------------------------|
 | **VMess** | `host`, `port`, `uuid` (id)                            | security, transport, sni, aid      |
-| **VLESS** | `host`, `port`, `uuid`                                 | security, transport, path, sni, flow, alpn, fp, pbk, sid, splice |
+| **VLESS** | `host`, `port`, `uuid`                                 | security, transport, encryption, path, sni, flow, alpn, fp, pbk, sid, splice |
 | **Trojan** | `host`, `port`, `password`                            | security, transport, path, sni, alpn, fp |
 | **Hysteria2** | `host`, `port` (auth may be in userinfo)          | transport, obfs, insecure, sni, up/down |
 | **SS**    | `host`, `port`, `password` (from userinfo)             | method                              |
@@ -428,7 +476,7 @@ subscriptions:
 | **SlipnetEnc** | None (uid == sig)                                | N/A (encrypted)                     |
 | **TG**    | `secret`, `host`, `port`                               | transport, secret (first bytes)     |
 | **Stormdns** | `host`, `port`                                     | sni, transport                      |
-| **TUIC**  | `host`, `port`, `uuid`, `password`                     | congestion_control, sni, alpn       |
+| **TUIC**  | `host`, `port`, `uuid`, `password`                     | congestion_control, sni, alpn, quic_hints |
 | **WireGuard** | `host`, `port`, `private_key`                      | address, dns, mtu, public_key, allowed_ips |
 
 ---
@@ -436,7 +484,7 @@ subscriptions:
 ## 12. Common Test Commands
 
 ```bash
-# Run all tests (106 pass, 3 ignored)
+# Run all tests (155 pass, 3 ignored)
 rtk cargo test
 
 # Run specific protocol tests
@@ -475,4 +523,4 @@ All hashing uses `rapidhash::v3::rapidhash_v3()`:
 - **credential hash**: `rapidhash_v3("host:port:username:password")` via `compute_cred_hash()`
 - **uid**: `sig XOR cred_hash`
 
-Source URL hashing (for `sources.id` PK) uses `std::hash::DefaultHasher`, not rapidhash.
+Source URL hashing (for `sources.id` PK) uses `rapidhash::v3::RapidStreamHasherV3`, not `std::hash::DefaultHasher`.

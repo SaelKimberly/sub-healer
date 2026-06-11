@@ -6,7 +6,7 @@ Rust proxy subscription miner/aggregator: scrapes Telegram channels + downloads 
 
 ```bash
 rtk cargo check                 # lint
-rtk cargo test                  # all tests (106 pass, 3 ignored)
+rtk cargo test                  # all tests (155 pass, 3 ignored)
 rtk cargo test registry         # SourceRegistry tests
 cargo run -- config              # full pipeline from config.yaml
 cargo run -- config path.yaml   # full pipeline from custom config
@@ -39,18 +39,34 @@ Global `--db` flag (default `v2ray-heal.db`). Unparseable log: `V2RAY_HEAL_UNPAR
 
 `dispatch!` macro delegates all `ProtoSpec` trait methods across 12 `ProtocolConfig` variants.
 
+## Streaming Decoder (`src/decoder.rs`)
+
+Chunked base64 decoder that processes subscription data incrementally:
+
+- `feed(chunk) → anyhow::Result<Vec<String>>` — align input to 4-byte base64 boundaries,
+  auto-detect encoding (Standard/UrlSafe/Raw), decode and split on `\n`
+- `finalize() → anyhow::Result<Vec<String>>` — flush remaining input
+- `reset()` — clear state for re-use
+- `INPUT_CHUNK_SIZE = 65536` — chunks larger than this cause a hard error
+
+Callers MUST pre-slice to ≤ `INPUT_CHUNK_SIZE`; passing a larger chunk causes a hard error.
+
 ## Mining Pipeline
 
 ```
 Pipeline::new(db_path)
-  .add_source(registry) or .add_batch_raw(items)
+  .add_source(url) or .add_batch_raw(items)
   .set_backfill(Backfill::Last(duration))
-  .run(client)
+  .run()
   → Upsert registered sources to DB
-  → Build fetcher streams (Telegram fetch_tg_channels, Subscription fetch_subscriptions)
+  → Build fetcher streams (Telegram fetch_tg_channels, Subscription fetch_subscriptions, batch items)
   → Merge via futures::stream::select
   → For each RawSourceItemBatch: lazy source upsert → try_parse_detailed → upsert_server
 ```
+
+Fetchers use `create_stream(url)` which returns `Pin<Box<dyn Stream<Item = Result<Bytes, StreamError>> + Send + Sync>>`
+handling `stdin`, `http`/`https` (with up to 3 retries), and `file` schemes. Subscription fetching eliminates
+per-scheme dispatch — all schemes flow through `create_stream`.
 
 **DB failures are fatal** — `upsert_server` uses `.context("... (aborting)")?`. No in-memory dedup — `servers.id` (= `ProtocolConfig::uid()`) PK handles uniqueness.
 
@@ -60,7 +76,7 @@ NDJSON via tracing layer (`target: "mining::unparseable"`). Fields: `raw_url`, `
 
 ## Database Schema
 
-- **`sources`** — `id` (INTEGER PK, hash of URL via DefaultHasher), `url` (TEXT)
+- **`sources`** — `id` (INTEGER PK, hash of URL via RapidStreamHasherV3), `url` (TEXT)
 - **`servers`** — `id` (i64 = ProtocolConfig::uid), schema, host, port, transport, security, remarks, `raw_config` (ProtocolConfig JSON), first_seen_ts, first_seen_source_id → FK sources(id)
 - **`sightings`** — server_id, source_id, seen_ts, remarks
 
@@ -68,22 +84,25 @@ Time-travel: if incoming_ts < first_seen_ts, archive current to sightings + repl
 
 ## Key Technical Details
 
-- **Rust**: Edition 2024, requires 1.95.0+ (stable, rustfmt + clippy in toolchain)
+- **Rust**: Edition 2024, requires 1.96.0+ (stable, rustfmt + clippy in toolchain)
 - **Global Allocator**: `mimalloc` (via `#[global_allocator]`)
 - **Linker**: `clang` + `mold` (`.cargo/config.toml`)
 - **Concurrency**: `tokio` (async I/O) + `rayon` (parallel CPU for line processing)
 - **Database**: `rusqlite` bundled
-- **Proxy**: HTTP proxy at `http://127.0.0.1:20172` (`PROXY_URL` constant)
+- **Proxy**: Environment-based HTTP proxy (`HTTP_PROXY` env var, restricted to 127.0.0.1/localhost);
+  basic auth via `HTTP_PROXY_USERNAME`/`HTTP_PROXY_PASSWORD`; `127.0.0.1:20172` fallback only in `#[cfg(test)]`.
+  Connect timeout 30s, read timeout 5s.
 - **GITHUB_TOKEN**: env var for bearer auth on `raw.githubusercontent.com` / `github.com` requests
 - **ProtocolConfig.uid**: `uid = sig ^ rapidhash_v3(host:port:username:password)`. SlipnetEnc: `uid == sig`.
 - **ProtoSpec**: `try_parse()`, `reconstruct()`, `schema()`, `host()`, `port()`, `uid()` (= `sig() ^ cred_hash()`). 12 impls: Vless, Vmess, Trojan, Hysteria2, Ss, Ssr, Tg, Slipnet, SlipnetEnc, Stormdns, Tuic, Wireguard.
 - **sig_cache**: `OnceLock<NonZeroU64>` per config instance — computed once, cached forever.
 - **`thirdparty/`**: vendored upstream proxy projects (sing-box, Xray, hysteria, etc.) — not part of build
 - **`benches/`**: Criterion benchmarks (`cargo bench`) with test data per protocol: raw_urlx, proto_spec, slice_input, permissive_json
+- **`normalize_extras`**: Uses `simd_json::to_string` (not `serde_json`) and parallelizes `extra=` segments via `rayon`
 
 ## Pre-existing Test Status
 
-**0 failures**. Test suite: 106 passed, 3 ignored (manual integration tests that fetch real Telegram data). Previous 5 failures (VMess→SS fallback, SSR InvalidStructure, SlipnetEnc, WireGuard, Warp) were fixed during the proto_spec unification.
+**0 failures**. Test suite: 155 passed, 3 ignored (manual integration tests that fetch real Telegram data). Previous 5 failures (VMess→SS fallback, SSR InvalidStructure, SlipnetEnc, WireGuard, Warp) were fixed during the proto_spec unification.
 
 ## Tools
 

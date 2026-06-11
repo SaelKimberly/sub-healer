@@ -149,11 +149,7 @@ impl Pipeline {
         }
 
         if !subscriptions.is_empty() {
-            let sub = super::sub::fetch_subscriptions(
-                self.client.clone(),
-                registry.clone(),
-                subscriptions,
-            );
+            let sub = super::sub::fetch_subscriptions(registry.clone(), subscriptions);
             streams.push(sub.boxed());
         }
 

@@ -1,3 +1,4 @@
+use std::sync::OnceLock;
 use std::time::Duration;
 use std::{pin::Pin, sync::Arc};
 
@@ -50,10 +51,16 @@ pub fn get_current_timestamp() -> i64 {
         .cast_signed()
 }
 
+static WEB_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+
 /// # Errors
 ///
 /// Will return `Err` if the proxy URL is invalid or the client cannot be built.
 pub fn build_client() -> reqwest::Result<reqwest::Client> {
+    if let Some(client) = WEB_CLIENT.get().cloned() {
+        return Ok(client);
+    }
+
     let mut builder = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(30))
         .read_timeout(Duration::from_secs(5));
@@ -75,7 +82,9 @@ pub fn build_client() -> reqwest::Result<reqwest::Client> {
         builder = builder.proxy(proxy.no_proxy(NoProxy::from_env()));
     }
 
-    builder.build()
+    let client = builder.build()?;
+
+    Ok(WEB_CLIENT.get_or_init(|| client).clone())
 }
 
 #[derive(Debug, thiserror::Error)]

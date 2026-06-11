@@ -4,8 +4,6 @@ pub enum UnescapeError {
     InvalidUtf8(#[from] std::str::Utf8Error),
     #[error("Encoding \"{0}\" was detected, but some characters were replaced")]
     EncodingFlaw(&'static str),
-    #[error("Invalid JSON escape sequence: {0}")]
-    InvalidJsonEscape(#[from] escape8259::UnescapeError),
     #[error("Invalid Unicode escape sequence: {0}")]
     InvalidUnicodeEscape(#[from] unescaper::Error),
 }
@@ -14,7 +12,6 @@ pub enum UnescapeError {
 pub struct Unescaper {
     chardet: (bool, bool),
     enc_pct: bool,
-    enc8259: Option<bool>,
     enc_uni: Option<bool>,
 }
 
@@ -24,11 +21,7 @@ impl Unescaper {
         self.enc_pct = true;
         self
     }
-    #[inline]
-    pub const fn enc8259(mut self, bypass: bool) -> Self {
-        self.enc8259 = Some(bypass);
-        self
-    }
+
     #[inline]
     pub const fn enc_uni(mut self, bypass: bool) -> Self {
         self.enc_uni = Some(bypass);
@@ -70,19 +63,6 @@ impl Unescaper {
                 }
             }
         };
-
-        if let Some(bypass) = self.enc8259 {
-            match escape8259::unescape(s.as_str()) {
-                Ok(unescaped) => {
-                    s = unescaped;
-                }
-                Err(e) => {
-                    if !bypass {
-                        return Err(UnescapeError::from(e));
-                    }
-                }
-            }
-        }
 
         if let Some(bypass) = self.enc_uni {
             match unescaper::unescape(s.as_str()) {

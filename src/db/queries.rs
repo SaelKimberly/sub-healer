@@ -115,16 +115,12 @@ pub fn query_servers_filtered(
     Ok(records)
 }
 
-
 /// Get source records by their IDs (simple PK lookup).
 ///
 /// # Errors
 ///
 /// Returns `rusqlite::Error` if the query fails.
-pub fn query_sources_by_ids(
-    conn: &Connection,
-    ids: &[i64],
-) -> Result<Vec<SourceRecord>> {
+pub fn query_sources_by_ids(conn: &Connection, ids: &[i64]) -> Result<Vec<SourceRecord>> {
     if ids.is_empty() {
         return Ok(Vec::new());
     }

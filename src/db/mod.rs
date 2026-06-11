@@ -125,17 +125,13 @@ impl Database {
         .await
     }
 
-
     /// Get source records by their IDs (simple PK lookup).
     ///
     /// # Errors
     ///
     /// Returns `DatabaseError` if the query fails.
     #[allow(clippy::future_not_send, reason = "need research")]
-    pub async fn query_sources_by_ids(
-        &self,
-        ids: &[i64],
-    ) -> Result<Vec<SourceRecord>> {
+    pub async fn query_sources_by_ids(&self, ids: &[i64]) -> Result<Vec<SourceRecord>> {
         self.with_conn_read(|conn| queries::query_sources_by_ids(conn, ids))
             .await
     }

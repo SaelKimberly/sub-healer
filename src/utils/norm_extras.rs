@@ -124,7 +124,7 @@ mod tests {
         let s = "vless://uuid@host:443?type=xhttp&mode=stream-one&extra={\"scMaxEachPostBytes\":+1000000,+\"scMaxConcurrentPosts\":+100,+\"scMinPostsIntervalMs\":+30}&path=/stream&host=example.com&sni=example.com#By EbraSha";
         let n = super::normalize_extras(s.as_bytes());
         let x = unsafe { str::from_utf8_unchecked(n.as_ref()) };
-        // After normalize: + stripped, keys alphabetical (serde_json orders), URL-encoded
+        // After normalize: + stripped, keys alphabetical (simd_json orders), URL-encoded
         // Keys: scMaxConcurrentPosts < scMaxEachPostBytes < scMinPostsIntervalMs
         assert_eq!(
             x,
@@ -138,7 +138,7 @@ mod tests {
         let s = "vless://uuid@host:443?type=xhttp&extra=%7B%22scMaxEachPostBytes%22%3A%2B1000000%2C%2B%22scMaxConcurrentPosts%22%3A%2B100%7D&host=example.com#Test";
         let n = super::normalize_extras(s.as_bytes());
         let x = unsafe { str::from_utf8_unchecked(n.as_ref()) };
-        // After normalize: + stripped, keys alphabetical (serde_json), URL-encoded
+        // After normalize: + stripped, keys alphabetical (simd_json), URL-encoded
         assert_eq!(
             x,
             "vless://uuid@host:443?type=xhttp&extra=%7B%22scMaxConcurrentPosts%22%3A100%2C%22scMaxEachPostBytes%22%3A1000000%7D&host=example.com#Test"

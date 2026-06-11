@@ -69,13 +69,19 @@ impl TransportConfig {
             .map(|v| v as _)
     }
 
+    /// # Errors
+    ///
+    /// Return ParseError, if protocol_type is invalid and could not be recovered.
     pub fn from_type_and_path(
         protocol_type: Option<&str>,
         path: Option<&str>,
     ) -> Result<Option<Self>, ParseError> {
         match protocol_type {
             None | Some("") => Ok(None),
-            Some("tcp" | "raw") => Ok(Some(Self::Tcp)),
+            // "auto"/"none" on `net` field are common mistakes from share link
+            // generators confusing `net` (transport) with `scy` (security) or
+            // `type` (header type). Default to TCP like mihomo does.
+            Some("tcp" | "raw" | "auto" | "none") => Ok(Some(Self::Tcp)),
             Some("ws" | "websocket") => Ok(Some(Self::Ws(WebSocketConfig {
                 path: path.map(TinyText::from),
                 ..WebSocketConfig::default()
@@ -99,10 +105,7 @@ impl TransportConfig {
                 mode: Some(TinyText::from("auto")),
                 ..XHttpConfig::default()
             }))),
-            // "auto"/"none" on `net` field are common mistakes from share link
-            // generators confusing `net` (transport) with `scy` (security) or
-            // `type` (header type). Default to TCP like mihomo does.
-            Some("auto" | "none") => Ok(Some(Self::Tcp)),
+
             Some(other) =>  Self::recover_transport_type(other).map_or_else(
                 ||Err(ParseError::InvalidConf(
                     "type".into(),
