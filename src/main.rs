@@ -160,10 +160,7 @@ fn make_progress_bar(mp: &indicatif::MultiProgress) -> indicatif::ProgressBar {
 
 /// If `opts.emit` is set, compute absolute timestamps from durations
 /// (same logic as the `emit` subcommand) and call `pipeline.export()`.
-async fn emit_after_mine(
-    pipeline: &mining::Pipeline,
-    opts: &EmitOnMine,
-) -> anyhow::Result<()> {
+async fn emit_after_mine(pipeline: &mining::Pipeline, opts: &EmitOnMine) -> anyhow::Result<()> {
     if !opts.emit {
         return Ok(());
     }
@@ -203,17 +200,23 @@ async fn main() -> anyhow::Result<()> {
     let indicatif_writer: tracing_indicatif::IndicatifWriter =
         tracing_indicatif::IndicatifWriter::new(mp.clone());
     let cli = Cli::parse();
-    
 
     tracing_subscriber::registry()
         .with(fmt::layer().with_writer(indicatif_writer))
         .with(EnvFilter::from_default_env().add_directive(tracing::Level::INFO.into()))
-        .with(v2ray_heal::mining::UnparseableLayer::new(cli.unparseable_log.clone()))
+        .with(v2ray_heal::mining::UnparseableLayer::new(
+            cli.unparseable_log.clone(),
+        ))
         .try_init()
         .ok();
 
     match cli.command {
-        Some(Commands::Config { file, last, upto, emit_opts }) => {
+        Some(Commands::Config {
+            file,
+            last,
+            upto,
+            emit_opts,
+        }) => {
             let backfill = parse_backfill(last, upto)?;
             let config_path = file.unwrap_or(PathBuf::from("config.yaml"));
             let mut pipeline = mining::Pipeline::from_config(&config_path, &cli.db)?;
@@ -277,7 +280,12 @@ async fn main() -> anyhow::Result<()> {
             emit_after_mine(&pipeline, &emit_opts).await?;
             tracing::info!(count, "Stdin mining completed");
         }
-        Some(Commands::Remote { url, last, upto, emit_opts }) => {
+        Some(Commands::Remote {
+            url,
+            last,
+            upto,
+            emit_opts,
+        }) => {
             let backfill = parse_backfill(last, upto)?;
             let mut pipeline = mining::Pipeline::new(&cli.db)?;
             for u in &url {

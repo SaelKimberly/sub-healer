@@ -42,7 +42,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::urlx::{HostSpec, RawUrlX, SchemeX, TinyText, host_serde, port_serde};
 
-use super::common::{RealityOpts, SecurityConfig, TlsConfig, TlsOpts, TransportConfig};
+use super::common::{
+    RealityOpts, SecurityConfig, TlsConfig, TlsOpts, TransportConfig, should_skip_param,
+};
 use super::impl_sig_cache;
 use super::utils;
 use super::{ParseError, ProtoSpec};
@@ -169,9 +171,10 @@ impl ProtoSpec for TrojanConfig {
                         if opts.sni.is_some() || opts.alpn.is_some() || opts.fp.is_some() {
                             parts.push("security=tls".to_string());
                         }
-                        if let Some(ref v) = opts.sni {
-                            parts.push(format!("sni={}", urlencoding::encode(v)));
-                        }
+                        if let Some(ref v) = opts.sni
+                            && !should_skip_param(&self.host, v) {
+                                parts.push(format!("sni={}", urlencoding::encode(v)));
+                            }
                         if let Some(ref v) = opts.alpn {
                             parts.push(format!("alpn={}", urlencoding::encode(v)));
                         }
@@ -181,9 +184,10 @@ impl ProtoSpec for TrojanConfig {
                     }
                     TlsConfig::Reality(opts) => {
                         parts.push("security=reality".to_string());
-                        if let Some(ref v) = opts.sni {
-                            parts.push(format!("sni={}", urlencoding::encode(v)));
-                        }
+                        if let Some(ref v) = opts.sni
+                            && !should_skip_param(&self.host, v) {
+                                parts.push(format!("sni={}", urlencoding::encode(v)));
+                            }
                         if let Some(ref v) = opts.fp {
                             parts.push(format!("fp={}", urlencoding::encode(v)));
                         }
@@ -201,14 +205,16 @@ impl ProtoSpec for TrojanConfig {
             }
             match &self.transport {
                 TransportConfig::HttpUpgrade(cfg) => {
-                    if let Some(ref host) = cfg.host {
-                        parts.push(format!("host={}", urlencoding::encode(host)));
-                    }
+                    if let Some(ref host) = cfg.host
+                        && !should_skip_param(&self.host, host) {
+                            parts.push(format!("host={}", urlencoding::encode(host)));
+                        }
                 }
                 TransportConfig::XHttp(cfg) => {
-                    if let Some(ref host) = cfg.host {
-                        parts.push(format!("host={}", urlencoding::encode(host)));
-                    }
+                    if let Some(ref host) = cfg.host
+                        && !should_skip_param(&self.host, host) {
+                            parts.push(format!("host={}", urlencoding::encode(host)));
+                        }
                 }
                 _ => {}
             }

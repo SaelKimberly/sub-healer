@@ -1,7 +1,7 @@
 use std::fs::OpenOptions;
 use std::io::{BufWriter, Write};
-use std::sync::Mutex;
 use std::path::PathBuf;
+use std::sync::Mutex;
 
 use serde_json::json;
 use tracing_subscriber::Layer;
@@ -23,7 +23,9 @@ impl UnparseableLayer {
                 .ok()
                 .map(BufWriter::new)
         });
-        Self { writer: Mutex::new(writer) }
+        Self {
+            writer: Mutex::new(writer),
+        }
     }
 }
 

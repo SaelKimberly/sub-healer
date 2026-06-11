@@ -6,8 +6,8 @@ use chrono::Utc;
 use futures::{Stream, StreamExt};
 use tokio::task::JoinSet;
 
-use crate::decoder::StreamingDecoder;
 use crate::decoder::INPUT_CHUNK_SIZE;
+use crate::decoder::StreamingDecoder;
 use crate::mining::RawSourceItemBatch;
 use crate::mining::registry::SourceRegistry;
 
@@ -91,29 +91,31 @@ impl SubFetcher {
 
                 loop {
                     let (stops, chunk) = match stream.next().await {
-Some(Ok(c)) => {
-    let mut urls = Vec::new();
-    let mut remaining: &[u8] = &c;
-    loop {
-        let end = remaining.len().min(INPUT_CHUNK_SIZE);
-        let piece = &remaining[..end];
-        remaining = &remaining[end..];
-        match decoder.feed(piece) {
-            Ok(mut u) => urls.append(&mut u),
-            Err(e) => {
-                _ = sender.send(SubEvent::Error {
-                    url: url_str.clone(),
-                    error: format!("Stream decoding error ({e})"),
-                }).await;
-                return;
-            }
-        }
-        if remaining.is_empty() {
-            break;
-        }
-    }
-    (false, Ok(urls))
-},
+                        Some(Ok(c)) => {
+                            let mut urls = Vec::new();
+                            let mut remaining: &[u8] = &c;
+                            loop {
+                                let end = remaining.len().min(INPUT_CHUNK_SIZE);
+                                let piece = &remaining[..end];
+                                remaining = &remaining[end..];
+                                match decoder.feed(piece) {
+                                    Ok(mut u) => urls.append(&mut u),
+                                    Err(e) => {
+                                        _ = sender
+                                            .send(SubEvent::Error {
+                                                url: url_str.clone(),
+                                                error: format!("Stream decoding error ({e})"),
+                                            })
+                                            .await;
+                                        return;
+                                    }
+                                }
+                                if remaining.is_empty() {
+                                    break;
+                                }
+                            }
+                            (false, Ok(urls))
+                        }
                         None => (true, decoder.finalize()),
                         Some(Err(e)) => {
                             _ = sender.send(SubEvent::Error {

@@ -183,12 +183,12 @@ mod tests {
     use super::*;
     use crate::db::Database;
     use crate::mining::pipeline::process_single_raw_url;
-    use serde_json::Value;
-    use tracing_subscriber::prelude::*;
     use crate::proto_spec::{ProtoSpec, ProtocolConfig};
     use crate::urlx::RawUrlX;
     use chrono::DateTime;
+    use serde_json::Value;
     use std::sync::Arc;
+    use tracing_subscriber::prelude::*;
 
     fn vmess_raw_url() -> &'static str {
         "vmess://eyJhZGQiOiIxLjIuMy40IiwicG9ydCI6ODAsImlkIjoiYWJjZGUtMTIzNDUtNjc4OTAiLCJuZXQiOiJ0Y3AiLCJ0eXBlIjoibm9uZSJ9"

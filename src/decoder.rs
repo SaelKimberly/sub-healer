@@ -1,7 +1,7 @@
 use std::mem::MaybeUninit;
 
-use base64::DecodeError;
 use anyhow::bail;
+use base64::DecodeError;
 
 use crate::urlx::SchemeX;
 

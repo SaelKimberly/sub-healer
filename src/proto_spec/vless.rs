@@ -47,7 +47,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::urlx::{HostSpec, RawUrlX, SchemeX, TinyText, host_serde, port_serde};
 
-use super::common::{RealityOpts, SecurityConfig, TlsConfig, TlsOpts, TransportConfig};
+use super::common::{
+    RealityOpts, SecurityConfig, TlsConfig, TlsOpts, TransportConfig, should_skip_param,
+};
 use super::impl_sig_cache;
 use super::utils;
 use super::{ParseError, ProtoSpec};
@@ -245,9 +247,10 @@ impl ProtoSpec for VlessConfig {
                 match tls_config {
                     TlsConfig::Tls(opts) => {
                         q.append_pair("security", "tls");
-                        if let Some(ref v) = opts.sni {
-                            q.append_pair("sni", v);
-                        }
+                        if let Some(ref v) = opts.sni
+                            && !should_skip_param(&self.host, v) {
+                                q.append_pair("sni", v);
+                            }
                         if let Some(ref v) = opts.alpn {
                             q.append_pair("alpn", v);
                         }
@@ -257,9 +260,10 @@ impl ProtoSpec for VlessConfig {
                     }
                     TlsConfig::Reality(opts) => {
                         q.append_pair("security", "reality");
-                        if let Some(ref v) = opts.sni {
-                            q.append_pair("sni", v);
-                        }
+                        if let Some(ref v) = opts.sni
+                            && !should_skip_param(&self.host, v) {
+                                q.append_pair("sni", v);
+                            }
                         if let Some(ref v) = opts.fp {
                             q.append_pair("fp", v);
                         }
@@ -280,14 +284,16 @@ impl ProtoSpec for VlessConfig {
             }
             match &self.transport {
                 TransportConfig::HttpUpgrade(cfg) => {
-                    if let Some(ref host) = cfg.host {
-                        q.append_pair("host", host);
-                    }
+                    if let Some(ref host) = cfg.host
+                        && !should_skip_param(&self.host, host) {
+                            q.append_pair("host", host);
+                        }
                 }
                 TransportConfig::XHttp(cfg) => {
-                    if let Some(ref host) = cfg.host {
-                        q.append_pair("host", host);
-                    }
+                    if let Some(ref host) = cfg.host
+                        && !should_skip_param(&self.host, host) {
+                            q.append_pair("host", host);
+                        }
                     if let Some(ref mode) = cfg.mode {
                         q.append_pair("mode", mode);
                     }

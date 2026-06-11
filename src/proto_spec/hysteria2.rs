@@ -56,7 +56,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::urlx::{HostSpec, PortSpec, RawUrlX, SchemeX, TinyText, host_serde, port_spec_serde};
 
-use super::common::{SecurityConfig, TlsConfig, TlsOpts};
+use super::common::{SecurityConfig, TlsConfig, TlsOpts, should_skip_param};
 use super::impl_sig_cache;
 use super::utils;
 use super::{ParseError, ProtoSpec};
@@ -158,9 +158,10 @@ impl ProtoSpec for Hysteria2Config {
                 if self.security.insecure() == Some(true) {
                     parts.push("insecure=1".to_string());
                 }
-                if let Some(v) = self.security.sni() {
-                    parts.push(format!("sni={}", urlencoding::encode(v)));
-                }
+                if let Some(v) = self.security.sni()
+                    && !should_skip_param(&self.host, v) {
+                        parts.push(format!("sni={}", urlencoding::encode(v)));
+                    }
             }
             if let Some(ref v) = self.obfs {
                 parts.push(format!("obfs={}", urlencoding::encode(v)));

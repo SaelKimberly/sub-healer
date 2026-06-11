@@ -37,7 +37,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::urlx::{HostSpec, RawUrlX, SchemeX, TinyText, host_serde, port_serde};
 
-use super::common::{SecurityConfig, TlsConfig, TlsOpts};
+use super::common::{SecurityConfig, TlsConfig, TlsOpts, should_skip_param};
 use super::impl_sig_cache;
 use super::utils;
 use super::{ParseError, ProtoSpec};
@@ -159,9 +159,10 @@ impl ProtoSpec for TuicConfig {
             if let Some(v) = self.security.insecure() {
                 parts.push(format!("allow_insecure={}", if v { "1" } else { "0" }));
             }
-            if let Some(v) = self.security.sni() {
-                parts.push(format!("sni={}", urlencoding::encode(v)));
-            }
+            if let Some(v) = self.security.sni()
+                && !should_skip_param(&self.host, v) {
+                    parts.push(format!("sni={}", urlencoding::encode(v)));
+                }
             if parts.is_empty() {
                 String::new()
             } else {

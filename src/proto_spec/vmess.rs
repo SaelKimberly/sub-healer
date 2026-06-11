@@ -57,7 +57,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::urlx::{HostSpec, RawUrlX, SchemeX, TinyText, host_serde, port_serde};
 
-use super::common::{SecurityConfig, TlsConfig, TlsOpts, TransportConfig};
+use super::common::{SecurityConfig, TlsConfig, TlsOpts, TransportConfig, should_skip_param};
 use super::impl_sig_cache;
 use super::utils;
 use super::{ParseError, ProtoSpec};
@@ -267,9 +267,10 @@ impl ProtoSpec for VmessConfig {
 
         if let Some(TlsConfig::Tls(opts)) = &self.security.tls {
             map.insert("tls".into(), serde_json::Value::String("tls".into()));
-            if let Some(ref v) = opts.sni {
-                map.insert("sni".into(), serde_json::Value::String(v.to_string()));
-            }
+            if let Some(ref v) = opts.sni
+                && !should_skip_param(&self.host, v) {
+                    map.insert("sni".into(), serde_json::Value::String(v.to_string()));
+                }
             if let Some(ref v) = opts.alpn {
                 map.insert("alpn".into(), serde_json::Value::String(v.to_string()));
             }

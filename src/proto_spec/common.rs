@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 
 use serde_json::Value;
 
-use crate::urlx::TinyText;
+use crate::urlx::{HostSpec, TinyText};
 
 // ========================================
 // Transport Configurations
@@ -137,6 +137,16 @@ impl TransportConfig {
             }),
             other => other,
         }
+    }
+}
+
+/// Returns `true` when `value` equals the server's DNS name (case-insensitive).
+/// When the server is an IP address, always returns `false` — sni/host must be
+/// emitted because the IP address cannot serve as a TLS SNI/HTTP Host value.
+pub(crate) fn should_skip_param(host: &HostSpec, value: &str) -> bool {
+    match host {
+        HostSpec::DnsName(name) => name.as_ref().eq_ignore_ascii_case(value),
+        _ => false,
     }
 }
 
@@ -400,5 +410,30 @@ mod tests {
         assert!(json.contains("\"sni\""));
         assert!(json.contains("\"example.com\""));
         assert!(!json.contains("\"enc\""));
+    }
+
+    #[test]
+    fn should_skip_param_skips_matching_dns() {
+        let host =
+            HostSpec::DnsName(rustls::pki_types::DnsName::try_from_str("example.com").unwrap());
+        assert!(should_skip_param(&host, "example.com"));
+        assert!(should_skip_param(&host, "EXAMPLE.COM"));
+        assert!(!should_skip_param(&host, "other.com"));
+        assert!(!should_skip_param(&host, "example.org"));
+    }
+
+    #[test]
+    fn should_skip_param_never_skips_for_ip() {
+        let host_v4 = HostSpec::IpAddress(rustls::pki_types::IpAddr::V4(
+            rustls::pki_types::Ipv4Addr::from(std::net::Ipv4Addr::new(1, 2, 3, 4)),
+        ));
+        assert!(!should_skip_param(&host_v4, "anything"));
+        assert!(!should_skip_param(&host_v4, "1.2.3.4"));
+
+        let host_v6 = HostSpec::IpAddress(rustls::pki_types::IpAddr::V6(
+            rustls::pki_types::Ipv6Addr::from(std::net::Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1)),
+        ));
+        assert!(!should_skip_param(&host_v6, "::1"));
+        assert!(!should_skip_param(&host_v6, "anything"));
     }
 }
