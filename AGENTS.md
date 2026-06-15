@@ -6,7 +6,7 @@ Rust proxy subscription miner/aggregator: scrapes Telegram channels + downloads 
 
 ```bash
 rtk cargo check                 # lint
-rtk cargo test                  # all tests (158 pass, 0 ignored)
+rtk cargo test                  # all tests (163 pass, 0 ignored)
 cat sub.txt | cargo run -- stdin              # parse from pipe
 cargo run -- config --emit --protocol vmess   # mine then emit filtered
 cargo run -- --db ":memory:" local ./file.txt --emit   # ephemeral mine+emit
@@ -86,21 +86,25 @@ Time-travel: if incoming_ts < first_seen_ts, archive current to sightings + repl
 - **Global Allocator**: `mimalloc` (via `#[global_allocator]`)
 - **Linker**: `clang` + `mold` (`.cargo/config.toml`)
 - **Concurrency**: `tokio` (async I/O) + `rayon` (parallel CPU for line processing)
-- **Database**: `rusqlite` bundled
+- **Database**: `rusqlite` bundled; `conn.prepare_cached()` for prepared statement reuse; `PRAGMA wal_autocheckpoint=2000` and `PRAGMA journal_size_limit=0` to reduce WAL checkpoint frequency
 - **Proxy**: Environment-based HTTP proxy (`HTTP_PROXY` env var, restricted to 127.0.0.1/localhost);
   basic auth via `HTTP_PROXY_USERNAME`/`HTTP_PROXY_PASSWORD`; `127.0.0.1:20172` fallback only in `#[cfg(test)]`.
   Connect timeout 30s, read timeout 5s.
 - **GITHUB_TOKEN**: env var for bearer auth on `raw.githubusercontent.com` / `github.com` requests
-- **ProtocolConfig.uid**: `uid = sig ^ rapidhash_v3(host:port:username:password)`. SlipnetEnc: `uid == sig`.
+- **ProtocolConfig.uid**: `uid = sig ^ rapidhash_v3(host:port:username:password)`. SlipnetEnc: `uid == sig`. Credential hash uses streaming `RapidStreamHasherV3` (`finish()` directly, no intermediate `format!()` String).
 - **ProtoSpec**: `try_parse()`, `reconstruct()`, `schema()`, `host()`, `port()`, `uid()` (= `sig() ^ cred_hash()`). 12 impls: Vless, Vmess, Trojan, Hysteria2, Ss, Ssr, Tg, Slipnet, SlipnetEnc, Stormdns, Tuic, Wireguard.
 - **sig_cache**: `OnceLock<NonZeroU64>` per config instance — computed once, cached forever.
 - **`thirdparty/`**: vendored upstream proxy projects (sing-box, Xray, hysteria, etc.) — not part of build
 - **`benches/`**: Criterion benchmarks (`cargo bench`) with test data per protocol: raw_urlx, proto_spec, slice_input, permissive_json
 - **`normalize_extras`**: Uses `simd_json::to_string` (not `serde_json`) and parallelizes `extra=` segments via `rayon`
+- **`nom_locate` removed**: Parser `Span<'a>` is bare `&'a [u8]` instead of `LocatedSpan`; saves a dependency with no loss of error precision
+- **`base64-simd`**: Runtime-detected SSSE3/AVX2/NEON base64 decode in `process_aligned()`; 65KB work buffer uses `MaybeUninit` to avoid zero-init
+- **`itoa`**: Zero-alloc u16 formatting for port fields, replaces `to_string()`
+- **`parse_query` returns `Vec<(String,String)>`**: Linear scan for ≤5 entries instead of `HashMap`; `query_get()` / `query_get_multi()` helpers for lookups
 
 ## Pre-existing Test Status
 
-**0 failures**. Test suite: 158 passed, 0 ignored. Previous 5 failures (VMess→SS fallback, SSR InvalidStructure, SlipnetEnc, WireGuard, Warp) were fixed during the proto_spec unification.
+**163 passed, 0 ignored**. Previous 5 failures (VMess→SS fallback, SSR InvalidStructure, SlipnetEnc, WireGuard, Warp) were fixed during the proto_spec unification.
 
 ## Tools
 

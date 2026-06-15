@@ -1,6 +1,6 @@
 # CONTEXT.md — v2ray-heal Project Context
 
-> Architecture reference. Last updated: 2026-06-09.
+> Architecture reference. Last updated: 2026-06-15.
 
 ---
 
@@ -13,7 +13,7 @@
 - Persists data to SQLite with time-travel upsert semantics to track origin and lifetime of every observed config
 - Exports filtered server lists via the `emit` CLI subcommand
 
-**Stack**: Rust 2024 edition (1.96.0+), `tokio` (async I/O) + `rayon` (parallel CPU for line processing), `rusqlite` (SQLite with bundled feature), `mimalloc` (global allocator), `reqwest` (HTTP client with proxy support), `scraper` (HTML), `rapidhash` (hashing), `serde`/`serde_json` (serialization), `clap` (CLI).
+**Stack**: Rust 2024 edition (1.96.0+), `tokio` (async I/O) + `rayon` (parallel CPU for line processing), `rusqlite` (SQLite with bundled feature, `prepare_cached` for statement reuse), `mimalloc` (global allocator), `reqwest` (HTTP client with proxy support), `scraper` (HTML), `rapidhash` (hashing), `serde`/`serde_json` (serialization), `base64-simd` (SIMD-accelerated decode), `itoa` (zero-alloc int formatting), `clap` (CLI).
 
 **Entry points**: `cargo run -- config`, `cargo run -- remote <url>`, `cargo run -- local <file>`, `cargo run -- emit`, `cat sub.txt | cargo run -- stdin`
 
@@ -196,13 +196,14 @@ Each protocol's `reconstruct()` builds the canonical URL string from the parsed 
 Chunked base64 decoder for incremental subscription data processing. Architecture:
 
 - `feed(chunk) → anyhow::Result<Vec<String>>` — align input to 4-byte base64 boundaries,
-  auto-detect encoding (Standard/UrlSafe/Raw), decode, and split on `\n`
+  auto-detect encoding (Standard/UrlSafe/Raw), decode via `base64-simd` (runtime SSSE3/AVX2/NEON), and split on `\n`
 - `finalize() → anyhow::Result<Vec<String>>` — flush remaining input
 - `reset()` — clear state for re-use
 - `INPUT_CHUNK_SIZE = 65536` — chunks exceeding this cause a hard error
 
 Callers MUST pre-slice to ≤ `INPUT_CHUNK_SIZE`; passing a larger chunk triggers a `bail!()` error. Internal buffers are heap-allocated,
-pre-allocated via `Box::new_uninit_slice`.
+pre-allocated via `Box::new_uninit_slice`. The 65KB stack work buffer uses `[MaybeUninit<u8>; 65540]` to avoid zero-init memset.
+Decoded URL output Vec is pre-sized to `text.len() / 80 + 1` to prevent reallocation during collection.
 
 ---
 
@@ -232,12 +233,22 @@ Per-protocol sig composition:
 
 ### Credential Hash
 
-`cred_hash = rapidhash_v3("host:port:username:password")`
+`cred_hash = rapidhash_v3("host:port:username:password")`, computed via streaming `RapidStreamHasherV3`:
+
+```rust
+let mut hasher = RapidStreamHasherV3::new(&DEFAULT_RAPID_SECRETS);
+if let Some(h) = host { hasher.write(h.as_bytes()) }
+hasher.write(b":");
+// port via itoa::Buffer for zero-alloc u16 formatting
+hasher.write(b":").write(username.as_bytes()).write(b":").write(password.as_bytes());
+hasher.finish()
+```
+
+No intermediate `format!()` or String allocation — fields stream directly through the hasher.
 
 - If all credential fields are empty, `cred_hash = 0`, so `uid == sig`.
 - For SlipnetEnc, `uid = sig` explicitly (no credentials exposed).
 - For SS, the `method` field is stored in `security` (not `password`), so the credential hash only includes the actual password portion of the userinfo.
-
 ### Unique ID (`uid`)
 
 `uid = sig ^ cred_hash`
@@ -247,12 +258,13 @@ The XOR ensures two servers with the same connection config but different creden
 ### Helper Functions (`src/proto_spec/utils.rs`)
 
 ```rust
-fn compute_cred_hash(host, port, port_spec, username, password) -> u64
-fn decode_base64(data: &str) -> Result<Vec<u8>, DecodeError>  // strips trailing annotation
-fn parse_hostport(s: &str) -> Result<(HostSpec, PortSpec), ParseError>
-fn parse_host(s: &str) -> Result<HostSpec, ParseError>
-fn parse_port(s: &str) -> Result<PortSpec, ParseError>
-fn parse_query(query: Option<&str>) -> HashMap<String, String>
+fn compute_cred_hash(host, port, port_spec, username, password) -> u64  // streaming hasher, no String alloc
+fn decode_base64(data: &str) -> Result<Vec<u8>, DecodeError>  // strips trailing annotation, filters backticks on bytes
+The `Database` struct (`src/db/mod.rs`) wraps a `rusqlite::Connection` behind `Arc<RwLock<Connection>>` with
+WAL mode, `PRAGMA wal_autocheckpoint=2000` (reduced checkpoint frequency), and `PRAGMA journal_size_limit=0`:
+fn parse_query(query: Option<&str>) -> Vec<(String, String)>  // linear-scan Vec, not HashMap
+fn query_get<'a>(params: &[(String,String)], key: &str) -> Option<&'a str>  // linear lookup
+fn query_get_multi<'a>(params: &[(String,String)], keys: &[&str]) -> Option<&'a str>  // first match
 fn decode_fragment(raw: &RawUrlX) -> Result<Option<String>, ParseError>
 ```
 
@@ -262,7 +274,9 @@ fn decode_fragment(raw: &RawUrlX) -> Result<Option<String>, ParseError>
 
 ### Database Adapter
 
-The `Database` struct (`src/db/mod.rs`) wraps a `rusqlite::Connection` behind `Arc<RwLock<Connection>>`:
+The `Database` struct (`src/db/mod.rs`) wraps a `rusqlite::Connection` behind `Arc<RwLock<Connection>>`
+with WAL mode, `PRAGMA wal_autocheckpoint=2000` (reduced checkpoint frequency),
+`PRAGMA journal_size_limit=0`, and `busy_timeout=5000`:
 
 ```rust
 pub struct Database {
@@ -279,9 +293,8 @@ All database operations are methods on `Database`: `open()`, `init_db()`, `upser
 
 - **`servers`** — Deduplicated proxy server records (upserted by `uid`)
   - `id` INTEGER PRIMARY KEY (= `ProtocolConfig::uid()` cast to i64)
-  - `schema` TEXT NOT NULL, `host` TEXT NOT NULL, `port` TEXT NOT NULL
+  - `raw_config` TEXT NOT NULL (JSON-serialized `ProtocolConfig` via `simd_json::to_string`)
   - `transport` TEXT, `security` TEXT, `remarks` TEXT
-  - `raw_config` TEXT NOT NULL (JSON-serialized `ProtocolConfig` via `serde_json`)
   - `sig` INTEGER NOT NULL DEFAULT 0 (= `ProtocolConfig::sig()` cast to i64)
   - `first_seen_ts` INTEGER NOT NULL, `first_seen_source_id` INTEGER NOT NULL REFERENCES sources(id)
 
@@ -297,7 +310,7 @@ All database operations are methods on `Database`: `open()`, `init_db()`, `upser
 
 ### Upsert Logic (`upsert_server()`)
 
-Time-travel upsert with three cases:
+Time-travel upsert with three cases (all SQL uses `conn.prepare_cached()` to avoid re-preparing statements):
 
 1. **New server** (no existing row): INSERT into `servers` + INSERT first sighting
 2. **Existing server, later timestamp**: INSERT sighting only, keep `first_seen_ts` unchanged
@@ -506,7 +519,7 @@ subscriptions:
 ## 12. Common Test Commands
 
 ```bash
-# Run all tests (156 pass, 3 ignored)
+# Run all tests (163 pass, 0 ignored)
 rtk cargo test
 
 # Run specific protocol tests
