@@ -3,14 +3,14 @@ use std::str::FromStr;
 use nom::{
     Input, Offset, Parser,
     branch::alt,
-    bytes::complete::tag,
-    character::complete::{alphanumeric0, alphanumeric1, char, digit1, hex_digit0, u16},
+    bytes::complete::{tag, take_while1},
+    character::complete::{char, digit1, hex_digit0, u16},
     combinator::recognize,
     error::{Error, ErrorKind},
     multi::separated_list1,
     sequence::{delimited, preceded, separated_pair},
 };
-use rustls::pki_types::{DnsName, IpAddr, Ipv4Addr, Ipv6Addr, ServerName};
+use rustls::pki_types::{DnsName, InvalidDnsNameError, IpAddr, Ipv4Addr, Ipv6Addr, ServerName};
 
 use super::{RawResult, Span};
 use crate::PortSpec;
@@ -45,16 +45,27 @@ const fn _unchecked_str(s: Span<'_>) -> &str {
     unsafe { str::from_utf8_unchecked(s) }
 }
 
-pub fn dns_name(span: Span<'_>) -> RawResult<'_, DnsName<'_>> {
-    recognize(preceded(
-        alphanumeric1,
-        separated_list1(alt((char('.'), char('-'), char('_'))), alphanumeric0),
-    ))
-    // .map(_unchecked_str
+pub fn dns_name(span: Span<'_>) -> RawResult<'_, DnsName<'static>> {
+    recognize(take_while1(|c: u8| {
+        c.is_ascii_alphanumeric() || c == b'.' || c == b'-' || c == b'_' || c > 127
+    }))
     .map_res(|c: Span| {
         let raw = unsafe { str::from_utf8_unchecked(c) };
-        DnsName::try_from_str(raw)
-            .inspect_err(|_| tracing::trace!("Invalid DNS name detected: {raw}"))
+        if raw.is_ascii() {
+            return DnsName::try_from_str(raw)
+                .map(|n| n.to_owned())
+                .inspect_err(|_| tracing::trace!("Invalid DNS name detected: {raw}"));
+        }
+        // Non-ASCII — attempt IDNA conversion
+        match idna::domain_to_ascii(raw) {
+            Ok(ascii) => DnsName::try_from_str(&ascii)
+                .map(|n| n.to_owned())
+                .inspect_err(|_| tracing::trace!("IDN -> Punycode failed: {raw} -> {ascii}")),
+            Err(e) => {
+                tracing::trace!("IDNA conversion failed: {raw} ({e})");
+                Err(InvalidDnsNameError)
+            }
+        }
     })
     .parse(span)
 }
@@ -173,5 +184,48 @@ mod tests {
                 116, 117, 118, 119, 120, 122
             ]
         );
+    }
+
+    #[test]
+    fn test_dns_name_idn() {
+        let s = "例子.测试".as_bytes();
+        let (tail, name) = super::dns_name(s).unwrap();
+        assert!(tail.is_empty());
+        assert_eq!(name.as_ref(), "xn--fsqu00a.xn--0zwm56d");
+    }
+
+    #[test]
+    fn test_dns_name_mixed_idn() {
+        let s = "你好.example.com".as_bytes();
+        let (tail, name) = super::dns_name(s).unwrap();
+        assert!(tail.is_empty());
+        assert_eq!(name.as_ref(), "xn--6qq79v.example.com");
+    }
+
+    #[test]
+    fn test_dns_name_ascii_still_works() {
+        let s = "example.com".as_bytes();
+        let (tail, name) = super::dns_name(s).unwrap();
+        assert!(tail.is_empty());
+        assert_eq!(name.as_ref(), "example.com");
+    }
+
+    #[test]
+    fn test_dns_name_stops_at_port() {
+        let s = "例子.测试:443".as_bytes();
+        let (tail, name) = super::dns_name(s).unwrap();
+        assert_eq!(tail, b":443");
+        assert_eq!(name.as_ref(), "xn--fsqu00a.xn--0zwm56d");
+    }
+
+    #[test]
+    fn test_dns_name_invalid_idn_still_fails() {
+        // Combining characters without a base character fail IDNA validation
+        let s = "\u{0300}".as_bytes();
+        assert!(super::dns_name(s).is_err());
+        let s = "\u{200D}".as_bytes();
+        assert!(super::dns_name(s).is_err());
+        let s = "\u{2028}".as_bytes();
+        assert!(super::dns_name(s).is_err());
     }
 }

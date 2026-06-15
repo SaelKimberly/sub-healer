@@ -3318,6 +3318,7 @@ dependencies = [
  "flamegraph",
  "futures",
  "humantime",
+ "idna",
  "indicatif",
  "itoa",
  "memchr",

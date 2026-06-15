@@ -5,7 +5,7 @@ use aho_corasick::AhoCorasick;
 use super::TinyText;
 
 #[derive(Debug, Clone, Hash, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-#[allow(clippy::upper_case_acronyms)]
+#[allow(clippy::upper_case_acronyms, clippy::unsafe_derive_deserialize)]
 pub enum SchemeX {
     Vless,
     Vmess,
@@ -47,7 +47,7 @@ impl SchemeX {
             Self::Stormdns => "stormdns",
             Self::WireGuard => "wireguard",
             Self::Undefined => "undefined",
-            _ => return None,
+            Self::Unknown(_) => return None,
         };
         Some(schema)
     }
