@@ -112,7 +112,6 @@ impl ProtoSpec for WireguardConfig {
 
         let remarks = utils::decode_fragment(raw)?;
 
-
         Ok(Self {
             sig_cache: std::sync::OnceLock::new(),
             cred_hash_cache: std::sync::OnceLock::new(),

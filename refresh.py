@@ -106,6 +106,11 @@ REPOS: list[Config] = [
         "xray-config-toolkit",
         "main",
     ),
+    Config(
+        "https://github.com/hxehex/russia-mobile-internet-whitelist.git",
+        "russia-mobile-internet-whitelist",
+        "main",
+    ),
     # examples for reference
     Config(
         "https://github.com/DNSCrypt/encrypted-dns-server.git",

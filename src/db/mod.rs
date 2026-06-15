@@ -81,9 +81,11 @@ impl Database {
         config: &ProtocolConfig,
         source_id: i64,
         incoming_ts: i64,
+        flags: u8,
+        flags_ts: i64,
     ) -> Result<()> {
         let conn = self.conn.write().await;
-        ops::upsert_server(&conn, config, source_id, incoming_ts)
+        ops::upsert_server(&conn, config, source_id, incoming_ts, flags, flags_ts)
     }
 
     /// Get a server record by ID.
@@ -107,7 +109,7 @@ impl Database {
             .await
     }
 
-    /// Query servers with optional protocol/backfill filters.
+    /// Query servers with optional protocol/backfill/whitelist filters.
     ///
     /// # Errors
     ///
@@ -118,9 +120,16 @@ impl Database {
         protocols: Option<&[String]>,
         min_first_seen: Option<i64>,
         min_last_seen: Option<i64>,
+        flags_mask: Option<u8>,
     ) -> Result<Vec<ServerRecord>> {
         self.with_conn_read(|conn| {
-            queries::query_servers_filtered(conn, protocols, min_first_seen, min_last_seen)
+            queries::query_servers_filtered(
+                conn,
+                protocols,
+                min_first_seen,
+                min_last_seen,
+                flags_mask,
+            )
         })
         .await
     }

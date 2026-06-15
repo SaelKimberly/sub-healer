@@ -204,7 +204,7 @@ mod tests {
 
     #[test]
     fn test_dns_name_ascii_still_works() {
-        let s = "example.com".as_bytes();
+        let s = b"example.com";
         let (tail, name) = super::dns_name(s).unwrap();
         assert!(tail.is_empty());
         assert_eq!(name.as_ref(), "example.com");

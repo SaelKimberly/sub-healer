@@ -49,6 +49,8 @@ pub fn upsert_server(
     config: &ProtocolConfig,
     source_id: i64,
     incoming_ts: i64,
+    flags: u8,
+    flags_ts: i64,
 ) -> Result<()> {
     let server_id = config.uid().cast_signed();
     let sig_i64 = config.sig().cast_signed();
@@ -74,10 +76,10 @@ pub fn upsert_server(
                 simd_json::to_string(config).expect("Failed to serialize ProtocolConfig");
 
             conn.prepare_cached(
-                "INSERT INTO servers (id, schema, host, port, transport, security, remarks, raw_config, first_seen_ts, first_seen_source_id, sig) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                "INSERT INTO servers (id, schema, host, port, transport, security, remarks, raw_config, first_seen_ts, first_seen_source_id, sig, flags, flags_ts) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
             )?.execute(params![
                 server_id, schema, host.as_ref(), port, transport, security, remarks, raw_config,
-                incoming_ts, source_id, sig_i64,
+                incoming_ts, source_id, sig_i64, i64::from(flags), flags_ts,
             ])?;
 
             conn.prepare_cached(
@@ -89,8 +91,8 @@ pub fn upsert_server(
 
             if incoming_ts < existing.0 {
                 conn.prepare_cached(
-                    "UPDATE servers SET first_seen_ts = ?1, first_seen_source_id = ?2, remarks = ?3 WHERE id = ?4",
-                )?.execute(params![incoming_ts, source_id, incoming_remarks, server_id])?;
+                    "UPDATE servers SET first_seen_ts = ?1, first_seen_source_id = ?2, remarks = ?3, flags = ?4, flags_ts = ?5 WHERE id = ?6",
+                )?.execute(params![incoming_ts, source_id, incoming_remarks, i64::from(flags), flags_ts, server_id])?;
 
                 conn.prepare_cached(
                     "INSERT INTO sightings (server_id, source_id, seen_ts, remarks) VALUES (?1, ?2, ?3, ?4)",
@@ -113,7 +115,7 @@ pub fn upsert_server(
 /// Returns `rusqlite::Error` if the query fails.
 pub fn get_server(conn: &Connection, id: i64) -> Result<Option<ServerRecord>> {
     let result = conn.query_row(
-        "SELECT id, schema, host, port, transport, security, remarks, raw_config, first_seen_ts, first_seen_source_id, sig FROM servers WHERE id = ?1",
+        "SELECT id, schema, host, port, transport, security, remarks, raw_config, first_seen_ts, first_seen_source_id, sig, flags, flags_ts FROM servers WHERE id = ?1",
         [id],
         |row| {
             Ok(ServerRecord {
@@ -128,6 +130,8 @@ pub fn get_server(conn: &Connection, id: i64) -> Result<Option<ServerRecord>> {
                 first_seen_ts: row.get(8)?,
                 first_seen_source_id: row.get(9)?,
                 sig: row.get(10)?,
+                flags: row.get(11)?,
+                flags_ts: row.get(12)?,
             })
         },
     );
@@ -180,7 +184,7 @@ mod tests {
         let source_id = setup_source(&conn, "https://example.com/sub1");
         let config = parse_config(CONFIG_A);
 
-        upsert_server(&conn, &config, source_id, 100).unwrap();
+        upsert_server(&conn, &config, source_id, 100, 0u8, 0i64).unwrap();
 
         let sid = server_id(&config);
         let server = get_server(&conn, sid)
@@ -201,8 +205,8 @@ mod tests {
         let source_id = setup_source(&conn, "https://example.com/sub1");
         let config = parse_config(CONFIG_A);
 
-        upsert_server(&conn, &config, source_id, 50).unwrap();
-        upsert_server(&conn, &config, source_id, 100).unwrap();
+        upsert_server(&conn, &config, source_id, 50, 0u8, 0i64).unwrap();
+        upsert_server(&conn, &config, source_id, 100, 0u8, 0i64).unwrap();
 
         let sid = server_id(&config);
         let server = get_server(&conn, sid)
@@ -221,8 +225,8 @@ mod tests {
         let source_b = setup_source(&conn, "https://example.com/sub_b");
         let config = parse_config(CONFIG_A);
 
-        upsert_server(&conn, &config, source_a, 100).unwrap();
-        upsert_server(&conn, &config, source_b, 50).unwrap();
+        upsert_server(&conn, &config, source_a, 100, 0u8, 0i64).unwrap();
+        upsert_server(&conn, &config, source_b, 50, 0u8, 0i64).unwrap();
 
         let sid = server_id(&config);
         let server = get_server(&conn, sid)
@@ -254,8 +258,8 @@ mod tests {
         let source_b = setup_source(&conn, "https://example.com/sub_b");
         let config = parse_config(CONFIG_A);
 
-        upsert_server(&conn, &config, source_a, 100).unwrap();
-        upsert_server(&conn, &config, source_b, 100).unwrap();
+        upsert_server(&conn, &config, source_a, 100, 0u8, 0i64).unwrap();
+        upsert_server(&conn, &config, source_b, 100, 0u8, 0i64).unwrap();
 
         let sid = server_id(&config);
         let server = get_server(&conn, sid)
@@ -273,7 +277,7 @@ mod tests {
         let conn = setup_db();
         let config = parse_config(CONFIG_A);
 
-        let result = upsert_server(&conn, &config, 99999, 100);
+        let result = upsert_server(&conn, &config, 99999, 100, 0u8, 0i64);
         assert!(result.is_err(), "should fail with FK constraint");
     }
 
@@ -284,8 +288,8 @@ mod tests {
         let config_a = parse_config(CONFIG_A);
         let config_b = parse_config(CONFIG_B);
 
-        upsert_server(&conn, &config_a, source_id, 100).unwrap();
-        upsert_server(&conn, &config_b, source_id, 200).unwrap();
+        upsert_server(&conn, &config_a, source_id, 100, 0u8, 0i64).unwrap();
+        upsert_server(&conn, &config_b, source_id, 200, 0u8, 0i64).unwrap();
 
         let sid_a = server_id(&config_a);
         let sid_b = server_id(&config_b);
@@ -316,8 +320,8 @@ mod tests {
         let source_b = setup_source(&conn, "https://example.com/sub_b");
         let config = parse_config(CONFIG_A);
 
-        upsert_server(&conn, &config, source_a, 100).unwrap();
-        upsert_server(&conn, &config, source_b, 200).unwrap();
+        upsert_server(&conn, &config, source_a, 100, 0u8, 0i64).unwrap();
+        upsert_server(&conn, &config, source_b, 200, 0u8, 0i64).unwrap();
 
         let sid = server_id(&config);
         let server = get_server(&conn, sid)
@@ -337,7 +341,7 @@ mod tests {
         let source_id = setup_source(&conn, "https://example.com/sub1");
         let config = parse_config(CONFIG_A);
 
-        upsert_server(&conn, &config, source_id, 100).unwrap();
+        upsert_server(&conn, &config, source_id, 100, 0u8, 0i64).unwrap();
 
         let sid = server_id(&config);
         let server = get_server(&conn, sid)

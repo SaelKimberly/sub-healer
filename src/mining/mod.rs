@@ -53,6 +53,36 @@ pub fn get_current_timestamp() -> i64 {
 
 static WEB_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
 
+static WHITELIST: OnceLock<crate::whitelist::WhitelistChecker> = OnceLock::new();
+
+/// Initialize the global whitelist checker from file paths.
+/// Returns `Ok(true)` if all files loaded, `Ok(false)` if files missing (graceful deg).
+///
+/// # Errors
+///
+/// Returns an error if the whitelist files exist but cannot be parsed.
+pub fn init_whitelist(
+    sni: &std::path::Path,
+    ip: &std::path::Path,
+    cidr: &std::path::Path,
+) -> anyhow::Result<bool> {
+    if !sni.exists() || !ip.exists() || !cidr.exists() {
+        tracing::info!("Whitelist files not found at {sni:?}, {ip:?}, {cidr:?}; skipping");
+        return Ok(false);
+    }
+    let checker = crate::whitelist::WhitelistChecker::new(sni, ip, cidr)?;
+    WHITELIST
+        .set(checker)
+        .map_err(|_| anyhow::anyhow!("Whitelist already initialized"))?;
+    Ok(true)
+}
+
+/// Access the global whitelist checker, if initialized.
+#[must_use]
+pub fn whitelist() -> Option<&'static crate::whitelist::WhitelistChecker> {
+    WHITELIST.get()
+}
+
 /// # Errors
 ///
 /// Will return `Err` if the proxy URL is invalid or the client cannot be built.

@@ -114,7 +114,9 @@ impl ProtoSpec for VlessConfig {
         let query = utils::parse_query(raw.query);
 
         // type/transport: tcp/ws/grpc/http/kcp/quic/httpupgrade. Defaults to "tcp".
-        let transport_type = utils::query_get(&query, "type").unwrap_or("tcp").to_string();
+        let transport_type = utils::query_get(&query, "type")
+            .unwrap_or("tcp")
+            .to_string();
         let path = utils::query_get(&query, "path").map(TinyText::from);
         // encryption: typically "none" (VLESS relies on TLS, not payload encryption)
         let encryption = utils::query_get(&query, "encryption")
@@ -163,7 +165,6 @@ impl ProtoSpec for VlessConfig {
             TransportConfig::from_type_and_path(Some(&transport_type), path.as_deref())?
                 .unwrap_or(TransportConfig::Tcp);
         transport = transport.with_host(host, sni_from_query, server_addr);
-
 
         // Extract mode and extra for XHttp, validate mode
         if let TransportConfig::XHttp(ref mut xcfg) = transport {
@@ -226,6 +227,7 @@ impl ProtoSpec for VlessConfig {
         })
     }
 
+    #[allow(clippy::too_many_lines)]
     fn reconstruct(&self) -> Result<String, ParseError> {
         let host = self.host.to_str();
         let hostport = if host.contains(':') {
@@ -246,9 +248,10 @@ impl ProtoSpec for VlessConfig {
                     TlsConfig::Tls(opts) => {
                         q.append_pair("security", "tls");
                         if let Some(ref v) = opts.sni
-                            && !should_skip_param(&self.host, v) {
-                                q.append_pair("sni", v);
-                            }
+                            && !should_skip_param(&self.host, v)
+                        {
+                            q.append_pair("sni", v);
+                        }
                         if let Some(ref v) = opts.alpn {
                             q.append_pair("alpn", v);
                         }
@@ -259,9 +262,10 @@ impl ProtoSpec for VlessConfig {
                     TlsConfig::Reality(opts) => {
                         q.append_pair("security", "reality");
                         if let Some(ref v) = opts.sni
-                            && !should_skip_param(&self.host, v) {
-                                q.append_pair("sni", v);
-                            }
+                            && !should_skip_param(&self.host, v)
+                        {
+                            q.append_pair("sni", v);
+                        }
                         if let Some(ref v) = opts.fp {
                             q.append_pair("fp", v);
                         }
@@ -283,15 +287,17 @@ impl ProtoSpec for VlessConfig {
             match &self.transport {
                 TransportConfig::HttpUpgrade(cfg) => {
                     if let Some(ref host) = cfg.host
-                        && !should_skip_param(&self.host, host) {
-                            q.append_pair("host", host);
-                        }
+                        && !should_skip_param(&self.host, host)
+                    {
+                        q.append_pair("host", host);
+                    }
                 }
                 TransportConfig::XHttp(cfg) => {
                     if let Some(ref host) = cfg.host
-                        && !should_skip_param(&self.host, host) {
-                            q.append_pair("host", host);
-                        }
+                        && !should_skip_param(&self.host, host)
+                    {
+                        q.append_pair("host", host);
+                    }
                     if let Some(ref mode) = cfg.mode {
                         q.append_pair("mode", mode);
                     }

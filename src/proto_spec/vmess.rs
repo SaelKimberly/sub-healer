@@ -268,9 +268,10 @@ impl ProtoSpec for VmessConfig {
         if let Some(TlsConfig::Tls(opts)) = &self.security.tls {
             map.insert("tls".into(), serde_json::Value::String("tls".into()));
             if let Some(ref v) = opts.sni
-                && !should_skip_param(&self.host, v) {
-                    map.insert("sni".into(), serde_json::Value::String(v.to_string()));
-                }
+                && !should_skip_param(&self.host, v)
+            {
+                map.insert("sni".into(), serde_json::Value::String(v.to_string()));
+            }
             if let Some(ref v) = opts.alpn {
                 map.insert("alpn".into(), serde_json::Value::String(v.to_string()));
             }

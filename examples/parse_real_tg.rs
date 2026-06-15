@@ -29,6 +29,16 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
 
+    // Initialize whitelist checker from default file paths
+    let wl_loaded = v2ray_heal::mining::init_whitelist(
+        &PathBuf::from("whitelist.txt"),
+        &PathBuf::from("ipwhitelist.txt"),
+        &PathBuf::from("cidrwhitelist.txt"),
+    )?;
+    if wl_loaded {
+        eprintln!("Whitelist loaded");
+    }
+
     let config_path = PathBuf::from("channels-collection-01.yaml");
     let registry = SourceRegistry::from_config(&config_path)?;
 
@@ -49,7 +59,7 @@ async fn main() -> anyhow::Result<()> {
     // Count results from DB
     let servers = pipeline
         .db()
-        .query_servers_filtered(None, None, None)
+        .query_servers_filtered(None, None, None, None)
         .await?;
     let mut by_scheme_ok = BTreeMap::<String, u64>::new();
     let mut by_channel = BTreeMap::<String, u64>::new();
@@ -58,6 +68,12 @@ async fn main() -> anyhow::Result<()> {
         *by_scheme_ok.entry(server.schema.clone()).or_default() += 1;
     }
 
+    // Count whitelisted servers (any flag set)
+    let wl_servers = pipeline
+        .db()
+        .query_servers_filtered(None, None, None, Some(0b111u8))
+        .await?;
+    let wl_count: u64 = wl_servers.len() as u64;
     // Query sources for each server
     let mut source_ids: Vec<i64> = servers.iter().map(|s| s.first_seen_source_id).collect();
     if !source_ids.is_empty() {
@@ -85,6 +101,7 @@ async fn main() -> anyhow::Result<()> {
         "generated_at": Utc::now().to_rfc3339(),
         "total_urls": total_ok,
         "ok": total_ok,
+        "wl_count": wl_count,
         "by_scheme": all_schemes,
         "by_channel": all_channels,
     });
@@ -97,7 +114,7 @@ async fn main() -> anyhow::Result<()> {
         .open(&summary_path)?;
     serde_json::to_writer_pretty(&mut f, &summary)?;
 
-    eprintln!("Results: {} OK", total_ok);
+    eprintln!("Results: {} OK, {} whitelisted", total_ok, wl_count);
     eprintln!("Unparseable URLs logged to: {}", unparseable_path.display());
 
     Ok(())

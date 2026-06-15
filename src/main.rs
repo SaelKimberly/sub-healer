@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use anyhow::Context;
+use rusqlite::params;
 
 use chrono::{DateTime, Utc};
 use clap::Parser;
@@ -20,6 +21,13 @@ enum PullScope {
     /// Both subscription and Telegram sources
     All,
 }
+/// Whitelist flag filter for `--wl`.
+#[derive(clap::ValueEnum, Clone, Debug)]
+enum WhitelistFlagFilter {
+    Sni,
+    Ip,
+    Cidr,
+}
 
 #[derive(Debug, clap::Args)]
 pub(crate) struct EmitFilterArgs {
@@ -35,6 +43,16 @@ pub(crate) struct EmitFilterArgs {
         help = "Minimum last-seen timestamp (humantime duration, e.g. '7d', '30m')"
     )]
     min_last_seen_ts: Option<humantime::Duration>,
+    /// Re-check all servers against whitelist files and update their flags
+    #[arg(long)]
+    recheck_whitelist: bool,
+    /// Only recheck servers whose flags_ts is older than this duration (e.g. '7d').
+    /// 0 (or omitted) = recheck all. Only meaningful with --recheck-whitelist.
+    #[arg(long)]
+    recheck_max_age: Option<humantime::Duration>,
+    /// Filter output by whitelist flag type: sni, ip, cidr (repeatable/comma-separated)
+    #[arg(long, value_delimiter = ',')]
+    wl: Vec<WhitelistFlagFilter>,
 }
 
 #[derive(Debug, clap::Args)]
@@ -118,6 +136,15 @@ struct Cli {
         require_equals = true,
     )]
     unparseable_log: Option<PathBuf>,
+    /// Path to SNI whitelist file
+    #[arg(long, default_value = "whitelist.txt")]
+    whitelist_sni: PathBuf,
+    /// Path to IP whitelist file
+    #[arg(long, default_value = "ipwhitelist.txt")]
+    whitelist_ip: PathBuf,
+    /// Path to CIDR whitelist file
+    #[arg(long, default_value = "cidrwhitelist.txt")]
+    whitelist_cidr: PathBuf,
 }
 
 /// Parse the `--last` and `--upto` CLI flags into a [`mining::Backfill`] option.
@@ -165,6 +192,16 @@ async fn emit_after_mine(pipeline: &mining::Pipeline, opts: &EmitOnMine) -> anyh
         return Ok(());
     }
 
+    // Re-check whitelist flags if requested
+    if opts.filters.recheck_whitelist {
+        let max_age = opts.filters.recheck_max_age.map(|d| {
+            let std_dur: std::time::Duration = d.into();
+            chrono::Duration::from_std(std_dur).unwrap()
+        });
+        let n = recheck_whitelist(pipeline, max_age).await?;
+        tracing::info!(count = n, "Rechecked whitelist flags");
+    }
+
     let unix_now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
@@ -186,11 +223,111 @@ async fn emit_after_mine(pipeline: &mining::Pipeline, opts: &EmitOnMine) -> anyh
         Some(opts.filters.protocol.as_slice())
     };
 
+    let wl_mask: u8 = opts.filters.wl.iter().fold(0u8, |mask, f| {
+        mask | match f {
+            WhitelistFlagFilter::Sni => v2ray_heal::whitelist::SNI_WHITELISTED,
+            WhitelistFlagFilter::Ip => v2ray_heal::whitelist::IP_WHITELISTED,
+            WhitelistFlagFilter::Cidr => v2ray_heal::whitelist::CIDR_WHITELISTED,
+        }
+    });
+
     let output = pipeline
-        .export(protocol_filter, min_first, min_last)
+        .export(protocol_filter, min_first, min_last, wl_mask)
         .await?;
     print!("{output}");
     Ok(())
+}
+
+/// Re-check whitelist flags for all servers whose `flags_ts` is older than `max_age`
+/// (or never checked). Updates the database in-place.
+/// Helper: convert a SQLite row to `ServerRecord`.
+fn srv_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<v2ray_heal::db::models::ServerRecord> {
+    use v2ray_heal::db::models::ServerRecord;
+    Ok(ServerRecord {
+        id: row.get(0)?,
+        schema: row.get(1)?,
+        host: row.get(2)?,
+        port: row.get(3)?,
+        transport: row.get(4)?,
+        security: row.get(5)?,
+        remarks: row.get(6)?,
+        raw_config: row.get(7)?,
+        first_seen_ts: row.get(8)?,
+        first_seen_source_id: row.get(9)?,
+        sig: row.get(10)?,
+        flags: row.get(11)?,
+        flags_ts: row.get(12)?,
+    })
+}
+
+async fn recheck_whitelist(
+    pipeline: &mining::Pipeline,
+    max_age: Option<chrono::Duration>,
+) -> anyhow::Result<usize> {
+    use anyhow::Context;
+    use chrono::Utc;
+    use v2ray_heal::db::models::ServerRecord;
+
+    let checker =
+        mining::whitelist().context("Whitelist not initialized — use --whitelist-* flags")?;
+    let now = Utc::now().timestamp();
+
+    let servers = pipeline
+        .db()
+        .with_conn_read(|conn| -> rusqlite::Result<Vec<ServerRecord>> {
+            let (sql, param): (&str, Box<dyn rusqlite::types::ToSql>) = if let Some(max) = max_age {
+                let cut_off = now.saturating_sub(max.num_seconds());
+                (
+                    "SELECT id, schema, host, port, transport, security, remarks, \
+                         raw_config, first_seen_ts, first_seen_source_id, sig, flags, flags_ts \
+                         FROM servers WHERE flags_ts < ?1 OR flags_ts = 0",
+                    Box::new(cut_off) as Box<dyn rusqlite::types::ToSql>,
+                )
+            } else {
+                (
+                    "SELECT id, schema, host, port, transport, security, remarks, \
+                         raw_config, first_seen_ts, first_seen_source_id, sig, flags, flags_ts \
+                         FROM servers",
+                    Box::new(0i64) as Box<dyn rusqlite::types::ToSql>,
+                )
+            };
+            let mut stmt = conn.prepare_cached(sql)?;
+            let rows: rusqlite::Result<Vec<ServerRecord>> = if max_age.is_some() {
+                stmt.query_map([&*param], srv_from_row)?.collect()
+            } else {
+                stmt.query_map([], srv_from_row)?.collect()
+            };
+            rows
+        })
+        .await;
+
+    let servers = servers?;
+    let mut update_count = 0usize;
+
+    let _ = pipeline
+        .db()
+        .with_conn(|conn| -> anyhow::Result<()> {
+            let mut stmt =
+                conn.prepare_cached("UPDATE servers SET flags = ?1, flags_ts = ?2 WHERE id = ?3")?;
+            for server in &servers {
+                let mut bytes = server.raw_config.as_bytes().to_vec();
+                let config: v2ray_heal::proto_spec::ProtocolConfig =
+                    match simd_json::from_slice(&mut bytes) {
+                        Ok(c) => c,
+                        Err(e) => {
+                            tracing::warn!(server_id = server.id, error = %e, "deser failed");
+                            continue;
+                        }
+                    };
+                let flags = checker.check_config(&config);
+                stmt.execute(params![flags as i64, now, server.id])?;
+                update_count += 1;
+            }
+            Ok(())
+        })
+        .await;
+
+    Ok(update_count)
 }
 
 #[tokio::main]
@@ -209,6 +346,8 @@ async fn main() -> anyhow::Result<()> {
         ))
         .try_init()
         .ok();
+    // Initialize global whitelist checker (graceful if files missing)
+    let _ = mining::init_whitelist(&cli.whitelist_sni, &cli.whitelist_ip, &cli.whitelist_cidr)?;
 
     match cli.command {
         Some(Commands::Config {
@@ -425,6 +564,15 @@ async fn main() -> anyhow::Result<()> {
                     pipeline.run().await?;
                 }
             }
+            // Re-check whitelist flags if requested
+            if filters.recheck_whitelist {
+                let max_age = filters.recheck_max_age.map(|d| {
+                    let std_dur: std::time::Duration = d.into();
+                    chrono::Duration::from_std(std_dur).unwrap()
+                });
+                let n = recheck_whitelist(&pipeline, max_age).await?;
+                tracing::info!(count = n, "Rechecked whitelist flags");
+            }
 
             use std::time::SystemTime;
             let unix_now = SystemTime::now()
@@ -448,8 +596,16 @@ async fn main() -> anyhow::Result<()> {
                 Some(filters.protocol.as_slice())
             };
 
+            let wl_mask: u8 = filters.wl.iter().fold(0u8, |mask, f| {
+                mask | match f {
+                    WhitelistFlagFilter::Sni => v2ray_heal::whitelist::SNI_WHITELISTED,
+                    WhitelistFlagFilter::Ip => v2ray_heal::whitelist::IP_WHITELISTED,
+                    WhitelistFlagFilter::Cidr => v2ray_heal::whitelist::CIDR_WHITELISTED,
+                }
+            });
+
             let output = pipeline
-                .export(protocol_filter, min_first, min_last)
+                .export(protocol_filter, min_first, min_last, wl_mask)
                 .await?;
             print!("{output}");
         }

@@ -7,6 +7,7 @@ pub mod proto_spec;
 mod utils;
 
 pub mod urlx;
+pub mod whitelist;
 
 use std::borrow::Cow;
 

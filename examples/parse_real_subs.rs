@@ -55,6 +55,16 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
 
+    // Initialize whitelist checker from default file paths
+    let wl_loaded = v2ray_heal::mining::init_whitelist(
+        &PathBuf::from("whitelist.txt"),
+        &PathBuf::from("ipwhitelist.txt"),
+        &PathBuf::from("cidrwhitelist.txt"),
+    )?;
+    if wl_loaded {
+        eprintln!("Whitelist loaded");
+    }
+
     let goida_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("thirdparty")
         .join("goida-vpn-configs")
@@ -106,12 +116,19 @@ async fn main() -> anyhow::Result<()> {
     // Count results from DB
     let servers = pipeline
         .db()
-        .query_servers_filtered(None, None, None)
+        .query_servers_filtered(None, None, None, None)
         .await?;
     let mut by_scheme_ok = BTreeMap::<String, u64>::new();
     for server in &servers {
         *by_scheme_ok.entry(server.schema.clone()).or_default() += 1;
     }
+
+    // Count whitelisted servers (any flag set)
+    let wl_servers = pipeline
+        .db()
+        .query_servers_filtered(None, None, None, Some(0b111u8))
+        .await?;
+    let wl_count: u64 = wl_servers.len() as u64;
 
     let total_ok: u64 = by_scheme_ok.values().sum();
 
@@ -124,6 +141,7 @@ async fn main() -> anyhow::Result<()> {
         "generated_at": Utc::now().to_rfc3339(),
         "total_urls": total_ok,
         "ok": total_ok,
+        "wl_count": wl_count,
         "by_scheme": all_schemes,
     });
 
@@ -135,7 +153,7 @@ async fn main() -> anyhow::Result<()> {
         .open(&summary_path)?;
     serde_json::to_writer_pretty(&mut f, &summary)?;
 
-    eprintln!("Results: {} OK", total_ok);
+    eprintln!("Results: {} OK, {} whitelisted", total_ok, wl_count);
     eprintln!("Unparseable URLs logged to: {}", unparseable_path.display());
 
     Ok(())

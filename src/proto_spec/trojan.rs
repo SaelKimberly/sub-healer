@@ -119,7 +119,9 @@ impl ProtoSpec for TrojanConfig {
             _ => SecurityConfig::default(),
         };
         // Transport type: tcp (default), ws, grpc, http, quic, kcp
-        let transport_type = utils::query_get(&query, "type").unwrap_or("tcp").to_string();
+        let transport_type = utils::query_get(&query, "type")
+            .unwrap_or("tcp")
+            .to_string();
         let path = utils::query_get(&query, "path").map(TinyText::from);
 
         let remarks = utils::decode_fragment(raw)?;
@@ -130,8 +132,11 @@ impl ProtoSpec for TrojanConfig {
         let mut transport =
             TransportConfig::from_type_and_path(Some(&transport_type), path.as_deref())?
                 .unwrap_or(TransportConfig::Tcp);
-        transport = transport.with_host(host, utils::query_get(&query, "sni").map(str::to_string), server_addr);
-
+        transport = transport.with_host(
+            host,
+            utils::query_get(&query, "sni").map(str::to_string),
+            server_addr,
+        );
 
         let path = match transport {
             TransportConfig::Ws(ref ws) => ws.path.clone(),
@@ -173,9 +178,10 @@ impl ProtoSpec for TrojanConfig {
                             parts.push("security=tls".to_string());
                         }
                         if let Some(ref v) = opts.sni
-                            && !should_skip_param(&self.host, v) {
-                                parts.push(format!("sni={}", urlencoding::encode(v)));
-                            }
+                            && !should_skip_param(&self.host, v)
+                        {
+                            parts.push(format!("sni={}", urlencoding::encode(v)));
+                        }
                         if let Some(ref v) = opts.alpn {
                             parts.push(format!("alpn={}", urlencoding::encode(v)));
                         }
@@ -186,9 +192,10 @@ impl ProtoSpec for TrojanConfig {
                     TlsConfig::Reality(opts) => {
                         parts.push("security=reality".to_string());
                         if let Some(ref v) = opts.sni
-                            && !should_skip_param(&self.host, v) {
-                                parts.push(format!("sni={}", urlencoding::encode(v)));
-                            }
+                            && !should_skip_param(&self.host, v)
+                        {
+                            parts.push(format!("sni={}", urlencoding::encode(v)));
+                        }
                         if let Some(ref v) = opts.fp {
                             parts.push(format!("fp={}", urlencoding::encode(v)));
                         }
@@ -207,15 +214,17 @@ impl ProtoSpec for TrojanConfig {
             match &self.transport {
                 TransportConfig::HttpUpgrade(cfg) => {
                     if let Some(ref host) = cfg.host
-                        && !should_skip_param(&self.host, host) {
-                            parts.push(format!("host={}", urlencoding::encode(host)));
-                        }
+                        && !should_skip_param(&self.host, host)
+                    {
+                        parts.push(format!("host={}", urlencoding::encode(host)));
+                    }
                 }
                 TransportConfig::XHttp(cfg) => {
                     if let Some(ref host) = cfg.host
-                        && !should_skip_param(&self.host, host) {
-                            parts.push(format!("host={}", urlencoding::encode(host)));
-                        }
+                        && !should_skip_param(&self.host, host)
+                    {
+                        parts.push(format!("host={}", urlencoding::encode(host)));
+                    }
                 }
                 _ => {}
             }

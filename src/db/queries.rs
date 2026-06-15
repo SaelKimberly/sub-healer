@@ -45,6 +45,7 @@ pub fn query_servers_filtered(
     protocols: Option<&[String]>,
     min_first_seen: Option<i64>,
     min_last_seen: Option<i64>,
+    flags_mask: Option<u8>,
 ) -> Result<Vec<ServerRecord>> {
     let mut conditions: Vec<String> = Vec::new();
     let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
@@ -76,6 +77,13 @@ pub fn query_servers_filtered(
         ));
     }
 
+    if let Some(mask) = flags_mask
+        && mask != 0
+    {
+        params.push(Box::new(i64::from(mask)));
+        conditions.push(format!("(flags & ?{}) != 0", params.len()));
+    }
+
     let where_clause = if conditions.is_empty() {
         String::new()
     } else {
@@ -83,7 +91,7 @@ pub fn query_servers_filtered(
     };
 
     let sql = format!(
-        "SELECT id, schema, host, port, transport, security, remarks, raw_config, first_seen_ts, first_seen_source_id, sig \
+        "SELECT id, schema, host, port, transport, security, remarks, raw_config, first_seen_ts, first_seen_source_id, sig, flags, flags_ts \
          FROM servers {where_clause} \
          ORDER BY schema ASC, remarks ASC NULLS LAST"
     );
@@ -105,6 +113,8 @@ pub fn query_servers_filtered(
             first_seen_ts: row.get(8)?,
             first_seen_source_id: row.get(9)?,
             sig: row.get(10)?,
+            flags: row.get(11)?,
+            flags_ts: row.get(12)?,
         })
     })?;
 

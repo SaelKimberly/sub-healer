@@ -87,10 +87,12 @@ itoa = { version = "^1.0" }
 # ============ Character Detection ============
 chardetng = { version = "^1.0.0", features = ["multithreading"] }
 simdutf8 = { version = "^0.1.5" }
+fastbloom = { version = "0.17.0", features = ["serde"] }
 
 [dev-dependencies]
 flamegraph = { version = "0.6.13" }
 criterion = { version = "0.8.2" }
+tempfile = { version = "^3.15.0" }
 
 [[bench]]
 name = "raw_urlx"

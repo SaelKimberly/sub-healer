@@ -106,17 +106,19 @@ impl ProtoSpec for TuicConfig {
                 sni: utils::query_get(&query, "sni").map(TinyText::from),
                 alpn: utils::query_get(&query, "alpn").map(TinyText::from),
                 fp: None,
-                insecure: utils::query_get_multi(&query, &["allow_insecure", "insecure", "allowInsecure"])
-                    .and_then(|v| match v {
-                        "1" | "true" => Some(true),
-                        "0" | "false" => Some(false),
-                        _ => None,
-                    }),
+                insecure: utils::query_get_multi(
+                    &query,
+                    &["allow_insecure", "insecure", "allowInsecure"],
+                )
+                .and_then(|v| match v {
+                    "1" | "true" => Some(true),
+                    "0" | "false" => Some(false),
+                    _ => None,
+                }),
             })),
             enc: None,
         };
         let remarks = utils::decode_fragment(raw)?;
-
 
         Ok(Self {
             sig_cache: std::sync::OnceLock::new(),
@@ -158,9 +160,10 @@ impl ProtoSpec for TuicConfig {
                 parts.push(format!("allow_insecure={}", if v { "1" } else { "0" }));
             }
             if let Some(v) = self.security.sni()
-                && !should_skip_param(&self.host, v) {
-                    parts.push(format!("sni={}", urlencoding::encode(v)));
-                }
+                && !should_skip_param(&self.host, v)
+            {
+                parts.push(format!("sni={}", urlencoding::encode(v)));
+            }
             if parts.is_empty() {
                 String::new()
             } else {

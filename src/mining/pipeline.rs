@@ -269,7 +269,8 @@ pub(super) fn process_single_raw_url(
     let raw: RawUrlX = RawUrlX::from(raw_url);
     match ProtocolConfig::try_parse_detailed(&raw) {
         Ok(ParseResult::Direct(config)) => {
-            crate::db::upsert_server(conn, &config, source_id, ts)?;
+            let flags = super::whitelist().map_or(0u8, |w| w.check_config(&config));
+            crate::db::upsert_server(conn, &config, source_id, ts, flags, ts)?;
             Ok(true)
         }
         Ok(ParseResult::Fallback(config, info)) => {
@@ -282,7 +283,8 @@ pub(super) fn process_single_raw_url(
                 source_type,
                 ts,
             );
-            crate::db::upsert_server(conn, &config, source_id, ts)?;
+            let flags = super::whitelist().map_or(0u8, |w| w.check_config(&config));
+            crate::db::upsert_server(conn, &config, source_id, ts, flags, ts)?;
             Ok(true)
         }
         Err(e) => {
@@ -314,10 +316,16 @@ impl Pipeline {
         protocols: Option<&[String]>,
         min_first_seen: Option<i64>,
         min_last_seen: Option<i64>,
+        flags_mask: u8,
     ) -> anyhow::Result<String> {
+        let mask = if flags_mask == 0 {
+            None
+        } else {
+            Some(flags_mask)
+        };
         let servers = self
             .db
-            .query_servers_filtered(protocols, min_first_seen, min_last_seen)
+            .query_servers_filtered(protocols, min_first_seen, min_last_seen, mask)
             .await
             .context("Failed to query servers")?;
 

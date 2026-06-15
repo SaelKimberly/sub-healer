@@ -19,6 +19,8 @@ pub struct ServerRecord {
     pub first_seen_ts: i64,
     pub first_seen_source_id: i64,
     pub sig: i64,
+    pub flags: i64,
+    pub flags_ts: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

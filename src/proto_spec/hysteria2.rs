@@ -128,7 +128,6 @@ impl ProtoSpec for Hysteria2Config {
         let down = utils::query_get(&query, "down").map(TinyText::from);
         let remarks = utils::decode_fragment(raw)?;
 
-
         Ok(Self {
             sig_cache: std::sync::OnceLock::new(),
             cred_hash_cache: std::sync::OnceLock::new(),
@@ -160,9 +159,10 @@ impl ProtoSpec for Hysteria2Config {
                     parts.push("insecure=1".to_string());
                 }
                 if let Some(v) = self.security.sni()
-                    && !should_skip_param(&self.host, v) {
-                        parts.push(format!("sni={}", urlencoding::encode(v)));
-                    }
+                    && !should_skip_param(&self.host, v)
+                {
+                    parts.push(format!("sni={}", urlencoding::encode(v)));
+                }
             }
             if let Some(ref v) = self.obfs {
                 parts.push(format!("obfs={}", urlencoding::encode(v)));

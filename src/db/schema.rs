@@ -20,6 +20,8 @@ CREATE TABLE IF NOT EXISTS servers (
     first_seen_ts INTEGER NOT NULL,
     first_seen_source_id INTEGER NOT NULL,
     sig INTEGER NOT NULL DEFAULT 0,
+    flags INTEGER NOT NULL DEFAULT 0,
+    flags_ts INTEGER NOT NULL DEFAULT 0,
     FOREIGN KEY (first_seen_source_id) REFERENCES sources(id)
 );
 ";
@@ -56,6 +58,10 @@ pub(crate) fn init_db(conn: &Connection) -> Result<()> {
         ]
         .join("\n"),
     )?;
+    // Migration: add flags/flags_ts columns if missing (added in v2 schema)
+    let _ = conn.execute_batch("ALTER TABLE servers ADD COLUMN flags INTEGER NOT NULL DEFAULT 0;");
+    let _ =
+        conn.execute_batch("ALTER TABLE servers ADD COLUMN flags_ts INTEGER NOT NULL DEFAULT 0;");
     conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000; PRAGMA wal_autocheckpoint=2000; PRAGMA journal_size_limit=0;")?;
     Ok(())
 }
