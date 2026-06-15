@@ -30,6 +30,7 @@ Key modules:
 - `src/proto_spec/` — Protocol parsing: `ProtocolConfig` enum, `ProtoSpec` trait, `dispatch!` macro, 12 config parsers
 - `src/urlx/` — URL splitter: `SchemeX`, `RawUrlX`, `PortSpec`, `HostSpec`
 - `src/utils/` — Utilities: line processing, host/port parsing, permissive JSON (`PermissiveJsonError` via `thiserror::Error` derive), unescaping; `normalize_extras` uses `simd_json::to_string` + `rayon` parallelism
+- `src/whitelist/` — Whitelist checking: `WhitelistChecker` with bloom-filter fast-negative guard + exact HashSet for SNI/IP and binary-search CIDR interval lookup. Used by `mining::init_whitelist()` global OnceLock, flags computed during pipeline insert.
 
 ---
 
@@ -296,6 +297,8 @@ All database operations are methods on `Database`: `open()`, `init_db()`, `upser
   - `raw_config` TEXT NOT NULL (JSON-serialized `ProtocolConfig` via `simd_json::to_string`)
   - `transport` TEXT, `security` TEXT, `remarks` TEXT
   - `sig` INTEGER NOT NULL DEFAULT 0 (= `ProtocolConfig::sig()` cast to i64)
+  - `flags` INTEGER NOT NULL DEFAULT 0 (bitmask: 0b001=SNI whitelisted, 0b010=IP whitelisted, 0b100=CIDR whitelisted)
+  - `flags_ts` INTEGER NOT NULL DEFAULT 0 (unix timestamp of last whitelist check)
   - `first_seen_ts` INTEGER NOT NULL, `first_seen_source_id` INTEGER NOT NULL REFERENCES sources(id)
 
 - **`sightings`** — Time-travel tracking of when each server was observed from each source
@@ -320,7 +323,7 @@ Time-travel upsert with three cases (all SQL uses `conn.prepare_cached()` to avo
 
 ### Query Functions
 
-- `query_servers_filtered(conn, protocols, min_first_seen, min_last_seen)` — filtered export with dynamic WHERE clause building
+- `query_servers_filtered(conn, protocols, min_first_seen, min_last_seen, flags_mask)` — filtered export with dynamic WHERE clause building. `flags_mask: Option<u8>` adds `AND (flags & ?) != 0` when Some.
 - `query_sources_by_ids(conn, ids)` — source URL lookup by primary key (used in emit export to resolve `first_seen_source_id`)
 
 ---

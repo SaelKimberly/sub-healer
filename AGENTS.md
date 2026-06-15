@@ -6,7 +6,7 @@ Rust proxy subscription miner/aggregator: scrapes Telegram channels + downloads 
 
 ```bash
 rtk cargo check                 # lint
-rtk cargo test                  # all tests (168 pass, 0 ignored)
+rtk cargo test                  # all tests (180 pass, 0 ignored)
 cat sub.txt | cargo run -- stdin              # parse from pipe
 cargo run -- config --emit --protocol vmess   # mine then emit filtered
 cargo run -- --db ":memory:" local ./file.txt --emit   # ephemeral mine+emit
@@ -22,9 +22,9 @@ cargo bench                                   # criterion benchmarks
 - **`stdin`**: Pipe → `parse_to_raw_urls()` → DB upsert. Source type: `Other`, registry key `stdin://local`. Supports `--emit` flag.
 - **`remote`**: Download subs from URLs or scrape Telegram (t.me auto-detected via host check). Mixed batch OK. Supports `--emit` flag.
 - **`local`**: Filesystem → `parse_to_raw_urls()` → DB upsert. Source URL = `file://` absolute path. Supports `--emit` flag.
-- **`emit`**: Filtered server export. `--protocol` (repeatable, case-insensitive), `--min-first-seen-ts`, `--min-last-seen-ts` (humantime durations), `--pull` (re-mine all DB sources, optionally with per-source Telegram backfill). Reconstructs native URLs from stored `ProtocolConfig` JSON.
+- **`emit`**: Filtered server export. `--protocol` (repeatable, case-insensitive), `--min-first-seen-ts`, `--min-last-seen-ts` (humantime durations), `--pull` (re-mine all DB sources, optionally with per-source Telegram backfill). `--wl` (comma-separated: sni,ip,cidr) to filter by whitelist flags. `--recheck-whitelist` re-runs whitelist checking on all (or outdated) servers. `--recheck-max-age` (humantime) limits recheck to servers not checked within the duration. Reconstructs native URLs from stored `ProtocolConfig` JSON.
 
-Global `--db` flag (default `v2ray-heal.db`) must appear before the subcommand — not marked `global = true` in clap. Combined with `--db ":memory:"` and `--emit` on any mining subcommand, enables a fully ephemeral pipeline: mine → filter → output → discard, with zero disk persistence. `--emit` is available on `config`, `remote`, `local`, and `stdin`; the standalone `emit` subcommand remains for querying an existing database. `--unparseable-log` enables the unparseable log file (default: `unparseable.ndjson`); `--unparseable-log=<PATH>` overrides the path.
+Global `--db` flag (default `v2ray-heal.db`) must appear before the subcommand — not marked `global = true` in clap. Combined with `--db ":memory:"` and `--emit` on any mining subcommand, enables a fully ephemeral pipeline: mine → filter → output → discard, with zero disk persistence. `--emit` is available on `config`, `remote`, `local`, and `stdin`; the standalone `emit` subcommand remains for querying an existing database. `--unparseable-log` enables the unparseable log file (default: `unparseable.ndjson`); `--unparseable-log=<PATH>` overrides the path. `--whitelist-sni`, `--whitelist-ip`, `--whitelist-cidr` load SNI/IP/CIDR whitelist files (default: `whitelist.txt`, `ipwhitelist.txt`, `cidrwhitelist.txt`) for bloom-filter-based flagging on insert and `--wl` filtering on export.
 
 ## Architecture
 
@@ -35,7 +35,7 @@ Global `--db` flag (default `v2ray-heal.db`) must appear before the subcommand �
 3. On `Fallback` result, retry chain: SS→SSR→VMess→VLESS→Trojan→Hysteria2→Slipnet→TG
 4. `reconstruct()` builds canonical URL back from parsed fields
 
-`dispatch!` macro delegates all `ProtoSpec` trait methods across 12 `ProtocolConfig` variants.
+`dispatch!` macro delegates all `ProtoSpec` trait methods across 12 `ProtocolConfig` variants. Whitelist checking (`src/whitelist/`) uses BloomFilter (fastbloom) for SNI/IP and binary-search CIDR intervals to compute flags bitmask during pipeline insert; `--wl` filters on export.
 
 ## Streaming Decoder (`src/decoder.rs`)
 
@@ -75,7 +75,7 @@ NDJSON via tracing layer (`target: "mining::unparseable"`). Fields: `raw_url`, `
 ## Database Schema
 
 - **`sources`** — `id` (INTEGER PK, hash of URL via RapidStreamHasherV3), `url` (TEXT)
-- **`servers`** — `id` (i64 = ProtocolConfig::uid), schema, host, port, transport, security, remarks, `raw_config` (ProtocolConfig JSON), first_seen_ts, first_seen_source_id → FK sources(id)
+- **`servers`** — `id` (i64 = ProtocolConfig::uid), schema, host, port, transport, security, remarks, `raw_config` (ProtocolConfig JSON), first_seen_ts, first_seen_source_id → FK sources(id), `flags` (i64 bitmask: 0b001=SNI, 0b010=IP, 0b100=CIDR), `flags_ts` (unix timestamp of last whitelist check)
 - **`sightings`** — server_id, source_id, seen_ts, remarks
 
 Time-travel: if incoming_ts < first_seen_ts, archive current to sightings + replace.
@@ -102,10 +102,11 @@ Time-travel: if incoming_ts < first_seen_ts, archive current to sightings + repl
 - **`itoa`**: Zero-alloc u16 formatting for port fields, replaces `to_string()`
 - **`parse_query` returns `Vec<(String,String)>`**: Linear scan for ≤5 entries instead of `HashMap`; `query_get()` / `query_get_multi()` helpers for lookups
 - **`idna` for hostname fallback**: `dns_name()` in `src/utils/host_port.rs` accepts non-ASCII bytes, falls back to `idna::domain_to_ascii()` for Punycode conversion when hostname contains Unicode characters. Returns `DnsName<'static>` via `.to_owned()` inside the `map_res` closure — coerces cleanly through all callers via lifetime covariance. `idna` v1.1.0 direct dependency.
+- **`fastbloom`**: `fastbloom = "0.17.0"` for bloom-filter fast-negative guard in whitelist checking. Three independent `BloomFilter` + `HashSet` pairs (SNI, IP) and a sorted `Vec<(u32,u32)>` CIDR interval list with `partitions_point()` binary search. `WhitelistChecker::new(sni_path, ip_path, cidr_path)` loads all three. Global `OnceLock` in `mining::` module, initialized via `init_whitelist()`.
 
 ## Pre-existing Test Status
 
-**168 passed, 0 ignored**. Previous 5 failures (VMess→SS fallback, SSR InvalidStructure, SlipnetEnc, WireGuard, Warp) were fixed during the proto_spec unification.
+**180 passed, 0 ignored**. Previous 5 failures (VMess→SS fallback, SSR InvalidStructure, SlipnetEnc, WireGuard, Warp) were fixed during the proto_spec unification.
 
 ## Tools
 
