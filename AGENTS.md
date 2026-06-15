@@ -6,7 +6,7 @@ Rust proxy subscription miner/aggregator: scrapes Telegram channels + downloads 
 
 ```bash
 rtk cargo check                 # lint
-rtk cargo test                  # all tests (163 pass, 0 ignored)
+rtk cargo test                  # all tests (168 pass, 0 ignored)
 cat sub.txt | cargo run -- stdin              # parse from pipe
 cargo run -- config --emit --protocol vmess   # mine then emit filtered
 cargo run -- --db ":memory:" local ./file.txt --emit   # ephemeral mine+emit
@@ -101,10 +101,11 @@ Time-travel: if incoming_ts < first_seen_ts, archive current to sightings + repl
 - **`base64-simd`**: Runtime-detected SSSE3/AVX2/NEON base64 decode in `process_aligned()`; 65KB work buffer uses `MaybeUninit` to avoid zero-init
 - **`itoa`**: Zero-alloc u16 formatting for port fields, replaces `to_string()`
 - **`parse_query` returns `Vec<(String,String)>`**: Linear scan for ≤5 entries instead of `HashMap`; `query_get()` / `query_get_multi()` helpers for lookups
+- **`idna` for hostname fallback**: `dns_name()` in `src/utils/host_port.rs` accepts non-ASCII bytes, falls back to `idna::domain_to_ascii()` for Punycode conversion when hostname contains Unicode characters. Returns `DnsName<'static>` via `.to_owned()` inside the `map_res` closure — coerces cleanly through all callers via lifetime covariance. `idna` v1.1.0 direct dependency.
 
 ## Pre-existing Test Status
 
-**163 passed, 0 ignored**. Previous 5 failures (VMess→SS fallback, SSR InvalidStructure, SlipnetEnc, WireGuard, Warp) were fixed during the proto_spec unification.
+**168 passed, 0 ignored**. Previous 5 failures (VMess→SS fallback, SSR InvalidStructure, SlipnetEnc, WireGuard, Warp) were fixed during the proto_spec unification.
 
 ## Tools
 

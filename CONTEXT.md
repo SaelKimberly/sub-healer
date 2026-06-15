@@ -13,7 +13,7 @@
 - Persists data to SQLite with time-travel upsert semantics to track origin and lifetime of every observed config
 - Exports filtered server lists via the `emit` CLI subcommand
 
-**Stack**: Rust 2024 edition (1.96.0+), `tokio` (async I/O) + `rayon` (parallel CPU for line processing), `rusqlite` (SQLite with bundled feature, `prepare_cached` for statement reuse), `mimalloc` (global allocator), `reqwest` (HTTP client with proxy support), `scraper` (HTML), `rapidhash` (hashing), `serde`/`serde_json` (serialization), `base64-simd` (SIMD-accelerated decode), `itoa` (zero-alloc int formatting), `clap` (CLI).
+**Stack**: Rust 2024 edition (1.96.0+), `tokio` (async I/O) + `rayon` (parallel CPU for line processing), `rusqlite` (SQLite with bundled feature, `prepare_cached` for statement reuse), `mimalloc` (global allocator), `reqwest` (HTTP client with proxy support), `scraper` (HTML), `rapidhash` (hashing), `serde`/`serde_json` (serialization), `base64-simd` (SIMD-accelerated decode), `itoa` (zero-alloc int formatting), `clap` (CLI), `idna` (IDNA/Punycode hostname conversion).
 
 **Entry points**: `cargo run -- config`, `cargo run -- remote <url>`, `cargo run -- local <file>`, `cargo run -- emit`, `cat sub.txt | cargo run -- stdin`
 
@@ -495,6 +495,8 @@ subscriptions:
 
 7. **GITHUB_TOKEN for github.com**: Bearer auth on `raw.githubusercontent.com` / `github.com` requests. Avoids rate limiting on raw content fetches.
 
+8. **IDNA fallback in `dns_name()`**: The `dns_name` parser in `src/utils/host_port.rs` originally accepted only ASCII alphanumeric + `.` `-` `_` via `nom` combinators. Subscription entries with Chinese hostnames (e.g. `例子.测试`) were rejected. Changed to `take_while1(|c| ... || c > 127)` to accept any byte, then fall back to `idna::domain_to_ascii()` for Punycode conversion. Fast path (pure ASCII) stays zero-alloc — the `.to_owned()` moved inside `map_res` returns `DnsName<'static>` which coerces through all callers via lifetime covariance. No caller changes needed, no measurable perf impact (isolated benchmarks within ±1% noise). Verified: 120171 real-world URLs parsed, 54 fewer unparseable entries.
+
 ---
 
 ## 11. Quick Reference: Protocol → Credential / sig Fields
@@ -519,7 +521,7 @@ subscriptions:
 ## 12. Common Test Commands
 
 ```bash
-# Run all tests (163 pass, 0 ignored)
+# Run all tests (168 pass, 0 ignored)
 rtk cargo test
 
 # Run specific protocol tests
