@@ -13,7 +13,7 @@ cargo run -- --db ":memory:" local ./file.txt --emit   # ephemeral mine+emit
 cargo run -- remote https://example.com/sub.txt  # download sub URL
 cargo run -- local ./file.txt                 # parse local file
 cargo run -- emit --protocol vmess            # export filtered servers
-cargo bench                                   # criterion benchmarks
+cargo criterion                              # criterion benchmarks (not cargo bench)
 ```
 
 ## CLI
