@@ -431,7 +431,7 @@ mod tests {
         assert!(!should_skip_param(&host_v4, "1.2.3.4"));
 
         let host_v6 = HostSpec::IpAddress(rustls::pki_types::IpAddr::V6(
-            rustls::pki_types::Ipv6Addr::from(std::net::Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1)),
+            rustls::pki_types::Ipv6Addr::from(std::net::Ipv6Addr::LOCALHOST),
         ));
         assert!(!should_skip_param(&host_v6, "::1"));
         assert!(!should_skip_param(&host_v6, "anything"));

@@ -325,7 +325,7 @@ mod tests {
             "private/reserved host: 127.0.0.1",
             42,
             "telegram",
-            1234567890,
+            1_234_567_890,
         );
 
         // Normal unparseable error should still be written
@@ -335,7 +335,7 @@ mod tests {
             "invalid port",
             42,
             "telegram",
-            1234567890,
+            1_234_567_890,
         );
 
         drop(guard);

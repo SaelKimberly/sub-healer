@@ -31,27 +31,18 @@ impl<'a> XNom<'a> for Span<'a> {
     }
 }
 
-impl<'a> XNom<'a> for &'a [u8] {
-    fn xnom<T>(
-        self,
-        mut p: impl Parser<Span<'a>, Output = T, Error = nom::error::Error<Span<'a>>>,
-    ) -> RawResult<'a, T> {
-        p.parse(Span::new(self))
-    }
-}
-
 impl<'a> XNom<'a> for &'a str {
     fn xnom<T>(
         self,
         mut p: impl Parser<Span<'a>, Output = T, Error = nom::error::Error<Span<'a>>>,
     ) -> RawResult<'a, T> {
-        p.parse(Span::new(self.as_bytes()))
+        p.parse(self.as_bytes())
     }
 }
 
 #[inline]
-fn _unchecked_str(s: Span<'_>) -> &str {
-    unsafe { str::from_utf8_unchecked(&s) }
+const fn _unchecked_str(s: Span<'_>) -> &str {
+    unsafe { str::from_utf8_unchecked(s) }
 }
 
 pub fn dns_name(span: Span<'_>) -> RawResult<'_, DnsName<'_>> {
@@ -61,7 +52,7 @@ pub fn dns_name(span: Span<'_>) -> RawResult<'_, DnsName<'_>> {
     ))
     // .map(_unchecked_str
     .map_res(|c: Span| {
-        let raw = unsafe { str::from_utf8_unchecked(&c) };
+        let raw = unsafe { str::from_utf8_unchecked(c) };
         DnsName::try_from_str(raw)
             .inspect_err(|_| tracing::trace!("Invalid DNS name detected: {raw}"))
     })
@@ -157,7 +148,7 @@ pub fn host_port_spec(span: Span<'_>) -> RawResult<'_, (ServerName<'_>, PortSpec
             nom::Err::Error(Error::new(span, ErrorKind::Verify))
         })?;
 
-        let port_area = span.take_from((*span.fragment()).offset(last_part.as_bytes()));
+        let port_area = span.take_from(span.offset(last_part.as_bytes()));
         let (tail, port) = port_specs(port_area)?;
 
         Ok((tail, (ServerName::IpAddress(IpAddr::V6(ip.into())), port)))
@@ -168,12 +159,11 @@ pub fn host_port_spec(span: Span<'_>) -> RawResult<'_, (ServerName<'_>, PortSpec
 
 #[cfg(test)]
 mod tests {
-    use super::Span;
 
     #[test]
     fn test_port_spec() {
         let s = "100-120,122";
-        let (_, spec) = super::port_specs(Span::new(s.as_bytes())).unwrap();
+        let (_, spec) = super::port_specs(s.as_bytes()).unwrap();
 
         assert_eq!(spec.length(), 22);
         assert_eq!(

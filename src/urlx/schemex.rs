@@ -28,8 +28,8 @@ pub enum SchemeX {
 }
 impl SchemeX {
     #[must_use]
-    pub fn as_str(&self) -> &str {
-        match self {
+    pub const fn as_known_str(&self) -> Option<&'static str> {
+        let schema = match self {
             Self::Vless => "vless",
             Self::Vmess => "vmess",
             Self::SS => "ss",
@@ -47,7 +47,15 @@ impl SchemeX {
             Self::Stormdns => "stormdns",
             Self::WireGuard => "wireguard",
             Self::Undefined => "undefined",
+            _ => return None,
+        };
+        Some(schema)
+    }
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        match self {
             Self::Unknown(s) => s.as_str(),
+            _ => unsafe { self.as_known_str().unwrap_unchecked() },
         }
     }
 

@@ -96,41 +96,42 @@ impl ProtoSpec for TrojanConfig {
         let query = utils::parse_query(raw.query);
 
         // Security mode: tls (default), none, or reality
-        let security = match query.get("security").map(String::as_str) {
+        let security = match utils::query_get(&query, "security") {
             Some("tls") | None => SecurityConfig {
                 tls: Some(TlsConfig::Tls(TlsOpts {
-                    sni: query.get("sni").cloned().map(TinyText::from),
-                    alpn: query.get("alpn").cloned().map(TinyText::from),
-                    fp: query.get("fp").cloned().map(TinyText::from),
+                    sni: utils::query_get(&query, "sni").map(TinyText::from),
+                    alpn: utils::query_get(&query, "alpn").map(TinyText::from),
+                    fp: utils::query_get(&query, "fp").map(TinyText::from),
                     insecure: None,
                 })),
                 enc: None,
             },
             Some("reality") => SecurityConfig {
                 tls: Some(TlsConfig::Reality(RealityOpts {
-                    sni: query.get("sni").cloned().map(TinyText::from),
-                    fp: query.get("fp").cloned().map(TinyText::from),
-                    pbk: query.get("pbk").cloned(),
-                    sid: query.get("sid").cloned().map(TinyText::from),
-                    spx: query.get("spx").cloned().map(TinyText::from),
+                    sni: utils::query_get(&query, "sni").map(TinyText::from),
+                    fp: utils::query_get(&query, "fp").map(TinyText::from),
+                    pbk: utils::query_get(&query, "pbk").map(str::to_string),
+                    sid: utils::query_get(&query, "sid").map(TinyText::from),
+                    spx: utils::query_get(&query, "spx").map(TinyText::from),
                 })),
                 enc: None,
             },
             _ => SecurityConfig::default(),
         };
         // Transport type: tcp (default), ws, grpc, http, quic, kcp
-        let transport_type = query.get("type").map_or("tcp", |s| s.as_str()).to_string();
-        let path = query.get("path").cloned().map(TinyText::from);
+        let transport_type = utils::query_get(&query, "type").unwrap_or("tcp").to_string();
+        let path = utils::query_get(&query, "path").map(TinyText::from);
 
         let remarks = utils::decode_fragment(raw)?;
 
-        let host = query.get("host").cloned();
+        let host = utils::query_get(&query, "host").map(str::to_string);
         let server_addr = Some(parsed_host.to_str().into_owned());
 
         let mut transport =
             TransportConfig::from_type_and_path(Some(&transport_type), path.as_deref())?
                 .unwrap_or(TransportConfig::Tcp);
-        transport = transport.with_host(host, query.get("sni").cloned(), server_addr);
+        transport = transport.with_host(host, utils::query_get(&query, "sni").map(str::to_string), server_addr);
+
 
         let path = match transport {
             TransportConfig::Ws(ref ws) => ws.path.clone(),

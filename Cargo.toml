@@ -42,7 +42,7 @@ bytes = { version = "*" }
 
 # ============ Parsing ============
 nom = { version = "^8.0.0", default-features = false, features = ["std"] }
-nom_locate = { version = "^5.0.0" }
+
 
 # ============ Text / Search / Hash ============
 memchr = { version = "*" }
@@ -53,6 +53,7 @@ uuid = { version = "^1.23.2", features = ["v5"] }
 
 # ============ Base64 ============
 base64 = { version = "^0.22.1" }
+base64-simd = { version = "^0.8.0" }
 
 # ============ Networking & Web ============
 reqwest = { version = "^0.13.4", features = ["stream", "gzip", "brotli", "zstd", "deflate"] }
@@ -80,6 +81,7 @@ mimalloc = { version = "^0.1.52" }
 smartstring = { version = "^1.0.1", features = ["serde"] }
 smallvec = { version = "*", default-features = false, features = ["const_new"] }
 rayon = { version = "*" }
+itoa = { version = "^1.0" }
 
 # ============ Character Detection ============
 chardetng = { version = "^1.0.0", features = ["multithreading"] }

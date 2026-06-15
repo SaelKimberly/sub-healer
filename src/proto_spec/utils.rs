@@ -47,12 +47,12 @@ pub fn parse_hostport(s: &str) -> Result<(HostSpec, PortSpec), ParseError> {
     // Strip decorative prefixes like @@ or $*@
     let s = s.trim_start_matches('@');
     let s = s.trim_start_matches("$*@");
-    let (tail, (host, port)) = crate::utils::host_port_spec(s.as_bytes().into())
+    let (tail, (host, port)) = crate::utils::host_port_spec(s.as_bytes())
         .map_err(|_| ParseError::InvalidHostPort(format!("Invalid hostport: {s}").into()))?;
     let host = host.to_owned();
     validate_host_not_private(&host)?;
     if !tail.is_empty() {
-        let tail_str = unsafe { std::str::from_utf8_unchecked(tail.into_fragment()) };
+        let tail_str = unsafe { std::str::from_utf8_unchecked(tail) };
         // Lenient: if tail contains query-like chars (= or &), strip it
         if !tail_str.contains('=') && !tail_str.contains('&') {
             return Err(ParseError::InvalidHostPort(
@@ -69,14 +69,14 @@ pub fn parse_hostport(s: &str) -> Result<(HostSpec, PortSpec), ParseError> {
 ///
 /// If the string is not a valid host.
 pub fn parse_host(s: &str) -> Result<HostSpec, ParseError> {
-    let (tail, host) = crate::utils::host_port::host(s.as_bytes().into())
+    let (tail, host) = crate::utils::host_port::host(s.as_bytes())
         .map_err(|_| ParseError::InvalidHost(format!("Invalid host: {s}").into()))?;
     let host = host.to_owned();
     validate_host_not_private(&host)?;
     if !tail.is_empty() {
         return Err(ParseError::InvalidHost(
             format!("Invalid host: {s} (non-empty tail: {})", unsafe {
-                std::str::from_utf8_unchecked(tail.into_fragment())
+                std::str::from_utf8_unchecked(tail)
             })
             .into(),
         ));
@@ -90,11 +90,11 @@ pub fn parse_host(s: &str) -> Result<HostSpec, ParseError> {
 ///
 /// If the string is not a valid port.
 pub fn parse_port(s: &str) -> Result<PortSpec, Cow<'static, str>> {
-    let (tail, port) = crate::utils::host_port::port_specs(s.as_bytes().into())
+    let (tail, port) = crate::utils::host_port::port_specs(s.as_bytes())
         .map_err(|_| format!("Invalid port: {s}"))?;
     if !tail.is_empty() {
         return Err(format!("Invalid port: {s} (non-empty tail: {})", unsafe {
-            std::str::from_utf8_unchecked(tail.into_fragment())
+            std::str::from_utf8_unchecked(tail)
         })
         .into());
     }
@@ -110,23 +110,22 @@ pub fn parse_port(s: &str) -> Result<PortSpec, Cow<'static, str>> {
 /// # Errors
 /// Returns a `base64::DecodeError` if the input is not valid base64.
 pub fn decode_base64(data: &str) -> Result<Vec<u8>, base64::DecodeError> {
-    // Strip Telegram annotation text appended to the base64 (emoji, Persian, Chinese, etc.)
-    // Remove stray backtick characters that sometimes appear mid-base64 in subscription data
-    let data: String = data.chars().filter(|&c| c != '`').collect();
+    // Strip stray backtick characters inline, no alloc if none found
+    let data: Vec<u8> = data.bytes().filter(|&b| b != b'`').collect();
     let end = data
-        .bytes()
-        .position(|b| !b.is_ascii_alphanumeric() && !matches!(b, b'+' | b'/' | b'-' | b'_' | b'='))
+        .iter()
+        .position(|&b| !b.is_ascii_alphanumeric() && !matches!(b, b'+' | b'/' | b'-' | b'_' | b'='))
         .unwrap_or(data.len());
     let mut data = &data[..end];
     // After the last padding marker (`==` or `=`), strip ASCII annotation text too.
     // E.g. `...base64==Irancell&Mci...` — the `Irancell` is valid base64 chars but is annotation.
-    if let Some(pos) = data.rfind("==") {
+    if let Some(pos) = data.rfind(b"==") {
         data = &data[..pos + 2];
-    } else if let Some(pos) = data.rfind('=') {
+    } else if let Some(pos) = data.rfind(b"=") {
         data = &data[..=pos];
     }
-    let data = urlencoding::decode_binary(data.as_bytes());
-    let data = data.trim_end_with(|c| c == '=' || c.is_whitespace());
+    let decoded = urlencoding::decode_binary(data);
+    let data = decoded.trim_end_with(|c| c == '=' || c.is_whitespace());
     'block: {
         let e = match base64::prelude::BASE64_URL_SAFE_NO_PAD.decode(data) {
             Ok(r) => break 'block Ok(r),
@@ -139,24 +138,40 @@ pub fn decode_base64(data: &str) -> Result<Vec<u8>, base64::DecodeError> {
     }
 }
 
-/// Parse query string into key-value pairs
+/// Parse query string into key-value pairs (linear-scan friendly Vec, no HashMap overhead).
 #[must_use]
-pub fn parse_query(query: Option<&str>) -> std::collections::HashMap<String, String> {
-    let mut map = std::collections::HashMap::new();
+pub fn parse_query(query: Option<&str>) -> Vec<(String, String)> {
+    let mut result = Vec::with_capacity(8);
     let query_str = query.unwrap_or("");
     if query_str.is_empty() {
-        return map;
+        return result;
     }
     for pair in query_str.split('&') {
         if let Some((k, v)) = pair.split_once('=') {
             let decoded = urlencoding::decode(v).unwrap_or(Cow::Borrowed(v));
-            map.insert(k.to_string(), decoded.into_owned());
+            result.push((k.to_string(), decoded.into_owned()));
         }
     }
-    map
+    result
 }
 
-/// Compute credential hash: rapidhash of "host:port:username:password"
+/// Look up a value by key in a query parameter list. Linear scan (≤5 entries).
+#[must_use]
+pub fn query_get<'a>(params: &'a [(String, String)], key: &str) -> Option<&'a str> {
+    params
+        .iter()
+        .find(|(k, _)| k == key)
+        .map(|(_, v)| v.as_str())
+}
+
+/// Look up the first matching value from a list of candidate keys.
+#[must_use]
+pub fn query_get_multi<'a>(params: &'a [(String, String)], keys: &[&str]) -> Option<&'a str> {
+    keys.iter().find_map(|key| query_get(params, key))
+}
+
+/// Compute credential hash: streaming rapidhash of "host:port:username:password"
+/// without intermediate String allocation.
 #[must_use]
 pub fn compute_cred_hash(
     host: Option<&HostSpec>,
@@ -165,16 +180,45 @@ pub fn compute_cred_hash(
     username: &str,
     password: &str,
 ) -> u64 {
-    let host_s = host.map(|h| h.to_str().into_owned()).unwrap_or_default();
-    let port_s = port_spec
-        .map(std::string::ToString::to_string)
-        .or_else(|| port.map(|p| p.to_string()))
-        .unwrap_or_default();
-    if host_s.is_empty() && port_s.is_empty() && username.is_empty() && password.is_empty() {
+    if host.is_none()
+        && port.is_none()
+        && port_spec.is_none()
+        && username.is_empty()
+        && password.is_empty()
+    {
         return 0;
     }
-    let cred_data = format!("{host_s}:{port_s}:{username}:{password}");
-    rapidhash::v3::rapidhash_v3(cred_data.as_bytes())
+
+    let mut hasher = rapidhash::v3::RapidStreamHasherV3::new(&rapidhash::v3::DEFAULT_RAPID_SECRETS);
+
+    if let Some(h) = host {
+        hasher.write(h.to_str().as_bytes());
+    }
+    hasher.write(b":");
+
+    match (port_spec, port) {
+        (Some(ps), _) => {
+            if ps.length() == 1 {
+                if let Some(p) = ps.first() {
+                    let mut buf = itoa::Buffer::new();
+                    hasher.write(buf.format(p).as_bytes());
+                }
+            } else {
+                hasher.write(ps.to_string().as_bytes());
+            }
+        }
+        (None, Some(p)) => {
+            let mut buf = itoa::Buffer::new();
+            hasher.write(buf.format(p).as_bytes());
+        }
+        (None, None) => {}
+    }
+    hasher.write(b":");
+    hasher.write(username.as_bytes());
+    hasher.write(b":");
+    hasher.write(password.as_bytes());
+
+    hasher.finish()
 }
 
 /// Decode fragment (remarks) from raw URL

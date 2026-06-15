@@ -56,6 +56,6 @@ pub(crate) fn init_db(conn: &Connection) -> Result<()> {
         ]
         .join("\n"),
     )?;
-    conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;")?;
+    conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000; PRAGMA wal_autocheckpoint=2000; PRAGMA journal_size_limit=0;")?;
     Ok(())
 }

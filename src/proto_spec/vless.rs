@@ -114,41 +114,39 @@ impl ProtoSpec for VlessConfig {
         let query = utils::parse_query(raw.query);
 
         // type/transport: tcp/ws/grpc/http/kcp/quic/httpupgrade. Defaults to "tcp".
-        let transport_type = query.get("type").map_or("tcp", |s| s.as_str()).to_string();
-        let path = query.get("path").cloned().map(TinyText::from);
+        let transport_type = utils::query_get(&query, "type").unwrap_or("tcp").to_string();
+        let path = utils::query_get(&query, "path").map(TinyText::from);
         // encryption: typically "none" (VLESS relies on TLS, not payload encryption)
-        let encryption = query
-            .get("encryption")
-            .filter(|v| v != &"none")
-            .cloned()
+        let encryption = utils::query_get(&query, "encryption")
+            .filter(|v| *v != "none")
             .map(TinyText::from);
         // flow: xtls-rprx-vision for XTLS direct transmission (TLS 1.3 required)
-        let flow = query.get("flow").cloned().map(TinyText::from);
+        let flow = utils::query_get(&query, "flow").map(TinyText::from);
         // splice: boolean splice mode flag
-        let splice = query.get("splice").and_then(|v| match v.as_str() {
+        let splice = utils::query_get(&query, "splice").and_then(|v| match v {
             "1" | "true" | "yes" => Some(true),
             "0" | "false" | "no" => Some(false),
             _ => None,
         });
 
         // TLS/security config
-        let security = match query.get("security").map(String::as_str) {
+        let security = match utils::query_get(&query, "security") {
             Some("tls") => SecurityConfig {
                 tls: Some(TlsConfig::Tls(TlsOpts {
-                    sni: query.get("sni").cloned().map(TinyText::from),
-                    alpn: query.get("alpn").cloned().map(TinyText::from),
-                    fp: query.get("fp").cloned().map(TinyText::from),
+                    sni: utils::query_get(&query, "sni").map(TinyText::from),
+                    alpn: utils::query_get(&query, "alpn").map(TinyText::from),
+                    fp: utils::query_get(&query, "fp").map(TinyText::from),
                     insecure: None,
                 })),
                 enc: None,
             },
             Some("reality") => SecurityConfig {
                 tls: Some(TlsConfig::Reality(RealityOpts {
-                    sni: query.get("sni").map(String::as_str).map(TinyText::from),
-                    fp: query.get("fp").map(String::as_str).map(TinyText::from),
-                    pbk: query.get("pbk").cloned(),
-                    sid: query.get("sid").map(String::as_str).map(TinyText::from),
-                    spx: query.get("spx").map(String::as_str).map(TinyText::from),
+                    sni: utils::query_get(&query, "sni").map(TinyText::from),
+                    fp: utils::query_get(&query, "fp").map(TinyText::from),
+                    pbk: utils::query_get(&query, "pbk").map(str::to_string),
+                    sid: utils::query_get(&query, "sid").map(TinyText::from),
+                    spx: utils::query_get(&query, "spx").map(TinyText::from),
                 })),
                 enc: None,
             },
@@ -157,8 +155,8 @@ impl ProtoSpec for VlessConfig {
 
         let remarks = utils::decode_fragment(raw)?;
 
-        let host = query.get("host").cloned();
-        let sni_from_query = query.get("sni").cloned();
+        let host = utils::query_get(&query, "host").map(str::to_string);
+        let sni_from_query = utils::query_get(&query, "sni").map(str::to_string);
         let server_addr = Some(parsed_host.to_str().into_owned());
 
         let mut transport =
@@ -166,36 +164,36 @@ impl ProtoSpec for VlessConfig {
                 .unwrap_or(TransportConfig::Tcp);
         transport = transport.with_host(host, sni_from_query, server_addr);
 
+
         // Extract mode and extra for XHttp, validate mode
         if let TransportConfig::XHttp(ref mut xcfg) = transport {
-            if let Some(mode) = query.get("mode") {
-                let mode_str = mode.as_str();
-                if mode_str.is_empty() {
+            if let Some(mode) = utils::query_get(&query, "mode") {
+                if mode.is_empty() {
                     // Empty mode — keep the default ("auto") set by from_type_and_path
-                } else if matches!(mode_str, "auto" | "packet-up" | "stream-up" | "stream-one") {
-                    xcfg.mode = Some(TinyText::from(mode_str));
-                } else if let Some(recovered) = recover_xhttp_mode(mode_str) {
+                } else if matches!(mode, "auto" | "packet-up" | "stream-up" | "stream-one") {
+                    xcfg.mode = Some(TinyText::from(mode));
+                } else if let Some(recovered) = recover_xhttp_mode(mode) {
                     tracing::warn!(
                         target: "proto_spec",
                         "Recovered XHttp mode from '{}' to '{}'",
-                        mode_str, recovered
+                        mode, recovered
                     );
                     xcfg.mode = Some(TinyText::from(recovered));
                 } else {
                     return Err(ParseError::InvalidConf(
                         "mode".into(),
-                        mode_str.to_string().into(),
+                        mode.to_string().into(),
                     ));
                 }
             }
-            if let Some(extra) = query.get("extra") {
+            if let Some(extra) = utils::query_get(&query, "extra") {
                 let mut bytes = extra.as_bytes().to_vec();
                 match simd_json::from_slice(&mut bytes) {
                     Ok(v) => xcfg.extra = Some(v),
                     Err(_) => {
                         return Err(ParseError::InvalidConf(
                             "extra".into(),
-                            extra.clone().into(),
+                            extra.to_string().into(),
                         ));
                     }
                 }

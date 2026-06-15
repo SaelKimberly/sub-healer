@@ -107,17 +107,17 @@ impl ProtoSpec for Hysteria2Config {
         let query = utils::parse_query(raw.query);
 
         // obfs: obfuscation type (e.g., "salamander")
-        let obfs = query.get("obfs").cloned().map(TinyText::from);
+        let obfs = utils::query_get(&query, "obfs").map(TinyText::from);
         // obfs-password: pre-shared key for salamander obfuscation
-        let obfs_password = query.get("obfs-password").cloned().map(TinyText::from);
+        let obfs_password = utils::query_get(&query, "obfs-password").map(TinyText::from);
         // up/down: bandwidth limits (canonical impl doesn't parse these from URL)
-        let up = query.get("up").cloned().map(TinyText::from);
+        let up = utils::query_get(&query, "up").map(TinyText::from);
         let security = SecurityConfig {
             tls: Some(TlsConfig::Tls(TlsOpts {
-                sni: query.get("sni").cloned().map(TinyText::from),
+                sni: utils::query_get(&query, "sni").map(TinyText::from),
                 alpn: None,
                 fp: None,
-                insecure: query.get("insecure").and_then(|v| match v.as_str() {
+                insecure: utils::query_get(&query, "insecure").and_then(|v| match v {
                     "1" | "true" | "yes" => Some(true),
                     "0" | "false" | "no" => Some(false),
                     _ => None,
@@ -125,8 +125,9 @@ impl ProtoSpec for Hysteria2Config {
             })),
             enc: None,
         };
-        let down = query.get("down").cloned().map(TinyText::from);
+        let down = utils::query_get(&query, "down").map(TinyText::from);
         let remarks = utils::decode_fragment(raw)?;
+
 
         Ok(Self {
             sig_cache: std::sync::OnceLock::new(),

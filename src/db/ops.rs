@@ -54,60 +54,51 @@ pub fn upsert_server(
     let sig_i64 = config.sig().cast_signed();
 
     let existing: Option<(i64, i64)> = conn
-        .query_row(
-            "SELECT first_seen_ts, first_seen_source_id FROM servers WHERE id = ?1",
-            [server_id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
+        .prepare_cached("SELECT first_seen_ts, first_seen_source_id FROM servers WHERE id = ?1")?
+        .query_row([server_id], |row| Ok((row.get(0)?, row.get(1)?)))
         .ok();
 
     match existing {
         None => {
-            let schema = config.schema().as_str().to_string();
-            let host = config
-                .host()
-                .map(|h| h.to_str().into_owned())
-                .unwrap_or_default();
-            let port = config.port().map(|p| p.to_string()).unwrap_or_default();
-            let transport = config
-                .transport_type()
-                .map(std::string::ToString::to_string);
-            let security = config.security_type().map(std::string::ToString::to_string);
-            let remarks = config.remarks().map(std::string::ToString::to_string);
+            let schema = config
+                .schema()
+                .as_known_str()
+                .expect("Should be known schema");
+            let host = config.host().map(|h| h.to_str()).unwrap_or_default();
+            let mut port_buf = itoa::Buffer::new();
+            let port: &str = config.port().map_or("", |p| port_buf.format(p));
+            let transport = config.transport_type();
+            let security = config.security_type();
+            let remarks = config.remarks();
             let raw_config =
-                serde_json::to_string(config).expect("Failed to serialize ProtocolConfig");
+                simd_json::to_string(config).expect("Failed to serialize ProtocolConfig");
 
-            conn.execute(
+            conn.prepare_cached(
                 "INSERT INTO servers (id, schema, host, port, transport, security, remarks, raw_config, first_seen_ts, first_seen_source_id, sig) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
-                params![server_id, schema, host, port, transport, security, remarks, raw_config, incoming_ts, source_id, sig_i64],
-            )?;
+            )?.execute(params![
+                server_id, schema, host.as_ref(), port, transport, security, remarks, raw_config,
+                incoming_ts, source_id, sig_i64,
+            ])?;
 
-            conn.execute(
+            conn.prepare_cached(
                 "INSERT INTO sightings (server_id, source_id, seen_ts, remarks) VALUES (?1, ?2, ?3, ?4)",
-                params![server_id, source_id, incoming_ts, remarks],
-            )?;
+            )?.execute(params![server_id, source_id, incoming_ts, remarks])?;
         }
         Some(existing) => {
-            let incoming_remarks = config.remarks().map(std::string::ToString::to_string);
+            let incoming_remarks = config.remarks();
 
             if incoming_ts < existing.0 {
-                // Backfill: earlier discovery found — update first_seen, add sighting.
-                // The original sighting (created at first insert) already records the
-                // old first_seen; no archive copy needed.
-                conn.execute(
+                conn.prepare_cached(
                     "UPDATE servers SET first_seen_ts = ?1, first_seen_source_id = ?2, remarks = ?3 WHERE id = ?4",
-                    params![incoming_ts, source_id, incoming_remarks, server_id],
-                )?;
+                )?.execute(params![incoming_ts, source_id, incoming_remarks, server_id])?;
 
-                conn.execute(
+                conn.prepare_cached(
                     "INSERT INTO sightings (server_id, source_id, seen_ts, remarks) VALUES (?1, ?2, ?3, ?4)",
-                    params![server_id, source_id, incoming_ts, incoming_remarks],
-                )?;
+                )?.execute(params![server_id, source_id, incoming_ts, incoming_remarks])?;
             } else {
-                conn.execute(
+                conn.prepare_cached(
                     "INSERT INTO sightings (server_id, source_id, seen_ts, remarks) VALUES (?1, ?2, ?3, ?4)",
-                    params![server_id, source_id, incoming_ts, incoming_remarks],
-                )?;
+                )?.execute(params![server_id, source_id, incoming_ts, incoming_remarks])?;
             }
         }
     }

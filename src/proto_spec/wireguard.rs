@@ -90,32 +90,28 @@ impl ProtoSpec for WireguardConfig {
         let query = utils::parse_query(raw.query);
 
         // address: interface address in CIDR notation (required)
-        let address = query
-            .get("address")
+        let address = utils::query_get(&query, "address")
             .ok_or_else(|| ParseError::MissingConf("address".into()))
-            .map(|s| TinyText::from(s.as_str()))?;
+            .map(TinyText::from)?;
 
         // publickey/public_key: peer's base64-encoded public key (required)
-        let public_key = query
-            .get("publickey")
-            .or_else(|| query.get("public_key"))
+        let public_key = utils::query_get_multi(&query, &["publickey", "public_key"])
             .ok_or_else(|| ParseError::MissingConf("publickey".into()))
-            .cloned()?;
+            .map(str::to_string)?;
 
         // presharedkey/psk: optional pre-shared key
-        let preshared_key = query
-            .get("presharedkey")
-            .or_else(|| query.get("psk"))
-            .cloned()
-            .filter(|s| !s.is_empty());
+        let preshared_key = utils::query_get_multi(&query, &["presharedkey", "psk"])
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
 
         // reserved: 3 bytes, comma-separated decimal or base64
-        let reserved = query.get("reserved").cloned().map(TinyText::from);
+        let reserved = utils::query_get(&query, "reserved").map(TinyText::from);
 
         // mtu: interface MTU (defaults vary: 1420 Xray, 1280 WireGuard-go)
-        let mtu = query.get("mtu").cloned().map(TinyText::from);
+        let mtu = utils::query_get(&query, "mtu").map(TinyText::from);
 
         let remarks = utils::decode_fragment(raw)?;
+
 
         Ok(Self {
             sig_cache: std::sync::OnceLock::new(),

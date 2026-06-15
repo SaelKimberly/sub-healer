@@ -1,7 +1,7 @@
 use std::mem::MaybeUninit;
 
 use anyhow::bail;
-use base64::DecodeError;
+use base64_simd::{STANDARD_NO_PAD, URL_SAFE_NO_PAD};
 
 use crate::urlx::SchemeX;
 
@@ -66,6 +66,7 @@ impl StreamingDecoder {
     /// # Errors
     ///
     /// May return error, if first chunk was previously decoded as base64 successful, and this chunk was failed.
+    #[allow(clippy::large_stack_arrays, reason = "needs research")]
     pub fn feed(&mut self, chunk: &[u8]) -> anyhow::Result<Vec<String>> {
         if chunk.is_empty() && self.pending_input_len == 0 {
             return Ok(vec![]);
@@ -79,13 +80,24 @@ impl StreamingDecoder {
             );
         }
         let total_len = self.pending_input_len + chunk.len();
-        let mut work: [u8; INPUT_CHUNK_SIZE + 4] = [0u8; INPUT_CHUNK_SIZE + 4];
+        let mut work: [MaybeUninit<u8>; INPUT_CHUNK_SIZE + 4] =
+            [MaybeUninit::uninit(); INPUT_CHUNK_SIZE + 4];
 
         // Prepend pending bytes
-        for i in 0..self.pending_input_len {
-            work[i] = unsafe { self.pending_input[i].assume_init() };
+        work[..self.pending_input_len].write_copy_of_slice(unsafe {
+            self.pending_input[..self.pending_input_len].assume_init_ref()
+        });
+
+        // Copy chunk bytes into remaining work area
+        // SAFETY: work[pending_input_len..] is uninit; chunk bytes have the same
+        // layout as MaybeUninit<u8>.
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                chunk.as_ptr(),
+                work.as_mut_ptr().cast::<u8>().add(self.pending_input_len),
+                chunk.len(),
+            );
         }
-        work[self.pending_input_len..][..chunk.len()].copy_from_slice(chunk);
         self.pending_input_len = 0;
 
         // Align to 4-byte base64 boundary
@@ -95,11 +107,13 @@ impl StreamingDecoder {
         // Save trailing bytes as pending for next call
         #[allow(clippy::needless_range_loop)]
         for i in 0..remainder {
-            self.pending_input[i] = MaybeUninit::new(work[aligned_len + i]);
+            self.pending_input[i] =
+                MaybeUninit::new(unsafe { work[aligned_len + i].assume_init() });
         }
         self.pending_input_len = remainder;
 
-        let input = &work[..aligned_len];
+        // SAFETY: work[..aligned_len] is fully initialized
+        let input = unsafe { std::slice::from_raw_parts(work.as_ptr().cast::<u8>(), aligned_len) };
         let decoded = self.process_aligned(input)?;
         Ok(self.process_decoded(&decoded))
     }
@@ -117,9 +131,9 @@ impl StreamingDecoder {
         // Process leftover pending_input bytes (may be < 4)
         if self.pending_input_len > 0 {
             let mut buf = [0u8; 4];
-            for i in 0..self.pending_input_len {
-                buf[i] = unsafe { self.pending_input[i].assume_init() };
-            }
+            buf[..self.pending_input_len].copy_from_slice(unsafe {
+                self.pending_input[..self.pending_input_len].assume_init_ref()
+            });
             let decoded = self.process_aligned(&buf[..self.pending_input_len])?;
             self.pending_input_len = 0;
             result.extend(self.process_decoded(&decoded));
@@ -138,9 +152,7 @@ impl StreamingDecoder {
     // ── internal helpers ──
 
     /// Detect encoding and decode one 4-byte-aligned portion.
-    fn process_aligned(&mut self, data: &[u8]) -> Result<Vec<u8>, DecodeError> {
-        use base64::prelude::{BASE64_STANDARD_NO_PAD, BASE64_URL_SAFE_NO_PAD, Engine};
-
+    fn process_aligned(&mut self, data: &[u8]) -> Result<Vec<u8>, base64_simd::Error> {
         if data.is_empty() {
             return Ok(vec![]);
         }
@@ -162,17 +174,17 @@ impl StreamingDecoder {
             EncodingState::Unknown => {
                 // If we detected
                 let (encoding, decoded) = if memchr::memchr2(b'+', b'\\', trimmed).is_some() {
-                    BASE64_STANDARD_NO_PAD.decode(trimmed).map_or_else(
+                    STANDARD_NO_PAD.decode_to_vec(trimmed).map_or_else(
                         |_| (EncodingState::Raw, data.to_vec()),
                         |decoded| (EncodingState::StdB64, decoded),
                     )
                 } else if memchr::memchr2(b'-', b'_', trimmed).is_some() {
-                    BASE64_URL_SAFE_NO_PAD.decode(trimmed).map_or_else(
+                    URL_SAFE_NO_PAD.decode_to_vec(trimmed).map_or_else(
                         |_| (EncodingState::Raw, data.to_vec()),
                         |decoded| (EncodingState::UrlSafeB64, decoded),
                     )
                 } else {
-                    BASE64_STANDARD_NO_PAD.decode(trimmed).map_or_else(
+                    STANDARD_NO_PAD.decode_to_vec(trimmed).map_or_else(
                         |_| (EncodingState::Raw, data.to_vec()),
                         |decoded| (EncodingState::Unknown, decoded),
                     )
@@ -180,8 +192,8 @@ impl StreamingDecoder {
                 self.state = encoding;
                 Ok(decoded)
             }
-            EncodingState::StdB64 => BASE64_STANDARD_NO_PAD.decode(trimmed),
-            EncodingState::UrlSafeB64 => BASE64_URL_SAFE_NO_PAD.decode(trimmed),
+            EncodingState::StdB64 => STANDARD_NO_PAD.decode_to_vec(trimmed),
+            EncodingState::UrlSafeB64 => URL_SAFE_NO_PAD.decode_to_vec(trimmed),
             EncodingState::Raw => Ok(data.to_vec()),
         }
     }
@@ -305,27 +317,26 @@ fn process_text(text: &[u8]) -> Vec<String> {
 /// Process a &str (already normalized) through line splitting + URL extraction.
 /// Non-mutating version (no carry_over interaction — standalone text).
 fn process_str_inner(text: &str) -> Vec<String> {
-    text.lines()
-        .flat_map(|line| {
-            let s = line.trim_start();
-            if s.starts_with('#') || s.starts_with("//") || s.is_empty() {
-                Vec::new()
-            } else {
-                s.split("<br/>")
-                    .flat_map(|segment| {
-                        SchemeX::slice_input(segment)
-                            .into_iter()
-                            .map(|(_, url)| url.to_string())
-                    })
-                    .collect()
+    // Estimate URL count: average URL ~80 bytes
+    let estimated_capacity = text.len() / 80 + 1;
+    let mut result = Vec::with_capacity(estimated_capacity);
+    for line in text.lines() {
+        let s = line.trim_start();
+        if s.starts_with('#') || s.starts_with("//") || s.is_empty() {
+            continue;
+        }
+        for segment in s.split("<br/>") {
+            for (_, url) in SchemeX::slice_input(segment) {
+                result.push(url.to_string());
             }
-        })
-        .collect()
+        }
+    }
+    result
 }
 
 #[cfg(test)]
 mod tests {
-    use base64::Engine;
+    use base64::prelude::Engine;
 
     use super::*;
 
@@ -394,44 +405,45 @@ mod tests {
             1,
             "trailing == stripped before decode"
         );
-        #[test]
-        fn decode_across_chunk_boundary() {
-            let data = b"trojan://abc\nhy2://def\n";
-            let encoded = base64::prelude::BASE64_STANDARD_NO_PAD.encode(data);
-            let mid = (encoded.len() / 4) * 4; // 4-byte aligned split
-            let mut d = StreamingDecoder::new();
+    }
 
-            let urls1 = d.feed(encoded[..mid].as_bytes()).unwrap();
-            let urls2 = d.feed(encoded[mid..].as_bytes()).unwrap();
-            let urls3 = d.finalize().unwrap();
+    #[test]
+    fn decode_across_chunk_boundary() {
+        let data = b"trojan://abc\nhy2://def\n";
+        let encoded = base64::prelude::BASE64_STANDARD_NO_PAD.encode(data);
+        let mid = (encoded.len() / 4) * 4; // 4-byte aligned split
+        let mut d = StreamingDecoder::new();
 
-            let all: Vec<String> = urls1.into_iter().chain(urls2).chain(urls3).collect();
-            assert_eq!(all.len(), 2, "two URLs across 3 calls");
-            assert!(all.iter().any(|u| u.starts_with("trojan://")));
-            assert!(all.iter().any(|u| u.starts_with("hy2://")));
-        }
+        let urls1 = d.feed(&encoded.as_bytes()[..mid]).unwrap();
+        let urls2 = d.feed(&encoded.as_bytes()[mid..]).unwrap();
+        let urls3 = d.finalize().unwrap();
 
-        #[test]
-        fn url_boundary_across_chunks() {
-            let mut d = StreamingDecoder::new();
-            let urls1 = d.feed(b"trojan://abc\nhy").unwrap();
-            let urls2 = d.feed(b"2://def\n").unwrap();
-            let urls3 = d.finalize().unwrap();
-            let all: Vec<String> = urls1.into_iter().chain(urls2).chain(urls3).collect();
-            assert_eq!(all.len(), 2);
-        }
+        let all: Vec<String> = urls1.into_iter().chain(urls2).chain(urls3).collect();
+        assert_eq!(all.len(), 2, "two URLs across 3 calls");
+        assert!(all.iter().any(|u| u.starts_with("trojan://")));
+        assert!(all.iter().any(|u| u.starts_with("hy2://")));
+    }
 
-        #[test]
-        fn comment_lines_skipped() {
-            let mut d = StreamingDecoder::new();
-            let urls1 = d.feed(b"# comment\n// another\ntrojan://abc\n").unwrap();
-            let urls2 = d.finalize().unwrap();
-            let total = urls1.len() + urls2.len();
-            assert!(
-                total >= 1,
-                "expected trojan URL, got {total} from feed + finalize"
-            );
-        }
+    #[test]
+    fn url_boundary_across_chunks() {
+        let mut d = StreamingDecoder::new();
+        let urls1 = d.feed(b"trojan://abc\nhy").unwrap();
+        let urls2 = d.feed(b"2://def\n").unwrap();
+        let urls3 = d.finalize().unwrap();
+
+        assert_eq!(urls1.into_iter().chain(urls2).chain(urls3).count(), 2);
+    }
+
+    #[test]
+    fn comment_lines_skipped() {
+        let mut d = StreamingDecoder::new();
+        let urls1 = d.feed(b"# comment\n// another\ntrojan://abc\n").unwrap();
+        let urls2 = d.finalize().unwrap();
+        let total = urls1.len() + urls2.len();
+        assert!(
+            total >= 1,
+            "expected trojan URL, got {total} from feed + finalize"
+        );
     }
 
     #[test]
@@ -493,8 +505,8 @@ mod tests {
         let mid = (total / 2 / 4) * 4; // aligned split
 
         let mut d = StreamingDecoder::new();
-        let urls1 = d.feed(data[..mid].as_bytes()).unwrap();
-        let urls2 = d.feed(data[mid..].as_bytes()).unwrap();
+        let urls1 = d.feed(&data.as_bytes()[..mid]).unwrap();
+        let urls2 = d.feed(&data.as_bytes()[mid..]).unwrap();
         let urls3 = d.finalize().unwrap();
 
         let all = urls1.len() + urls2.len() + urls3.len();

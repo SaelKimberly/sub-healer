@@ -151,14 +151,14 @@ impl<'a> RawUrlX<'a> {
         let Some(hostport) = self.hostport else {
             return Ok(None);
         };
-        let (tail, (host, port)) = crate::utils::host_port_spec(hostport.as_bytes().into())
+        let (tail, (host, port)) = crate::utils::host_port_spec(hostport.as_bytes())
             .map_err(|e| format!("Invalid hostport: {hostport}: {e}"))?;
         if tail.is_empty() {
             Ok(Some((host.to_owned(), port)))
         } else {
             Err(format!(
                 "Invalid hostport: {hostport} (non-empty tail found: {})",
-                unsafe { str::from_utf8_unchecked(tail.into_fragment()) }
+                unsafe { str::from_utf8_unchecked(tail) }
             )
             .into())
         }
@@ -276,7 +276,7 @@ impl<'a> RawUrlX<'a> {
                             .or_else(|| after_at.find('#'))
                             .unwrap_or(after_at.len());
                         let candidate = &after_at[..host_end];
-                        let span = candidate.as_bytes().into();
+                        let span = candidate.as_bytes();
                         return crate::utils::host_port::host_port_spec(span).is_ok();
                     }
                     false
@@ -338,7 +338,7 @@ impl<'a> RawUrlX<'a> {
             );
 
             let hostport = if let Ok(host) = {
-                let span = rest.as_bytes().into();
+                let span = rest.as_bytes();
                 crate::utils::host_port::host_port_spec(span)
                     .map(|(_, (h, _))| h)
                     .or_else(|_| crate::utils::host_port::host(span).map(|(_, h)| h))

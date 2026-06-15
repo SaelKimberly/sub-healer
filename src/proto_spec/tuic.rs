@@ -98,19 +98,16 @@ impl ProtoSpec for TuicConfig {
         let query = utils::parse_query(raw.query);
 
         // congestion_control: cubic/bbr/new_reno/bbr3. Defaults to bbr.
-        let congestion_control = query.get("congestion_control").cloned().map(TinyText::from);
+        let congestion_control = utils::query_get(&query, "congestion_control").map(TinyText::from);
         // udp_relay_mode: native/quic. Defaults to native.
-        let udp_relay_mode = query.get("udp_relay_mode").cloned().map(TinyText::from);
+        let udp_relay_mode = utils::query_get(&query, "udp_relay_mode").map(TinyText::from);
         let security = SecurityConfig {
             tls: Some(TlsConfig::Tls(TlsOpts {
-                sni: query.get("sni").cloned().map(TinyText::from),
-                alpn: query.get("alpn").cloned().map(TinyText::from),
+                sni: utils::query_get(&query, "sni").map(TinyText::from),
+                alpn: utils::query_get(&query, "alpn").map(TinyText::from),
                 fp: None,
-                insecure: query
-                    .get("allow_insecure")
-                    .or_else(|| query.get("insecure"))
-                    .or_else(|| query.get("allowInsecure"))
-                    .and_then(|v| match v.as_str() {
+                insecure: utils::query_get_multi(&query, &["allow_insecure", "insecure", "allowInsecure"])
+                    .and_then(|v| match v {
                         "1" | "true" => Some(true),
                         "0" | "false" => Some(false),
                         _ => None,
@@ -119,6 +116,7 @@ impl ProtoSpec for TuicConfig {
             enc: None,
         };
         let remarks = utils::decode_fragment(raw)?;
+
 
         Ok(Self {
             sig_cache: std::sync::OnceLock::new(),
