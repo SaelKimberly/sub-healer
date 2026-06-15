@@ -1,0 +1,3 @@
+# This is used to override the directory where cargo-criterion saves
+# its data and generates reports.
+criterion_home = "./.criterion/criterion"
