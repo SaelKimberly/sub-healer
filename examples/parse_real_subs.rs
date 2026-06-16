@@ -9,7 +9,7 @@ use tracing_subscriber::prelude::*;
 
 use v2ray_heal::decoder::StreamingDecoder;
 use v2ray_heal::mining::{
-    PingResult, PingSpec, Pipeline, RawSourceItemBatch, UnparseableLayer, ping_and_store,
+    Ping, PingSpec, PingStatus, Pipeline, RawSourceItemBatch, UnparseableLayer, ping_and_store,
 };
 
 fn discover_txt_files(dir: &PathBuf) -> Vec<PathBuf> {
@@ -137,7 +137,7 @@ async fn main() -> anyhow::Result<()> {
     // Ping all discoverable TCP endpoints and collect statistics
     let ping_results = ping_and_store(pipeline.db(), &servers, &PingSpec::Ok, None).await?;
 
-    let ping_map: std::collections::HashMap<(String, u16), &PingResult> = ping_results
+    let ping_map: std::collections::HashMap<(String, u16), &Ping> = ping_results
         .iter()
         .map(|(h, p, r)| ((h.to_lowercase(), *p), r))
         .collect();
@@ -158,11 +158,8 @@ async fn main() -> anyhow::Result<()> {
         };
         ping_total += 1;
 
-        let ok_inc = match result {
-            PingResult::Tcp {
-                latency_ms: Some(_),
-                ..
-            } => 1u64,
+        let ok_inc = match &result.status {
+            PingStatus::Done { .. } => 1u64,
             _ => 0,
         };
         let fail_inc = 1u64 - ok_inc;

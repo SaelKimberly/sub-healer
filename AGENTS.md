@@ -23,7 +23,7 @@ cargo run -- ping --protocol vmess             # ping all vmess servers and stor
 - **`remote`**: Download subs from URLs or scrape Telegram (t.me auto-detected via host check). Mixed batch OK. Supports `--emit` + `--ping` flags.
 - **`local`**: Filesystem → `parse_to_raw_urls()` → DB upsert. Source URL = `file://` absolute path. Supports `--emit` + `--ping` flags.
 - **`emit`**: Filtered server export. `--protocol` (repeatable, case-insensitive), `--min-first-seen-ts`, `--min-last-seen-ts` (humantime durations), `--pull` (re-mine all DB sources, optionally with per-source Telegram backfill). `--wl` (comma-separated: sni,ip,cidr) to filter by whitelist flags. `--recheck-whitelist` re-runs whitelist checking on all (or outdated) servers. `--recheck-max-age` (humantime) limits recheck to servers not checked within the duration. `--ping` (value: `ok` or duration like `15ms`) — pings servers and filters by reachability before export. `--ping` bare (= `ok`) supported. Reconstructs native URLs from stored `ProtocolConfig` JSON.
-- **`ping`**: Standalone ping subcommand. `--protocol`, `--min-first-seen-ts`, `--min-last-seen-ts`, `--wl` filters. Pings all matching servers via TCP connect and stores results in DB. Prints results table with per-endpoint ok/fail status. Progress bar shows real-time progress with OK/FAIL counters.
+- **`ping`**: Standalone ping subcommand. `--protocol`, `--min-first-seen-ts`, `--min-last-seen-ts`, `--wl` filters. Pings all matching servers via TCP connect or UDP knock and stores results in DB. Prints results table with per-endpoint ok/fail status. Progress bar shows real-time progress with OK/FAIL counters.
 
 Global `--db` flag (default `v2ray-heal.db`) must appear before the subcommand — not marked `global = true` in clap. Combined with `--db ":memory:"` and `--emit` on any mining subcommand, enables a fully ephemeral pipeline: mine → filter → output → discard, with zero disk persistence. `--emit` is available on `config`, `remote`, `local`, and `stdin`; the standalone `emit` subcommand remains for querying an existing database. `--unparseable-log` enables the unparseable log file (default: `unparseable.ndjson`); `--unparseable-log=<PATH>` overrides the path. `--whitelist-sni`, `--whitelist-ip`, `--whitelist-cidr` load SNI/IP/CIDR whitelist files (default: `whitelist.txt`, `ipwhitelist.txt`, `cidrwhitelist.txt`) for bloom-filter-based flagging on insert and `--wl` filtering on export.
 
@@ -70,15 +70,15 @@ per-scheme dispatch — all schemes flow through `create_stream`.
 **DB failures are fatal** — `upsert_server` uses `.context("... (aborting)")?`. No in-memory dedup — `servers.id` (= `ProtocolConfig::uid()`) PK handles uniqueness.
 ## Pinger (`src/mining/pinger.rs`)
 
-TCP ping module for reachability checking:
+TCP/UDP ping module for reachability checking:
 
 - `PingSpec` — `Ok` (reachability only) or `Threshold(duration)` for latency filtering. Parsed from CLI via `FromStr`: bare `--ping` → `Ok`, `--ping 15ms` → `Threshold`.
-- `PingResult` — serde-tagged enum (`"type": "tcp"`) with `latency_ms: Option<f64>` and `error: Option<String>`. Stored as JSON in `servers.ping`.
-- `ping_and_store(db, servers, spec, progress_bar)` — deduplicates by `LOWER(host):port`, pings each unique endpoint via TCP connect, stores JSON result to ALL matching server rows with `LOWER(host) = LOWER(?3)` (case-insensitive match), returns results.
+- `Ping` / `PingStatus` / `PingKind` — typed ping result (`Done { latency_ms }` or `Fail { error }`), tagged `#[serde(tag = "type")]`. `PingKind` distinguishes `Tcp` vs `Udp`. Stored as JSON in `servers.ping`.
+- `ping_and_store(db, servers, spec, progress_bar)` — classifies schemas as TCP or UDP, deduplicates by `LOWER(host):port`, pings each unique endpoint via TCP connect or 1-byte UDP knock, stores JSON result to ALL matching server rows with `LOWER(host) = LOWER(?3)` (case-insensitive match), returns results.
 - `PING_TIMEOUT = 3s` per endpoint, `PING_CONCURRENCY = 200` in-flight.
 - Progress bar: `indicatif::ProgressBar` with OK/FAIL counters, integrates with `MultiProgress` in main.rs.
 - Tracing: `target: "ping"` for start count and per-result logs.
-- UDP/QUIC schemas (wireguard, tuic, hysteria2, stormdns, slipnet, slipnet-enc) are skipped.
+- UDP/QUIC schemas (wireguard, tuic, hysteria2, stormdns, slipnet) are pinged via UDP 1-byte knock; `slipnet-enc` is excluded (no `host()`/`port()`).
 
 ## Unparseable URL Capture
 
@@ -87,7 +87,7 @@ NDJSON via tracing layer (`target: "mining::unparseable"`). Fields: `raw_url`, `
 ## Database Schema
 
 - **`sources`** — `id` (INTEGER PK, hash of URL via RapidStreamHasherV3), `url` (TEXT)
-- **`servers`** — `id` (i64 = ProtocolConfig::uid), schema, host, port, transport, security, remarks, `raw_config` (ProtocolConfig JSON), first_seen_ts, first_seen_source_id → FK sources(id), `flags` (i64 bitmask: 0b001=SNI, 0b010=IP, 0b100=CIDR), `flags_ts` (unix timestamp of last whitelist check), `ping` (TEXT nullable — JSON PingResult), `ping_ts` (INTEGER nullable — unix timestamp of last ping)
+- **`servers`** — `id` (i64 = ProtocolConfig::uid), schema, host, port, transport, security, remarks, `raw_config` (ProtocolConfig JSON), first_seen_ts, first_seen_source_id → FK sources(id), `flags` (i64 bitmask: 0b001=SNI, 0b010=IP, 0b100=CIDR), `flags_ts` (unix timestamp of last whitelist check), `ping` (TEXT nullable — JSON Ping), `ping_ts` (INTEGER nullable — unix timestamp of last ping)
 - **`sightings`** — server_id, source_id, seen_ts, remarks
 
 Time-travel: if incoming_ts < first_seen_ts, archive current to sightings + replace.

@@ -9,7 +9,8 @@ use tracing_subscriber::fmt;
 use tracing_subscriber::prelude::*;
 
 use v2ray_heal::mining::{
-    Backfill, PingResult, PingSpec, Pipeline, SourceRegistry, UnparseableLayer, ping_and_store,
+    Backfill, Ping, PingSpec, PingStatus, Pipeline, SourceRegistry, UnparseableLayer,
+    ping_and_store,
 };
 
 #[tokio::main]
@@ -82,8 +83,8 @@ async fn main() -> anyhow::Result<()> {
     // Ping all discoverable TCP endpoints and collect statistics
     let ping_results = ping_and_store(pipeline.db(), &servers, &PingSpec::Ok, None).await?;
 
-    // Build (host:port) -> &PingResult lookup
-    let ping_map: std::collections::HashMap<(String, u16), &PingResult> = ping_results
+    // Build (host:port) -> &Ping lookup
+    let ping_map: std::collections::HashMap<(String, u16), &Ping> = ping_results
         .iter()
         .map(|(h, p, r)| ((h.to_lowercase(), *p), r))
         .collect();
@@ -105,11 +106,8 @@ async fn main() -> anyhow::Result<()> {
         };
         ping_total += 1;
 
-        let ok_inc = match result {
-            PingResult::Tcp {
-                latency_ms: Some(_),
-                ..
-            } => 1u64,
+        let ok_inc = match &result.status {
+            PingStatus::Done { .. } => 1u64,
             _ => 0,
         };
         let fail_inc = 1u64 - ok_inc;

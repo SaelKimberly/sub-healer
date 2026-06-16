@@ -300,7 +300,7 @@ All database operations are methods on `Database`: `open()`, `init_db()`, `upser
   - `flags` INTEGER NOT NULL DEFAULT 0 (bitmask: 0b001=SNI whitelisted, 0b010=IP whitelisted, 0b100=CIDR whitelisted)
   - `flags_ts` INTEGER NOT NULL DEFAULT 0 (unix timestamp of last whitelist check)
   - `first_seen_ts` INTEGER NOT NULL, `first_seen_source_id` INTEGER NOT NULL REFERENCES sources(id)
-  - `ping` TEXT (nullable — JSON-serialized `PingResult`, e.g. `{"type":"tcp","latency_ms":12.5}`)
+  - `ping` TEXT (nullable — JSON-serialized `Ping`, e.g. `{"kind":"tcp","status":{"type":"done","latency_ms":12.5}}`)
   - `ping_ts` INTEGER (nullable — unix timestamp of last ping attempt)
 
 - **`sightings`** — Time-travel tracking of when each server was observed from each source
@@ -418,24 +418,24 @@ and emits unparseable entries from the consumer level (where `source_id` is know
 
 ### Pinger (`src/mining/pinger.rs`)
 
-Pinger module for TCP reachability checking, added to the pipeline's post-mining phase:
+Pinger module for TCP/UDP reachability checking, added to the pipeline's post-mining phase:
 
 ```rust
 // Architecture
-ping_and_store(db, &servers, &spec, progress_bar) -> Vec<(String, u16, PingResult)>
+ping_and_store(db, &servers, &spec, progress_bar) -> Vec<(String, u16, Ping)>
 ```
 
 **Flow**:
-1. Filters out UDP/QUIC schemas: wireguard, tuic, hysteria2, stormdns, slipnet, slipnet-enc
-2. Deduplicates by `(host.to_ascii_lowercase(), port)` — one TCP connect per unique endpoint
+1. Classifies schemas as TCP or UDP via `UDP_SCHEMAS` constant (wireguard, tuic, hysteria2, stormdns, slipnet → UDP; `slipnet-enc` excluded — no `host()`/`port()`)
+2. Deduplicates by `(host.to_ascii_lowercase(), port)` — one ping per unique endpoint
 3. Pings concurrently via `FuturesOrdered` capped at `PING_CONCURRENCY` (200)
-4. Stores JSON `PingResult` to ALL server rows sharing that `(host, port)` using `LOWER(host) = LOWER(?3)` to handle mixed-case hostnames
+4. Stores JSON `Ping` to ALL server rows sharing that `(host, port)` using `LOWER(host) = LOWER(?3)` to handle mixed-case hostnames
 5. Returns results vector and optional progress bar with real-time OK/FAIL counters
 
-**PingResult** (`#[serde(tag = "type")]`):
+**Ping** (`#[serde(tag = "type")]` on `status`):
 ```json
-{"type":"tcp","latency_ms":12.5}        // success
-{"type":"tcp","error":"timeout after 3s"}  // failure
+{"kind":"tcp","status":{"type":"done","latency_ms":12.5}}
+{"kind":"udp","status":{"type":"fail","error":"Timed out after 3s"}}
 ```
 
 **CLI integration**: `--ping ok` (or bare `--ping`) / `--ping 15ms` on `emit`/mining subcommands; standalone `ping` subcommand for querying existing DB. Progress bar + `target: "ping"` tracing provide real-time feedback.
@@ -465,7 +465,7 @@ A `tracing_subscriber::Layer` that:
 
 ### Struct Hierarchy (`src/main.rs`)
 | **`Emit`** | Filtered server export. `--protocol` filter (repeatable), `--min-first-seen-ts`/`--min-last-seen-ts` (humantime duration), `--pull` (re-mine all DB sources with optional `Backfill`), `--ping` (value: `ok` or duration — pings before export, filters by reachability). Reconstructs URLs from stored `ProtocolConfig` JSON via `simd_json::from_slice` (not `serde_json`). Uses `EmitFilterArgs` flattened. |
-| **`Ping`** | Standalone ping. `--protocol`, `--min-first-seen-ts`, `--min-last-seen-ts`, `--wl` filters. Pings all matching servers via TCP connect, stores results in DB, prints results table. Progress bar shows real-time OK/FAIL. |
+| **`Ping`** | Standalone ping. `--protocol`, `--min-first-seen-ts`, `--min-last-seen-ts`, `--wl` filters. Pings all matching servers via TCP connect or UDP knock, stores results in DB, prints results table. Progress bar shows real-time OK/FAIL. |
 ```rust
 // Shared filter flags for both standalone emit and emit-on-mine
 #[derive(Debug, clap::Args)]

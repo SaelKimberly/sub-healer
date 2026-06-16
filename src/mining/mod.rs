@@ -7,7 +7,7 @@ use chrono::{DateTime, Utc};
 
 mod pinger;
 mod pipeline;
-pub use self::pinger::{PingResult, PingSpec, ping_and_store};
+pub use self::pinger::{Ping, PingKind, PingSpec, PingStatus, ping_and_store};
 mod registry;
 mod sub;
 pub mod telegram;

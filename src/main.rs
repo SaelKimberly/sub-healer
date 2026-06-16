@@ -350,15 +350,12 @@ async fn emit_after_mine(pipeline: &mining::Pipeline, opts: &EmitOnMine) -> anyh
         let deduped = v2ray_heal::mining::ping_and_store(db, &servers, spec, None).await?;
         let reachable: HashSet<(String, u16)> = deduped
             .iter()
-            .filter(|(_, _, r)| match r {
-                v2ray_heal::mining::PingResult::Tcp {
-                    latency_ms: Some(lat),
-                    ..
-                } => match spec {
+            .filter(|(_, _, ping)| match &ping.status {
+                v2ray_heal::mining::PingStatus::Done { latency_ms } => match spec {
                     PingSpec::Ok => true,
-                    PingSpec::Threshold(dur) => *lat <= dur.as_secs_f64() * 1000.0,
+                    PingSpec::Threshold(dur) => *latency_ms <= dur.as_secs_f64() * 1000.0,
                 },
-                _ => false,
+                v2ray_heal::mining::PingStatus::Fail { .. } => false,
             })
             .map(|(h, p, _)| (h.to_lowercase(), *p))
             .collect();
@@ -771,15 +768,12 @@ async fn main() -> anyhow::Result<()> {
                 let deduped = v2ray_heal::mining::ping_and_store(db, &servers, spec, None).await?;
                 let reachable: HashSet<(String, u16)> = deduped
                     .iter()
-                    .filter(|(_, _, r)| match r {
-                        v2ray_heal::mining::PingResult::Tcp {
-                            latency_ms: Some(lat),
-                            ..
-                        } => match spec {
+                    .filter(|(_, _, ping)| match &ping.status {
+                        v2ray_heal::mining::PingStatus::Done { latency_ms } => match spec {
                             PingSpec::Ok => true,
-                            PingSpec::Threshold(dur) => *lat <= dur.as_secs_f64() * 1000.0,
+                            PingSpec::Threshold(dur) => *latency_ms <= dur.as_secs_f64() * 1000.0,
                         },
-                        _ => false,
+                        v2ray_heal::mining::PingStatus::Fail { .. } => false,
                     })
                     .map(|(h, p, _)| (h.to_lowercase(), *p))
                     .collect();
@@ -851,27 +845,19 @@ async fn main() -> anyhow::Result<()> {
             let mut output = String::new();
             // Count successful vs failed
             let (ok, fail): (Vec<_>, Vec<_>) =
-                results.iter().partition::<Vec<_>, _>(|(_, _, r)| {
-                    matches!(
-                        r,
-                        v2ray_heal::mining::PingResult::Tcp {
-                            latency_ms: Some(_),
-                            ..
-                        }
-                    )
+                results.iter().partition::<Vec<_>, _>(|(_, _, ping)| {
+                    matches!(&ping.status, v2ray_heal::mining::PingStatus::Done { .. })
                 });
 
             output.push_str("# Ping results\n");
-            for (host, port, r) in &results {
-                let status = match r {
-                    v2ray_heal::mining::PingResult::Tcp {
-                        latency_ms: Some(lat),
-                        ..
-                    } => format!("ok {:.1}ms", lat),
-                    v2ray_heal::mining::PingResult::Tcp { error: Some(e), .. } => {
-                        format!("fail {e}")
+            for (host, port, ping) in &results {
+                let status = match &ping.status {
+                    v2ray_heal::mining::PingStatus::Done { latency_ms } => {
+                        format!("ok {:.1}ms", latency_ms)
                     }
-                    _ => "unknown".into(),
+                    v2ray_heal::mining::PingStatus::Fail { error } => {
+                        format!("fail {error}")
+                    }
                 };
                 let _ = writeln!(output, "{host}:{port} {status}");
             }
