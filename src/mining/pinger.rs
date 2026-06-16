@@ -1,18 +1,22 @@
 use std::collections::HashSet;
 use std::str::FromStr;
+use std::sync::Arc;
 use std::time::Instant;
 
 use futures::StreamExt;
 use futures::stream::FuturesOrdered;
 use serde::{Deserialize, Serialize};
-use tokio::net::{TcpStream, UdpSocket};
+use tokio::net::{TcpStream, UdpSocket, lookup_host};
 
 use crate::db::{Database, ServerRecord};
 use indicatif::{ProgressBar, ProgressStyle};
 
-/// Schemas transported over UDP/QUIC/DNS — pinged via [`PingKind::Udp`].
+/// Schemas that use QUIC transport — pinged via [`PingKind::Quic`].
+const QUIC_SCHEMAS: &[&str] = &["tuic", "hysteria2"];
+
+/// Schemas transported over plain UDP/DNS — pinged via [`PingKind::Udp`].
 /// `slipnet-enc` is excluded: it has no `host()`/`port()`.
-const UDP_SCHEMAS: &[&str] = &["wireguard", "tuic", "hysteria2", "stormdns", "slipnet"];
+const UDP_SCHEMAS: &[&str] = &["wireguard", "stormdns", "slipnet"];
 
 /// Timeout for each individual TCP ping connection (includes DNS + connect).
 const PING_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
@@ -32,6 +36,7 @@ const PING_CONCURRENCY: usize = 200;
 pub enum PingKind {
     Tcp,
     Udp,
+    Quic,
 }
 
 /// Typed ping error matching real `io::Error` kinds.
@@ -86,6 +91,7 @@ impl Ping {
         let status = match kind {
             PingKind::Tcp => Self::tcp_ping(host, port, timeout, start).await,
             PingKind::Udp => Self::udp_ping(host, port, timeout, start).await,
+            PingKind::Quic => Self::quic_ping(host, port, timeout, start).await,
         };
         Self {
             kind,
@@ -146,6 +152,100 @@ impl Ping {
             },
         }
     }
+    /// Ping via QUIC handshake (tuic / hysteria2).
+    /// Uses quinn to perform a TLS 1.3 QUIC handshake with cert verification disabled
+    /// (proxy servers use self-signed certs).
+    async fn quic_ping(
+        host: &str,
+        port: u16,
+        timeout: std::time::Duration,
+        start: Instant,
+    ) -> PingStatus {
+        // Resolve DNS — quinn requires SocketAddr
+        let addr = match format!("{host}:{port}").parse::<std::net::SocketAddr>() {
+            Ok(a) => a,
+            Err(_) => match lookup_host(format!("{host}:{port}")).await {
+                Ok(mut addrs) => match addrs.next() {
+                    Some(a) => a,
+                    None => {
+                        return PingStatus::Fail {
+                            error: "DNS resolution returned no addresses".into(),
+                        };
+                    }
+                },
+                Err(e) => {
+                    return PingStatus::Fail {
+                        error: format!("DNS resolution failed: {e}"),
+                    };
+                }
+            },
+        };
+
+        // TLS config that skips cert verification (self-signed proxy certs)
+        let crypto = rustls::ClientConfig::builder()
+            .dangerous()
+            .with_custom_certificate_verifier(Arc::new(PermissiveVerifier))
+            .with_no_client_auth();
+
+        let mut transport_config = quinn::TransportConfig::default();
+        // Set idle timeout; outer tokio::time::timeout is the real deadline
+        if let Ok(v) = timeout.try_into() {
+            transport_config.max_idle_timeout(Some(v));
+        }
+
+        let quic_client_config =
+            match quinn::crypto::rustls::QuicClientConfig::try_from(Arc::new(crypto)) {
+                Ok(c) => c,
+                Err(e) => {
+                    return PingStatus::Fail {
+                        error: format!("QUIC client config: {e}"),
+                    };
+                }
+            };
+        let client_config = quinn::ClientConfig::new(Arc::new(quic_client_config));
+
+        let endpoint =
+            match quinn::Endpoint::client(std::net::SocketAddr::from(([0, 0, 0, 0], 0u16))) {
+                Ok(e) => e,
+                Err(e) => {
+                    return PingStatus::Fail {
+                        error: format!("endpoint: {e}"),
+                    };
+                }
+            };
+
+        // `host` is passed as TLS SNI — verification is skipped, so any value works
+        let connect = match endpoint.connect_with(client_config, addr, host) {
+            Ok(c) => c,
+            Err(e) => {
+                return PingStatus::Fail {
+                    error: format!("QUIC connect: {e}"),
+                };
+            }
+        };
+        let conn = match tokio::time::timeout(timeout, connect).await {
+            Ok(Ok(conn)) => conn,
+            Ok(Err(e)) => {
+                return PingStatus::Fail {
+                    error: format!("QUIC handshake: {e}"),
+                };
+            }
+            Err(_) => {
+                return PingStatus::Fail {
+                    error: PingError::Timeout(timeout.as_secs()).to_string(),
+                };
+            }
+        };
+
+        // Handshake succeeded — endpoint reachable and speaks QUIC
+        conn.close(0u32.into(), b"ping");
+        // Brief pause to let close frame egress before endpoint drops
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        PingStatus::Done {
+            latency_ms: start.elapsed().as_secs_f64() * 1000.0,
+        }
+    }
 
     fn io_error_to_status(e: std::io::Error) -> PingStatus {
         let err = match e.kind() {
@@ -158,6 +258,60 @@ impl Ping {
         PingStatus::Fail {
             error: err.to_string(),
         }
+    }
+}
+
+/// A cert verifier that accepts any server certificate.
+/// Required because proxy servers use self-signed or ad-hoc certs.
+#[derive(Debug)]
+struct PermissiveVerifier;
+
+impl rustls::client::danger::ServerCertVerifier for PermissiveVerifier {
+    fn verify_server_cert(
+        &self,
+        _end_entity: &rustls::pki_types::CertificateDer<'_>,
+        _intermediates: &[rustls::pki_types::CertificateDer<'_>],
+        _server_name: &rustls::pki_types::ServerName<'_>,
+        _ocsp_response: &[u8],
+        _now: rustls::pki_types::UnixTime,
+    ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+        Ok(rustls::client::danger::ServerCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &rustls::pki_types::CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        let provider = rustls::crypto::aws_lc_rs::default_provider();
+        rustls::crypto::verify_tls12_signature(
+            message,
+            cert,
+            dss,
+            &provider.signature_verification_algorithms,
+        )
+    }
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &rustls::pki_types::CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        let provider = rustls::crypto::aws_lc_rs::default_provider();
+        rustls::crypto::verify_tls13_signature(
+            message,
+            cert,
+            dss,
+            &provider.signature_verification_algorithms,
+        )
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        let provider = rustls::crypto::aws_lc_rs::default_provider();
+        provider
+            .signature_verification_algorithms
+            .supported_schemes()
     }
 }
 
@@ -213,6 +367,7 @@ pub async fn ping_and_store(
     enum PingMethod {
         Tcp,
         Udp,
+        Quic,
     }
 
     // Classify schemas and filter empty/"0" ports
@@ -221,7 +376,9 @@ pub async fn ping_and_store(
 
     for srv in servers {
         let schema_lower = srv.schema.to_ascii_lowercase();
-        let method = if UDP_SCHEMAS.iter().any(|s| *s == schema_lower) {
+        let method = if QUIC_SCHEMAS.iter().any(|s| *s == schema_lower) {
+            PingMethod::Quic
+        } else if UDP_SCHEMAS.iter().any(|s| *s == schema_lower) {
             PingMethod::Udp
         } else {
             PingMethod::Tcp
@@ -267,6 +424,7 @@ pub async fn ping_and_store(
         let kind = match method {
             PingMethod::Tcp => PingKind::Tcp,
             PingMethod::Udp => PingKind::Udp,
+            PingMethod::Quic => PingKind::Quic,
         };
 
         in_flight.push_back(async move {

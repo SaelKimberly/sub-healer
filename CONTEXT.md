@@ -418,7 +418,7 @@ and emits unparseable entries from the consumer level (where `source_id` is know
 
 ### Pinger (`src/mining/pinger.rs`)
 
-Pinger module for TCP/UDP reachability checking, added to the pipeline's post-mining phase:
+Pinger module for TCP/UDP/QUIC reachability checking, added to the pipeline's post-mining phase:
 
 ```rust
 // Architecture
@@ -426,9 +426,9 @@ ping_and_store(db, &servers, &spec, progress_bar) -> Vec<(String, u16, Ping)>
 ```
 
 **Flow**:
-1. Classifies schemas as TCP or UDP via `UDP_SCHEMAS` constant (wireguard, tuic, hysteria2, stormdns, slipnet → UDP; `slipnet-enc` excluded — no `host()`/`port()`)
+1. Classifies schemas as QUIC, UDP, or TCP via `QUIC_SCHEMAS` (tuic, hysteria2) and `UDP_SCHEMAS` (wireguard, stormdns, slipnet) constants; `slipnet-enc` excluded — no `host()`/`port()`.
 2. Deduplicates by `(host.to_ascii_lowercase(), port)` — one ping per unique endpoint
-3. Pings concurrently via `FuturesOrdered` capped at `PING_CONCURRENCY` (200)
+3. Pings concurrently via `FuturesOrdered` capped at `PING_CONCURRENCY` (200) — QUIC schemas use a quinn QUIC handshake with cert verification disabled (`PermissiveVerifier`); UDP schemas use a 1-byte UDP knock; others use TCP connect.
 4. Stores JSON `Ping` to ALL server rows sharing that `(host, port)` using `LOWER(host) = LOWER(?3)` to handle mixed-case hostnames
 5. Returns results vector and optional progress bar with real-time OK/FAIL counters
 
@@ -436,6 +436,7 @@ ping_and_store(db, &servers, &spec, progress_bar) -> Vec<(String, u16, Ping)>
 ```json
 {"kind":"tcp","status":{"type":"done","latency_ms":12.5}}
 {"kind":"udp","status":{"type":"fail","error":"Timed out after 3s"}}
+{"kind":"quic","status":{"type":"done","latency_ms":42.5}}
 ```
 
 **CLI integration**: `--ping ok` (or bare `--ping`) / `--ping 15ms` on `emit`/mining subcommands; standalone `ping` subcommand for querying existing DB. Progress bar + `target: "ping"` tracing provide real-time feedback.

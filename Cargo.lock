@@ -3364,6 +3364,7 @@ dependencies = [
  "memchr",
  "mimalloc",
  "nom",
+ "quinn",
  "rapidhash",
  "rayon",
  "reqwest 0.13.4",

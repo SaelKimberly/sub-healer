@@ -70,15 +70,15 @@ per-scheme dispatch — all schemes flow through `create_stream`.
 **DB failures are fatal** — `upsert_server` uses `.context("... (aborting)")?`. No in-memory dedup — `servers.id` (= `ProtocolConfig::uid()`) PK handles uniqueness.
 ## Pinger (`src/mining/pinger.rs`)
 
-TCP/UDP ping module for reachability checking:
+TCP/UDP/QUIC ping module for reachability checking:
 
 - `PingSpec` — `Ok` (reachability only) or `Threshold(duration)` for latency filtering. Parsed from CLI via `FromStr`: bare `--ping` → `Ok`, `--ping 15ms` → `Threshold`.
-- `Ping` / `PingStatus` / `PingKind` — typed ping result (`Done { latency_ms }` or `Fail { error }`), tagged `#[serde(tag = "type")]`. `PingKind` distinguishes `Tcp` vs `Udp`. Stored as JSON in `servers.ping`.
-- `ping_and_store(db, servers, spec, progress_bar)` — classifies schemas as TCP or UDP, deduplicates by `LOWER(host):port`, pings each unique endpoint via TCP connect or 1-byte UDP knock, stores JSON result to ALL matching server rows with `LOWER(host) = LOWER(?3)` (case-insensitive match), returns results.
+- `Ping` / `PingStatus` / `PingKind` — typed ping result (`Done { latency_ms }` or `Fail { error }`), tagged `#[serde(tag = "type")]`. `PingKind` distinguishes `Tcp`, `Udp`, or `Quic`. Stored as JSON in `servers.ping`.
+- `ping_and_store(db, servers, spec, progress_bar)` — classifies schemas as TCP, UDP, or QUIC via `QUIC_SCHEMAS` and `UDP_SCHEMAS` constants, deduplicates by `LOWER(host):port`, pings each unique endpoint via TCP connect, 1-byte UDP knock, or quinn QUIC handshake, stores JSON result to ALL matching server rows with `LOWER(host) = LOWER(?3)` (case-insensitive match), returns results.
 - `PING_TIMEOUT = 3s` per endpoint, `PING_CONCURRENCY = 200` in-flight.
 - Progress bar: `indicatif::ProgressBar` with OK/FAIL counters, integrates with `MultiProgress` in main.rs.
 - Tracing: `target: "ping"` for start count and per-result logs.
-- UDP/QUIC schemas (wireguard, tuic, hysteria2, stormdns, slipnet) are pinged via UDP 1-byte knock; `slipnet-enc` is excluded (no `host()`/`port()`).
+- Schema classification: `QUIC_SCHEMAS = ["tuic", "hysteria2"]` → `PingKind::Quic` (QUIC handshake via quinn, `PermissiveVerifier` skips cert validation). `UDP_SCHEMAS = ["wireguard", "stormdns", "slipnet"]` → `PingKind::Udp` (1-byte UDP knock). All others → `PingKind::Tcp`. `slipnet-enc` is excluded (no `host()`/`port()`).
 
 ## Unparseable URL Capture
 
