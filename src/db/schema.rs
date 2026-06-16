@@ -62,6 +62,8 @@ pub(crate) fn init_db(conn: &Connection) -> Result<()> {
     let _ = conn.execute_batch("ALTER TABLE servers ADD COLUMN flags INTEGER NOT NULL DEFAULT 0;");
     let _ =
         conn.execute_batch("ALTER TABLE servers ADD COLUMN flags_ts INTEGER NOT NULL DEFAULT 0;");
+    let _ = conn.execute_batch("ALTER TABLE servers ADD COLUMN ping TEXT;");
+    let _ = conn.execute_batch("ALTER TABLE servers ADD COLUMN ping_ts INTEGER;");
     conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000; PRAGMA wal_autocheckpoint=2000; PRAGMA journal_size_limit=0;")?;
     Ok(())
 }

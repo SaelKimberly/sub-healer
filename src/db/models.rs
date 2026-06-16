@@ -21,6 +21,8 @@ pub struct ServerRecord {
     pub sig: i64,
     pub flags: i64,
     pub flags_ts: i64,
+    pub ping: Option<String>,
+    pub ping_ts: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

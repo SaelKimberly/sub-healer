@@ -108,6 +108,26 @@ pub fn upsert_server(
     Ok(())
 }
 
+/// Update the ping result for server records matching the given host and port.
+/// Since multiple server records can share the same host:port (different schemas),
+/// this updates ALL matching rows.
+///
+/// # Errors
+///
+/// Will return `Err` if the database operation fails.
+pub fn update_server_ping(
+    conn: &Connection,
+    host: &str,
+    port: &str,
+    ping_json: Option<&str>,
+    ping_ts: Option<i64>,
+) -> Result<usize> {
+    conn.prepare_cached(
+        "UPDATE servers SET ping = ?1, ping_ts = ?2 WHERE LOWER(host) = LOWER(?3) AND port = ?4",
+    )?
+    .execute(params![ping_json, ping_ts, host, port])
+}
+
 /// Get a server record by ID.
 ///
 /// # Errors
@@ -115,7 +135,7 @@ pub fn upsert_server(
 /// Returns `rusqlite::Error` if the query fails.
 pub fn get_server(conn: &Connection, id: i64) -> Result<Option<ServerRecord>> {
     let result = conn.query_row(
-        "SELECT id, schema, host, port, transport, security, remarks, raw_config, first_seen_ts, first_seen_source_id, sig, flags, flags_ts FROM servers WHERE id = ?1",
+        "SELECT id, schema, host, port, transport, security, remarks, raw_config, first_seen_ts, first_seen_source_id, sig, flags, flags_ts, ping, ping_ts FROM servers WHERE id = ?1",
         [id],
         |row| {
             Ok(ServerRecord {
@@ -132,6 +152,8 @@ pub fn get_server(conn: &Connection, id: i64) -> Result<Option<ServerRecord>> {
                 sig: row.get(10)?,
                 flags: row.get(11)?,
                 flags_ts: row.get(12)?,
+                ping: row.get(13)?,
+                ping_ts: row.get(14)?,
             })
         },
     );

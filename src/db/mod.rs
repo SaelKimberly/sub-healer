@@ -98,6 +98,23 @@ impl Database {
         self.with_conn_read(|conn| ops::get_server(conn, id)).await
     }
 
+    /// Update ping result for all server records with the given host:port.
+    ///
+    /// # Errors
+    ///
+    /// Returns `rusqlite::Error` if the update fails.
+    #[allow(clippy::future_not_send, reason = "need research")]
+    pub async fn update_server_ping_by_hostport(
+        &self,
+        host: &str,
+        port: &str,
+        ping_json: Option<&str>,
+        ping_ts: Option<i64>,
+    ) -> Result<usize> {
+        let conn = self.conn.write().await;
+        ops::update_server_ping(&conn, host, port, ping_json, ping_ts)
+    }
+
     /// Get all sightings for a server.
     ///
     /// # Errors

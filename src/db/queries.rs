@@ -91,7 +91,7 @@ pub fn query_servers_filtered(
     };
 
     let sql = format!(
-        "SELECT id, schema, host, port, transport, security, remarks, raw_config, first_seen_ts, first_seen_source_id, sig, flags, flags_ts \
+        "SELECT id, schema, host, port, transport, security, remarks, raw_config, first_seen_ts, first_seen_source_id, sig, flags, flags_ts, ping, ping_ts \
          FROM servers {where_clause} \
          ORDER BY schema ASC, remarks ASC NULLS LAST"
     );
@@ -115,6 +115,8 @@ pub fn query_servers_filtered(
             sig: row.get(10)?,
             flags: row.get(11)?,
             flags_ts: row.get(12)?,
+            ping: row.get(13)?,
+            ping_ts: row.get(14)?,
         })
     })?;
 

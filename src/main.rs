@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use anyhow::Context;
@@ -6,9 +6,12 @@ use rusqlite::params;
 
 use chrono::{DateTime, Utc};
 use clap::Parser;
+use indicatif::ProgressBar;
 use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 use v2ray_heal::mining;
+use v2ray_heal::mining::PingSpec;
 use v2ray_heal::mining::RawSourceItemBatch;
+use v2ray_heal::proto_spec::ProtoSpec;
 use v2ray_heal::urlx::TinyText;
 
 /// Scope of sources to re-fetch when using `--pull` on emit
@@ -55,6 +58,7 @@ pub(crate) struct EmitFilterArgs {
     wl: Vec<WhitelistFlagFilter>,
 }
 
+/// Emit-on-mine options used by mining subcommands (Stdin, Config, Remote, Local).
 #[derive(Debug, clap::Args)]
 struct EmitOnMine {
     /// Enable emit-after-mine: produce filtered config output after loading
@@ -62,6 +66,17 @@ struct EmitOnMine {
     emit: bool,
     #[command(flatten)]
     filters: EmitFilterArgs,
+    /// Ping servers after emit/mine and optionally filter by latency.
+    /// Bare `--ping` or `--ping ok` = check reachability only.
+    /// `--ping 15ms` = only emit servers with RTT ≤ 15ms.
+    #[arg(
+        long,
+        num_args = 0..=1,
+        default_missing_value = "ok",
+        value_parser = parse_ping_spec,
+        help = "Ping servers after processing: 'ok' or a duration like '15ms'"
+    )]
+    ping: Option<PingSpec>,
 }
 
 #[derive(Debug, clap::Subcommand)]
@@ -114,6 +129,20 @@ enum Commands {
         filters: EmitFilterArgs,
         #[arg(long, value_enum, help = "Scope of sources to pull before emitting")]
         pull: Option<PullScope>,
+        /// Ping servers after pull/emit and optionally filter by latency.
+        #[arg(
+            long,
+            num_args = 0..=1,
+            default_missing_value = "ok",
+            value_parser = parse_ping_spec,
+            help = "Ping servers after processing: 'ok' or a duration like '15ms'"
+        )]
+        ping: Option<PingSpec>,
+    },
+    /// Ping servers in the database to check reachability and latency.
+    Ping {
+        #[command(flatten)]
+        filters: EmitFilterArgs,
     },
 }
 
@@ -151,6 +180,15 @@ struct Cli {
 ///
 /// # Errors
 ///
+/// Parse the `--ping` CLI value into a [`PingSpec`].
+///
+/// # Errors
+///
+/// Returns a string error if the value cannot be parsed.
+fn parse_ping_spec(s: &str) -> Result<PingSpec, String> {
+    s.parse()
+}
+
 /// Returns an error if `--upto` cannot be parsed as RFC 3339 or if the duration is out of range.
 fn parse_backfill(
     last: Option<humantime::Duration>,
@@ -185,10 +223,79 @@ fn make_progress_bar(mp: &indicatif::MultiProgress) -> indicatif::ProgressBar {
     pb
 }
 
-/// If `opts.emit` is set, compute absolute timestamps from durations
-/// (same logic as the `emit` subcommand) and call `pipeline.export()`.
+/// Reconstruct and print server URLs from pre-queried [`ServerRecord`]s.
+/// Used by both `emit_after_mine` and the `Emit` subcommand when ping filtering
+/// has already narrowed the server set.
+async fn reconstruct_servers_to_stdout(
+    pipeline: &mining::Pipeline,
+    servers: &[v2ray_heal::db::models::ServerRecord],
+) -> anyhow::Result<()> {
+    use chrono::Utc;
+    use std::fmt::Write;
+
+    let mut source_ids: Vec<i64> = servers.iter().map(|s| s.first_seen_source_id).collect();
+    let sources = if source_ids.is_empty() {
+        Vec::new()
+    } else {
+        source_ids.sort_unstable();
+        source_ids.dedup();
+        pipeline
+            .db()
+            .query_sources_by_ids(&source_ids)
+            .await
+            .context("Failed to query sources")?
+    };
+
+    let mut output = String::new();
+    let _ = writeln!(
+        output,
+        "# v2ray-heal generated at {}",
+        Utc::now().to_rfc3339()
+    );
+    if !sources.is_empty() {
+        output.push_str("# Sources:\n");
+        for src in &sources {
+            let _ = writeln!(output, "#   - {}", src.url);
+        }
+    }
+    output.push('\n');
+
+    for server in servers {
+        let mut bytes = server.raw_config.as_bytes().to_vec();
+        let config: v2ray_heal::proto_spec::ProtocolConfig = match simd_json::from_slice(&mut bytes)
+        {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!(
+                    server_id = server.id,
+                    error = %e,
+                    "Failed to deserialize config"
+                );
+                continue;
+            }
+        };
+        match config.reconstruct() {
+            Ok(url) => {
+                let _ = writeln!(output, "{url}");
+            }
+            Err(e) => {
+                tracing::warn!(
+                    server_id = server.id,
+                    error = %e,
+                    "Failed to reconstruct URL"
+                );
+            }
+        }
+    }
+
+    print!("{output}");
+    Ok(())
+}
+
+/// If `opts.emit` is set or `opts.ping` is set, query servers, optionally ping,
+/// then emit filtered results.
 async fn emit_after_mine(pipeline: &mining::Pipeline, opts: &EmitOnMine) -> anyhow::Result<()> {
-    if !opts.emit {
+    if !opts.emit && opts.ping.is_none() {
         return Ok(());
     }
 
@@ -231,10 +338,51 @@ async fn emit_after_mine(pipeline: &mining::Pipeline, opts: &EmitOnMine) -> anyh
         }
     });
 
-    let output = pipeline
-        .export(protocol_filter, min_first, min_last, wl_mask)
+    // Query servers directly instead of going through pipeline.export()
+    let db = pipeline.db();
+    let mask = if wl_mask == 0 { None } else { Some(wl_mask) };
+    let servers = db
+        .query_servers_filtered(protocol_filter, min_first, min_last, mask)
         .await?;
-    print!("{output}");
+
+    // Apply ping filter if specified
+    let servers: Vec<v2ray_heal::db::models::ServerRecord> = if let Some(spec) = &opts.ping {
+        let deduped = v2ray_heal::mining::ping_and_store(db, &servers, spec, None).await?;
+        let reachable: HashSet<(String, u16)> = deduped
+            .iter()
+            .filter(|(_, _, r)| match r {
+                v2ray_heal::mining::PingResult::Tcp {
+                    latency_ms: Some(lat),
+                    ..
+                } => match spec {
+                    PingSpec::Ok => true,
+                    PingSpec::Threshold(dur) => *lat <= dur.as_secs_f64() * 1000.0,
+                },
+                _ => false,
+            })
+            .map(|(h, p, _)| (h.to_lowercase(), *p))
+            .collect();
+        servers
+            .into_iter()
+            .filter(|s| {
+                let port: u16 = match s.port.parse() {
+                    Ok(p) if p != 0 => p,
+                    _ => return false,
+                };
+                reachable.contains(&(s.host.to_lowercase(), port))
+            })
+            .collect()
+    } else {
+        servers
+    };
+
+    if !opts.emit {
+        // Ping-only mode: results were stored to DB, nothing to print as URLs
+        return Ok(());
+    }
+
+    // Reconstruct and print
+    reconstruct_servers_to_stdout(pipeline, &servers).await?;
     Ok(())
 }
 
@@ -257,6 +405,8 @@ fn srv_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<v2ray_heal::db::mod
         sig: row.get(10)?,
         flags: row.get(11)?,
         flags_ts: row.get(12)?,
+        ping: row.get(13)?,
+        ping_ts: row.get(14)?,
     })
 }
 
@@ -279,14 +429,14 @@ async fn recheck_whitelist(
                 let cut_off = now.saturating_sub(max.num_seconds());
                 (
                     "SELECT id, schema, host, port, transport, security, remarks, \
-                         raw_config, first_seen_ts, first_seen_source_id, sig, flags, flags_ts \
+                         raw_config, first_seen_ts, first_seen_source_id, sig, flags, flags_ts, ping, ping_ts \
                          FROM servers WHERE flags_ts < ?1 OR flags_ts = 0",
                     Box::new(cut_off) as Box<dyn rusqlite::types::ToSql>,
                 )
             } else {
                 (
                     "SELECT id, schema, host, port, transport, security, remarks, \
-                         raw_config, first_seen_ts, first_seen_source_id, sig, flags, flags_ts \
+                         raw_config, first_seen_ts, first_seen_source_id, sig, flags, flags_ts, ping, ping_ts \
                          FROM servers",
                     Box::new(0i64) as Box<dyn rusqlite::types::ToSql>,
                 )
@@ -500,7 +650,11 @@ async fn main() -> anyhow::Result<()> {
             tracing::info!(count, "Local file mining completed");
         }
 
-        Some(Commands::Emit { filters, pull }) => {
+        Some(Commands::Emit {
+            filters,
+            pull,
+            ping,
+        }) => {
             let mut pipeline = mining::Pipeline::new(&cli.db)?;
 
             if let Some(scope) = pull {
@@ -604,9 +758,129 @@ async fn main() -> anyhow::Result<()> {
                 }
             });
 
-            let output = pipeline
-                .export(protocol_filter, min_first, min_last, wl_mask)
+            let mask = if wl_mask == 0 { None } else { Some(wl_mask) };
+            let servers = pipeline
+                .db()
+                .query_servers_filtered(protocol_filter, min_first, min_last, mask)
+                .await
+                .context("Failed to query servers")?;
+
+            // Apply ping filter if specified (same logic as emit_after_mine)
+            let servers: Vec<v2ray_heal::db::models::ServerRecord> = if let Some(spec) = &ping {
+                let db = pipeline.db();
+                let deduped = v2ray_heal::mining::ping_and_store(db, &servers, spec, None).await?;
+                let reachable: HashSet<(String, u16)> = deduped
+                    .iter()
+                    .filter(|(_, _, r)| match r {
+                        v2ray_heal::mining::PingResult::Tcp {
+                            latency_ms: Some(lat),
+                            ..
+                        } => match spec {
+                            PingSpec::Ok => true,
+                            PingSpec::Threshold(dur) => *lat <= dur.as_secs_f64() * 1000.0,
+                        },
+                        _ => false,
+                    })
+                    .map(|(h, p, _)| (h.to_lowercase(), *p))
+                    .collect();
+                servers
+                    .into_iter()
+                    .filter(|s| {
+                        let port: u16 = match s.port.parse() {
+                            Ok(p) if p != 0 => p,
+                            _ => return false,
+                        };
+                        reachable.contains(&(s.host.to_lowercase(), port))
+                    })
+                    .collect()
+            } else {
+                servers
+            };
+
+            reconstruct_servers_to_stdout(&pipeline, &servers).await?;
+        }
+        Some(Commands::Ping { filters }) => {
+            use std::time::SystemTime;
+
+            let pipeline = mining::Pipeline::new(&cli.db)?;
+            let unix_now = SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_secs() as i64;
+
+            let min_first = filters.min_first_seen_ts.map(|d| {
+                let std_dur: std::time::Duration = d.into();
+                unix_now.saturating_sub(std_dur.as_secs() as i64)
+            });
+
+            let min_last = filters.min_last_seen_ts.map(|d| {
+                let std_dur: std::time::Duration = d.into();
+                unix_now.saturating_sub(std_dur.as_secs() as i64)
+            });
+
+            let protocol_filter = if filters.protocol.is_empty() {
+                None
+            } else {
+                Some(filters.protocol.as_slice())
+            };
+            use std::fmt::Write;
+            let wl_mask: u8 = filters.wl.iter().fold(0u8, |mask, f| {
+                mask | match f {
+                    WhitelistFlagFilter::Sni => v2ray_heal::whitelist::SNI_WHITELISTED,
+                    WhitelistFlagFilter::Ip => v2ray_heal::whitelist::IP_WHITELISTED,
+                    WhitelistFlagFilter::Cidr => v2ray_heal::whitelist::CIDR_WHITELISTED,
+                }
+            });
+
+            let mask = if wl_mask == 0 { None } else { Some(wl_mask) };
+            let db = pipeline.db();
+            let servers = db
+                .query_servers_filtered(protocol_filter, min_first, min_last, mask)
                 .await?;
+
+            if servers.is_empty() {
+                tracing::warn!("No servers in database matching filters");
+                return Ok(());
+            }
+            // Create progress bar for ping progress
+            let pb = mp.add(ProgressBar::new(0));
+            let results =
+                v2ray_heal::mining::ping_and_store(db, &servers, &PingSpec::Ok, Some(pb)).await?;
+
+            // Print results table
+            let mut output = String::new();
+            // Count successful vs failed
+            let (ok, fail): (Vec<_>, Vec<_>) =
+                results.iter().partition::<Vec<_>, _>(|(_, _, r)| {
+                    matches!(
+                        r,
+                        v2ray_heal::mining::PingResult::Tcp {
+                            latency_ms: Some(_),
+                            ..
+                        }
+                    )
+                });
+
+            output.push_str("# Ping results\n");
+            for (host, port, r) in &results {
+                let status = match r {
+                    v2ray_heal::mining::PingResult::Tcp {
+                        latency_ms: Some(lat),
+                        ..
+                    } => format!("ok {:.1}ms", lat),
+                    v2ray_heal::mining::PingResult::Tcp { error: Some(e), .. } => {
+                        format!("fail {e}")
+                    }
+                    _ => "unknown".into(),
+                };
+                let _ = writeln!(output, "{host}:{port} {status}");
+            }
+            output.push_str(&format!(
+                "\n{} ok, {} failed, {} total\n",
+                ok.len(),
+                fail.len(),
+                results.len()
+            ));
             print!("{output}");
         }
         None => {

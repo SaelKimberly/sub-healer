@@ -1,6 +1,6 @@
 # CONTEXT.md — v2ray-heal Project Context
 
-> Architecture reference. Last updated: 2026-06-15.
+> Architecture reference. Last updated: 2026-06-16.
 
 ---
 
@@ -300,6 +300,8 @@ All database operations are methods on `Database`: `open()`, `init_db()`, `upser
   - `flags` INTEGER NOT NULL DEFAULT 0 (bitmask: 0b001=SNI whitelisted, 0b010=IP whitelisted, 0b100=CIDR whitelisted)
   - `flags_ts` INTEGER NOT NULL DEFAULT 0 (unix timestamp of last whitelist check)
   - `first_seen_ts` INTEGER NOT NULL, `first_seen_source_id` INTEGER NOT NULL REFERENCES sources(id)
+  - `ping` TEXT (nullable — JSON-serialized `PingResult`, e.g. `{"type":"tcp","latency_ms":12.5}`)
+  - `ping_ts` INTEGER (nullable — unix timestamp of last ping attempt)
 
 - **`sightings`** — Time-travel tracking of when each server was observed from each source
   - `id` INTEGER PRIMARY KEY AUTOINCREMENT
@@ -412,6 +414,33 @@ and emits unparseable entries from the consumer level (where `source_id` is know
   Connect timeout 30s, read timeout 5s.
 - `TgConfig`: concurrency=8, timeout=30s
 - Subscription task timeout: 90s per `SubFetcher`
+- Ping: `PING_TIMEOUT=3s` per endpoint, `PING_CONCURRENCY=200` in-flight
+
+### Pinger (`src/mining/pinger.rs`)
+
+Pinger module for TCP reachability checking, added to the pipeline's post-mining phase:
+
+```rust
+// Architecture
+ping_and_store(db, &servers, &spec, progress_bar) -> Vec<(String, u16, PingResult)>
+```
+
+**Flow**:
+1. Filters out UDP/QUIC schemas: wireguard, tuic, hysteria2, stormdns, slipnet, slipnet-enc
+2. Deduplicates by `(host.to_ascii_lowercase(), port)` — one TCP connect per unique endpoint
+3. Pings concurrently via `FuturesOrdered` capped at `PING_CONCURRENCY` (200)
+4. Stores JSON `PingResult` to ALL server rows sharing that `(host, port)` using `LOWER(host) = LOWER(?3)` to handle mixed-case hostnames
+5. Returns results vector and optional progress bar with real-time OK/FAIL counters
+
+**PingResult** (`#[serde(tag = "type")]`):
+```json
+{"type":"tcp","latency_ms":12.5}        // success
+{"type":"tcp","error":"timeout after 3s"}  // failure
+```
+
+**CLI integration**: `--ping ok` (or bare `--ping`) / `--ping 15ms` on `emit`/mining subcommands; standalone `ping` subcommand for querying existing DB. Progress bar + `target: "ping"` tracing provide real-time feedback.
+
+**Case-sensitivity fix**: The UPDATE query originally used `WHERE host = ?3` (binary comparison) but the pinger lowercased hosts for dedup — rows with mixed-case hosts kept NULL ping fields. Fixed to `WHERE LOWER(host) = LOWER(?3)`.
 
 ---
 
@@ -435,7 +464,8 @@ A `tracing_subscriber::Layer` that:
 ## 9. CLI Architecture
 
 ### Struct Hierarchy (`src/main.rs`)
-
+| **`Emit`** | Filtered server export. `--protocol` filter (repeatable), `--min-first-seen-ts`/`--min-last-seen-ts` (humantime duration), `--pull` (re-mine all DB sources with optional `Backfill`), `--ping` (value: `ok` or duration — pings before export, filters by reachability). Reconstructs URLs from stored `ProtocolConfig` JSON via `simd_json::from_slice` (not `serde_json`). Uses `EmitFilterArgs` flattened. |
+| **`Ping`** | Standalone ping. `--protocol`, `--min-first-seen-ts`, `--min-last-seen-ts`, `--wl` filters. Pings all matching servers via TCP connect, stores results in DB, prints results table. Progress bar shows real-time OK/FAIL. |
 ```rust
 // Shared filter flags for both standalone emit and emit-on-mine
 #[derive(Debug, clap::Args)]
@@ -500,6 +530,8 @@ subscriptions:
 
 8. **IDNA fallback in `dns_name()`**: The `dns_name` parser in `src/utils/host_port.rs` originally accepted only ASCII alphanumeric + `.` `-` `_` via `nom` combinators. Subscription entries with Chinese hostnames (e.g. `例子.测试`) were rejected. Changed to `take_while1(|c| ... || c > 127)` to accept any byte, then fall back to `idna::domain_to_ascii()` for Punycode conversion. Fast path (pure ASCII) stays zero-alloc — the `.to_owned()` moved inside `map_res` returns `DnsName<'static>` which coerces through all callers via lifetime covariance. No caller changes needed, no measurable perf impact (isolated benchmarks within ±1% noise). Verified: 120171 real-world URLs parsed, 54 fewer unparseable entries.
 
+9. **Case-insensitive host matching in ping update**: `update_server_ping()` originally used `WHERE host = ?3` (SQLite binary comparison). The pinger deduplicates endpoints via `host.to_ascii_lowercase()` — mixed-case stored hosts (e.g., `Example.Host.Com`) never matched the lowercased query parameter, leaving `ping`/`ping_ts` NULL. Fixed with `LOWER(host) = LOWER(?3)`. The deduplication already ensures one ping per unique host:port, and `LOWER()` on both sides updates all server rows sharing that endpoint regardless of stored casing.
+
 ---
 
 ## 11. Quick Reference: Protocol → Credential / sig Fields
@@ -524,7 +556,7 @@ subscriptions:
 ## 12. Common Test Commands
 
 ```bash
-# Run all tests (168 pass, 0 ignored)
+# Run all tests (180 pass, 0 ignored)
 rtk cargo test
 
 # Run specific protocol tests
@@ -553,6 +585,20 @@ cat sub.txt | cargo run -- stdin --emit --protocol vmess
 
 # Filtered export
 cargo run -- emit --protocol vmess --protocol vless
+
+# Ping servers from existing DB
+cargo run -- ping
+cargo run -- ping --protocol vmess
+cargo run -- ping --min-first-seen-ts 1h
+
+# Mine and emit with ping filter
+cargo run -- config --emit --ping ok
+cargo run -- --db ":memory:" local ./file.txt --emit --ping 15ms
+
+# Run examples with visible ping progress
+RUST_LOG=warn,ping=info cargo run --example parse_real_subs
+RUST_LOG=warn,ping=info cargo run --example parse_real_tg
+RUST_LOG=warn,ping=info cargo run --example parse_real_subs_web
 
 # Criterion benchmarks
 cargo bench  # raw_urlx, proto_spec, slice_input, permissive_json
